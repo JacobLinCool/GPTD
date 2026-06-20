@@ -5,19 +5,23 @@ import type { TextureFactory } from '../render/textures'
 import { BUILD_ORDER, TOWER_DEFS } from '../sim/content'
 import { buildCost } from '../sim/actions'
 import { hasLab } from '../sim/effects'
+import { t, towerDesc, towerName } from '../i18n'
+import { addTooltip } from './tooltip'
 import { drawPanel, UIButton } from './theme'
 
+/** §5.6 clear, full building labels — no cryptic abbreviations. */
 const SHORT: Record<string, string> = {
-  srv_small: 'Small',
-  srv_general: 'General',
-  srv_coding: 'Coding',
-  srv_frontier: 'Frontier',
+  srv_edge: 'Edge Rack',
+  srv_frontier: 'Big Rack',
   router: 'Router',
   cache: 'Cache',
-  safety: 'Safety',
-  power: 'Power',
+  guard_encoder: 'Encoder Guard',
+  guard_llm: 'LLM Guard',
+  guard_mod: 'Moderation',
+  power: 'Power Plant',
   cooling: 'Cooling',
-  lab: 'Lab',
+  cooling_liquid: 'Liquid Loop',
+  lab: 'Training Lab',
 }
 
 export interface BuildBarCallbacks {
@@ -40,10 +44,14 @@ export class BuildBar {
     drawPanel(this.bg, 0, y0, DESIGN_W, BUILDBAR_H, { radius: 0, alpha: 0.96 })
     this.bg.rect(0, y0, DESIGN_W, 2).fill({ color: COLORS.laneGlow, alpha: 0.5 })
 
-    const w = 100
-    const h = 76
+    const padX = 12
+    const controlW = 184
+    const controlX = DESIGN_W - controlW - padX
     const gap = 6
-    let x = 12
+    const trayW = controlX - padX - 16
+    const w = Math.floor((trayW - gap * (BUILD_ORDER.length - 1)) / BUILD_ORDER.length)
+    const h = 76
+    let x = padX
     for (const id of BUILD_ORDER) {
       const def = TOWER_DEFS[id]
       const b = new UIButton({ w, h, accent: def.color, onTap: () => cb.onSelect(id) })
@@ -51,25 +59,25 @@ export class BuildBar {
       b.y = y0 + 10
       const icon = new Sprite(factory.tower(def))
       icon.anchor.set(0.5)
-      icon.width = 30
-      icon.height = 30
+      icon.width = 28
+      icon.height = 28
       b.iconHost.addChild(icon)
       b.setTitle(SHORT[id]).setSub('$' + def.cost)
-      b.layout(34, 8)
-      // move icon to upper area, text below for a card feel
-      b.iconHost.y = 24
+      b.layoutIconCard()
       this.view.addChild(b)
       this.buttons.set(id, b)
+      // hover tooltip: full building name + description
+      addTooltip(b, () => ({ title: towerName(def), body: towerDesc(def) }))
       x += w + gap
     }
 
-    this.startBtn = new UIButton({ w: 196, h: 34, accent: COLORS.trust, onTap: cb.onStartWave })
-    this.startBtn.x = DESIGN_W - 208
+    this.startBtn = new UIButton({ w: controlW, h: 34, accent: COLORS.trust, onTap: cb.onStartWave })
+    this.startBtn.x = controlX
     this.startBtn.y = y0 + 10
     this.view.addChild(this.startBtn)
 
-    this.trainBtn = new UIButton({ w: 196, h: 34, accent: COLORS.data, onTap: cb.onTrain })
-    this.trainBtn.x = DESIGN_W - 208
+    this.trainBtn = new UIButton({ w: controlW, h: 34, accent: COLORS.data, onTap: cb.onTrain })
+    this.trainBtn.x = controlX
     this.trainBtn.y = y0 + 52
     this.view.addChild(this.trainBtn)
   }
@@ -79,18 +87,27 @@ export class BuildBar {
       const def = TOWER_DEFS[id]
       const cost = buildCost(s, def)
       const affordable = s.meters.cash >= cost && (s.phase === 'build' || s.phase === 'wave')
+      b.setTitle(t('build.short.' + id, undefined, SHORT[id]))
       b.setSub('$' + cost)
       b.setEnabled(affordable)
       b.setActive(selectedDefId === id)
-      b.layout(34, 8)
-      b.iconHost.y = 24
+      b.layoutIconCard()
     }
     const canStart = s.phase === 'build'
     this.startBtn.setEnabled(canStart)
-    this.startBtn.setTitle(s.phase === 'wave' ? 'WAVE LIVE…' : 'START WAVE  ▶').layout(0, 0, true)
+    this.startBtn.setTitle(s.phase === 'wave' ? t('build.waveLive') : t('build.start')).layout(0, 0, true)
 
     const canTrain = s.phase === 'build' && hasLab(s)
     this.trainBtn.setEnabled(canTrain)
-    this.trainBtn.setTitle(hasLab(s) ? 'TRAIN  ◆' : 'TRAIN (need Lab)').layout(0, 0, true)
+    const activeSlot = s.research.infra ?? s.research.posttrain ?? s.research.eval
+    this.trainBtn
+      .setTitle(
+        activeSlot
+          ? t('build.research', { pct: Math.floor((activeSlot.progress / activeSlot.compute) * 100) })
+          : hasLab(s)
+            ? t('build.train')
+            : t('build.trainNeedLab'),
+      )
+      .layout(0, 0, true)
   }
 }

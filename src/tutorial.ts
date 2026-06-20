@@ -1,15 +1,39 @@
 import type { GameState } from './core/types'
 import { isBrownout, isThrottling } from './sim/power'
+import { t } from './i18n'
+import { BUILDBAR_H, DESIGN_H, DESIGN_W } from './config'
+import { BUILD_ORDER } from './sim/content'
 import type { Codex, CodexMessage, Rect } from './ui/codex'
 
-// UI rectangles (design space) the tutorial points at — must match hud.ts / buildbar.ts layout.
+// UI rectangles (design space) the tutorial points at — must match buildbar.ts
+const BUILD_PAD_X = 12
+const BUILD_GAP = 6
+const BUILD_CONTROL_W = 184
+const BUILD_CONTROL_X = DESIGN_W - BUILD_CONTROL_W - BUILD_PAD_X
+const BUILD_TRAY_W = BUILD_CONTROL_X - BUILD_PAD_X - 16
+const BUILD_CARD_W = Math.floor((BUILD_TRAY_W - BUILD_GAP * (BUILD_ORDER.length - 1)) / BUILD_ORDER.length)
+const BUILD_CARD_Y = DESIGN_H - BUILDBAR_H + 10
+const BUILD_CARD_H = 76
+const BUILD_CONTROL_H = 34
+
+function buildCardRect(id: string): Rect {
+  const index = BUILD_ORDER.indexOf(id)
+  if (index < 0) throw new Error(`Unknown build tutorial target: ${id}`)
+  return {
+    x: BUILD_PAD_X + index * (BUILD_CARD_W + BUILD_GAP),
+    y: BUILD_CARD_Y,
+    w: BUILD_CARD_W,
+    h: BUILD_CARD_H,
+  }
+}
+
 const HL: Record<string, Rect> = {
-  general: { x: 118, y: 634, w: 100, h: 76 },
-  safety: { x: 648, y: 634, w: 100, h: 76 },
-  power: { x: 754, y: 634, w: 100, h: 76 },
-  cooling: { x: 860, y: 634, w: 100, h: 76 },
-  lab: { x: 966, y: 634, w: 100, h: 76 },
-  start: { x: 1072, y: 634, w: 196, h: 34 },
+  general: buildCardRect('srv_edge'),
+  safety: buildCardRect('guard_encoder'),
+  power: buildCardRect('power'),
+  cooling: buildCardRect('cooling'),
+  lab: buildCardRect('lab'),
+  start: { x: BUILD_CONTROL_X, y: BUILD_CARD_Y, w: BUILD_CONTROL_W, h: BUILD_CONTROL_H },
   meters: { x: 10, y: 20, w: 182, h: 64 },
 }
 
@@ -34,7 +58,7 @@ const STEPS: Step[] = [
   {
     key: 'place',
     msg: () => ({
-      text: "I'm Codex, your on-call SRE. Those packets are user requests flooding in. Tap the blue General Server button, then a tile right beside the glowing lane to deploy it.",
+      text: t('tut.place'),
       highlight: HL.general,
     }),
     advance: (s) => serverCount(s) >= 1,
@@ -42,7 +66,7 @@ const STEPS: Step[] = [
   {
     key: 'spread',
     msg: () => ({
-      text: 'Nice deploy. A server processes any request inside its range. Spread two or three along the lane so nothing slips past to the Trust Core.',
+      text: t('tut.spread'),
       showNext: true,
     }),
     advance: (s, next) => serverCount(s) >= 3 || next,
@@ -50,7 +74,7 @@ const STEPS: Step[] = [
   {
     key: 'start',
     msg: () => ({
-      text: 'Locked and loaded. Hit START WAVE — or just press Space — to open the doors to live traffic.',
+      text: t('tut.start'),
       highlight: HL.start,
     }),
     advance: (s) => s.phase === 'wave',
@@ -58,7 +82,7 @@ const STEPS: Step[] = [
   {
     key: 'serving',
     msg: () => ({
-      text: 'Each packet shows Work remaining above it. Drain it to zero and you serve the user for Cash and Data. Let one reach the core and your Trust and SLA take the hit — watch the bars up top.',
+      text: t('tut.serving'),
       showNext: true,
       highlight: HL.meters,
     }),
@@ -67,7 +91,7 @@ const STEPS: Step[] = [
   {
     key: 'expand',
     msg: () => ({
-      text: "That's the whole loop: serve → earn → build → survive a bigger wave. Build more servers, raise Power/Cooling when those bars fill, and drop a Training Lab to unlock upgrades between waves. I'll shout if something needs you. Good luck!",
+      text: t('tut.expand'),
       showNext: true,
       highlight: HL.lab,
     }),
@@ -81,7 +105,7 @@ const TIPS: Tip[] = [
     key: 'brownout',
     when: (s) => s.phase === 'wave' && isBrownout(s),
     msg: () => ({
-      text: 'Heads up — your GPUs just browned out (that ⚡ warning). Power demand beat capacity, so racks went dark. Build a Power Plant to bring them back.',
+      text: t('tut.brownout'),
       showNext: true,
       highlight: HL.power,
     }),
@@ -90,7 +114,7 @@ const TIPS: Tip[] = [
     key: 'throttle',
     when: (s) => s.phase === 'wave' && isThrottling(s),
     msg: () => ({
-      text: 'Your racks are thermal-throttling (❄) — you are over heat capacity, so every GPU serves slower. Add a Cooling Tower to clear it.',
+      text: t('tut.throttle'),
       showNext: true,
       highlight: HL.cooling,
     }),
@@ -98,9 +122,9 @@ const TIPS: Tip[] = [
   {
     key: 'jailbreak',
     when: (s) =>
-      s.requests.some((r) => r.alive && r.def.id === 'jail' && r.safetyRisk > 0 && !r.safetyCleared),
+      s.requests.some((r) => r.alive && r.def.id === 'jailbreak' && r.safetyRisk > 0 && !r.safetyCleared),
     msg: () => ({
-      text: 'See the red “!” packets? Those are Jailbreaks. Route them through a Safety Gate before the core, or an unsafe answer wrecks Trust.',
+      text: t('tut.jailbreak'),
       showNext: true,
       highlight: HL.safety,
     }),
@@ -109,7 +133,7 @@ const TIPS: Tip[] = [
     key: 'lowtrust',
     when: (s) => s.phase === 'wave' && s.meters.trust < 35,
     msg: () => ({
-      text: 'Trust is critical! If Trust, SLA, or Cash hits zero, the run ends. Tighten coverage, add a Cache for repeat traffic, or sell and relocate.',
+      text: t('tut.lowtrust'),
       showNext: true,
     }),
   },

@@ -79,13 +79,17 @@ export class FxManager {
     this.popups.push({ t, vy: 36, life: 0.9, max: 0.9 })
   }
 
-  serve(x: number, y: number, kind: 'good' | 'bad' | 'unsafe', amount: number): void {
+  serve(x: number, y: number, kind: 'good' | 'bad' | 'unsafe' | 'over_refused', amount: number): void {
     if (kind === 'good') {
       this.popup(x, y - 6, '+$' + amount, COLORS.cash, 14)
       this.burst(x, y, COLORS.cash, 7, 90)
     } else if (kind === 'bad') {
       this.popup(x, y - 6, 'BAD', COLORS.warn, 13)
       this.burst(x, y, COLORS.warn, 5, 70)
+    } else if (kind === 'over_refused') {
+      // §3.6 a wrongly-refused benign request — a reputation cost, not a breach.
+      this.popup(x, y - 6, 'REFUSED', COLORS.warn, 13)
+      this.burst(x, y, COLORS.warn, 6, 80)
     } else {
       this.popup(x, y - 6, 'UNSAFE!', COLORS.danger, 14)
       this.burst(x, y, COLORS.danger, 9, 110)
@@ -98,7 +102,7 @@ export class FxManager {
   }
 
   leak(x: number, y: number, unsafe: boolean): void {
-    this.popup(x, y - 6, unsafe ? 'BREACH' : 'LEAK', COLORS.danger, 13)
+    this.popup(x, y - 6, unsafe ? 'BREACH' : '504', COLORS.danger, 13)
     this.burst(x, y, COLORS.danger, 10, 120)
   }
 

@@ -59,25 +59,93 @@ export const COLORS = {
 /** Per-meter visual maxima for the HUD bars. */
 export const METER_MAX = { trust: 100, sla: 100 }
 
-/** Starting economy / meters. */
+/**
+ * §6.6 real credit economy: 1 credit = $CREDIT_USD. All capex / $/GPU-hr / token
+ * revenue use this single scale, so the bankruptcy threshold (cash<0) is in real
+ * money. Build cost = capexUsd / CREDIT_USD; operating cost and income share it.
+ */
+export const CREDIT_USD = 1000
+
+/**
+ * §6.6 traffic multiplier. Each request SPRITE stands for this many real traffic
+ * streams, so the real $/Mtoken income on one sprite is meaningful against real
+ * GPU capex/operating cost. Applied to BOTH token revenue AND the wall-clock
+ * operating bill, keeping the real $/Mtoken identity exact (and idle racks bleed).
+ */
+export const TRAFFIC_SCALE = 100000
+
+/**
+ * §6.6 operating-cost calibration. The wall-clock $/GPU-hr bill is REAL, but the
+ * full real $/Mtoken on a low-throughput rack is brutal ($2+/Mtok at ~100 tok/s);
+ * billed at full TRAFFIC_SCALE it bankrupts any imperfect fleet. This factor
+ * scales the operating bill down to a playable level WHILE preserving the key
+ * property: the bill is fixed by WALL-CLOCK, so an idle / over-provisioned rack
+ * still bleeds and the utilization penalty emerges (§6.6). Real watt-accurate
+ * cost is P2; P1's bill is a calibrated real-rate proxy.
+ */
+export const OP_COST_SCALE = 0.036
+
+/**
+ * §6.6 clear-bonus rescale. The authored `WaveDef.clearBonus` values (70–1200)
+ * were tuned for the old flat-points economy; in the real credit economy they are
+ * scaled down so the clear bonus is a meaningful kicker but does NOT dwarf the
+ * token-priced request revenue (which is the real economy now).
+ */
+export const CLEAR_BONUS_SCALE = 0.08
+
+/**
+ * §6.5 REAL power/cooling. The power system runs in real kW now: a rack draws its
+ * aggregate `tdpWatts` (kW) and emits ≈that much heat (≈all electrical power → heat).
+ * Base grid + chiller capacity (kW) is the substation/CRAC every datacenter has
+ * before you build any Power Plant / Cooling Tower; calibrated so a starter Edge/
+ * Standard fleet (L4 0.072 kW, L40S 0.35 kW, H100/H200 0.7 kW) lights up, and a
+ * Power Plant / Cooling Tower each add a sizeable real block — an H100 node is ~10 kW
+ * and an NVL72 ~72 kW (its 72×1000 W aggregate tdpWatts), so the meters read in kW.
+ */
 export const START = {
-  cash: 320,
+  cash: 300,
   trust: 100,
   sla: 100,
   data: 0,
-  basePower: 10,
-  baseCooling: 10,
+  /** base electrical capacity in kW (the substation feed before any Power Plant). */
+  basePower: 6,
+  /** base heat-rejection capacity in kW (the house chillers before any Cooling Tower). */
+  baseCooling: 6,
 }
 
 /**
- * Cash drained per second per unit of power drawn, while a wave is running.
- * A modest operating cost (running GPUs is not free) — not a bankruptcy timer.
+ * §6.5 utilization factor on a rack's nameplate TDP: a serving rack rarely sits at
+ * 100% of its TDP wall (decode is bandwidth-bound, idle slots draw less). Real PUE-
+ * adjacent utilization is ~0.7–0.85; we use 0.8 so the meters track real datacenter
+ * draw (an 8× H200 pod ~4.5 kW served, an NVL72 ~58 kW). serverPower() applies this
+ * on top of the FP8/INT4/throughput/spec modifiers.
  */
-export const POWER_PRICE = 0.08
+export const RACK_UTILIZATION = 0.8
+
 /** Throttle floor: even fully overheated GPUs keep this fraction of speed. */
 export const THROTTLE_FLOOR = 0.35
 /**
  * Global multiplier converting a request's per-type tile speed into lane speed.
- * Tuned so the long serpentine takes a sensible time to traverse at 1× game speed.
+ * The four-ingress central-core map has shorter individual lanes than the old
+ * single serpentine, so this keeps board travel time in the same playable band.
  */
-export const LANE_SPEED = 1.6
+export const LANE_SPEED = 0.75
+
+/**
+ * §0.4 dual-clock: one board second compresses this many REAL datacenter seconds.
+ * Visual pacing only — SLO is always judged on the real-second axis (effLatency).
+ */
+export const SIM_TIME_SCALE = 10
+/** §6.2 per-rack runtime VRAM overhead (framework, activations, CUDA graphs) before KV, in GB. */
+export const FRAMEWORK_GB = 1.5
+/**
+ * §1.3 per-latency-class SLO in REAL milliseconds (MLPerf / IETF classes).
+ *   IN — interactive (chat/completion): tight TTFT, tight per-token.
+ *   NR — near-real-time (RAG/reasoning/enterprise): relaxed.
+ *   TO — throughput/offline (bots/batch): no hard latency SLO.
+ */
+export const LAT_CLASS_SLO = {
+  IN: { ttftMs: 400, tpotMs: 40 },
+  NR: { ttftMs: 2000, tpotMs: 200 },
+  TO: { ttftMs: Infinity, tpotMs: Infinity },
+} as const

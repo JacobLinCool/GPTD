@@ -42,6 +42,16 @@ async function boot(): Promise<void> {
   document.getElementById('boot')?.remove()
   // expose for debugging / e2e
   ;(window as unknown as { __game: Game }).__game = game
+
+  // Agent mode: ?agent=1 lets a local agent (via scripts/bridge.mjs) drive THIS
+  // already-open tab. The connector dials out to the localhost relay; the human
+  // keeps watching the same board while the agent narrates in the Codex bubble.
+  if (new URLSearchParams(window.location.search).get('agent')) {
+    game.enableAgentMode()
+    void import('./agent/connector')
+      .then((m) => m.attach(game))
+      .catch((err) => console.error('[agent] connector failed to attach', err))
+  }
 }
 
 void boot()

@@ -3,7 +3,9 @@ import globals from 'globals'
 import tseslint from 'typescript-eslint'
 
 export default tseslint.config(
-  { ignores: ['dist', 'dist-tsc', 'node_modules', 'coverage'] },
+  // demo-video/ is a standalone studio-demo-video recorder tool (browser code run via
+  // page.evaluate mixed with Node) — not game source; excluded from the project lint.
+  { ignores: ['dist', 'dist-tsc', 'node_modules', 'coverage', 'demo-video'] },
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {
@@ -22,7 +24,7 @@ export default tseslint.config(
     languageOptions: { globals: { ...globals.browser } },
   },
   {
-    files: ['scripts/**/*.{js,mjs}', 'tests/**/*.ts', '*.{js,mjs,ts}'],
+    files: ['scripts/**/*.{js,mjs}', 'public/**/*.{js,mjs}', 'tests/**/*.ts', '*.{js,mjs,ts}'],
     languageOptions: { globals: { ...globals.node, ...globals.browser } },
   },
 )

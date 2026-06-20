@@ -134,3 +134,12 @@ dist
 .yarn/build-state.yml
 .yarn/install-state.gz
 .pnp.*
+.DS_Store
+
+demo-video
+
+# agent-bridge relay downloaded into the repo dir by `curl -sO .../bridge.mjs` (canonical: public/bridge.mjs)
+/bridge.mjs
+
+# local agent-play transcript scratch files
+/tmp-codex-play.md

@@ -8,7 +8,7 @@ export function textStyle(
   fill: number = COLORS.text,
   weight: 'normal' | 'bold' = 'normal',
 ): TextStyleOptions {
-  return { fontFamily: FONT, fontSize: size, fill, fontWeight: weight, letterSpacing: 0.5 }
+  return { fontFamily: FONT, fontSize: size, fill, fontWeight: weight, letterSpacing: 0 }
 }
 
 export function label(
@@ -125,6 +125,9 @@ export class UIButton extends Container {
 
   /** Layout text lines; call after setting title/sub. iconW reserves left space. */
   layout(iconW = 0, pad = 9, center = false): void {
+    const textW = Math.max(24, this._w - pad * 2 - iconW)
+    this.fitText(this.titleText, textW, 13, 9)
+    this.fitText(this.subText, textW, 11, 8)
     const tx = center ? (this._w - this.titleText.width) / 2 : pad + iconW
     this.titleText.x = tx
     this.subText.x = center ? (this._w - this.subText.width) / 2 : pad + iconW
@@ -136,6 +139,26 @@ export class UIButton extends Container {
     }
     this.iconHost.x = pad + iconW / 2
     this.iconHost.y = this._h / 2
+  }
+
+  /** Compact build-card layout: icon above, title and price centered below. */
+  layoutIconCard(iconY = 24, titleY = 43, subY = 60): void {
+    const textW = Math.max(24, this._w - 10)
+    this.fitText(this.titleText, textW, 12, 9)
+    this.fitText(this.subText, textW, 10, 8)
+    this.iconHost.x = this._w / 2
+    this.iconHost.y = iconY
+    this.titleText.x = (this._w - this.titleText.width) / 2
+    this.titleText.y = titleY
+    this.subText.x = (this._w - this.subText.width) / 2
+    this.subText.y = subY
+  }
+
+  private fitText(t: Text, maxW: number, baseSize: number, minSize: number): void {
+    t.style.fontSize = baseSize
+    if (!t.text || t.width <= maxW) return
+    const next = Math.max(minSize, Math.floor((baseSize * maxW) / t.width))
+    t.style.fontSize = next
   }
 
   redraw(): void {

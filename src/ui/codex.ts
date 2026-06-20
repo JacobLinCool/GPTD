@@ -1,6 +1,7 @@
 import { Container, Graphics, Sprite, Text } from 'pixi.js'
 import { COLORS } from '../config'
 import type { TextureFactory } from '../render/textures'
+import { t } from '../i18n'
 import { drawPanel, UIButton } from './theme'
 
 export interface Rect {
@@ -14,6 +15,13 @@ export interface CodexMessage {
   text: string
   showNext?: boolean
   highlight?: Rect
+  /** agent reason feed: reuse the bubble but hide the tutorial Skip/Next controls */
+  hideControls?: boolean
+  /**
+   * Speaker label shown before the text. `undefined` → the default "CODEX:" persona
+   * (tutorial). A non-empty string → "NAME:" (an agent's own name). "" → no prefix.
+   */
+  speaker?: string
 }
 
 const AVATAR_X = 58
@@ -37,8 +45,8 @@ export class Codex {
     this.highlight.eventMode = 'none'
     this.avatar = new Sprite(factory.codex())
     this.avatar.anchor.set(0.5)
-    this.avatar.width = 56
-    this.avatar.height = 56
+    this.avatar.width = 72
+    this.avatar.height = 72
     this.avatar.x = AVATAR_X
     this.avatar.y = AVATAR_Y
 
@@ -73,11 +81,17 @@ export class Codex {
 
   say(msg: CodexMessage): void {
     this.view.visible = true
-    this.txt.text = 'CODEX:  ' + msg.text
+    const hideControls = msg.hideControls ?? false
+    // Prefix: tutorial (no speaker) keeps the "CODEX:" persona; an agent passes its
+    // own name (e.g. "CLAUDE:") or an empty string for no prefix at all.
+    const prefix = msg.speaker === undefined ? t('codex.prefix') : msg.speaker ? `${msg.speaker}:  ` : ''
+    this.txt.text = prefix + msg.text
     const textH = this.txt.height
     const showNext = msg.showNext ?? false
-    const btnRow = 34
-    const bubbleH = Math.max(64, textH + 22 + btnRow)
+    // Reserve the Skip/Next button row only when the controls are shown; agent
+    // messages hide them, so the bubble shouldn't leave that empty strip below.
+    const btnRow = hideControls ? 0 : 34
+    const bubbleH = Math.max(hideControls ? 48 : 64, textH + 24 + btnRow)
     const by = AVATAR_Y - 24 - bubbleH
 
     this.bubble.clear()
@@ -99,11 +113,12 @@ export class Codex {
 
     this.skipBtn.x = BUBBLE_X + 14
     this.skipBtn.y = by + bubbleH - 30
-    this.skipBtn.layout(0, 0, true)
+    this.skipBtn.setTitle(t('codex.skip')).layout(0, 0, true)
+    this.skipBtn.visible = !hideControls
     this.nextBtn.x = BUBBLE_X + BUBBLE_W - 98
     this.nextBtn.y = by + bubbleH - 32
-    this.nextBtn.setTitle('Got it ▶').layout(0, 0, true)
-    this.nextBtn.visible = showNext
+    this.nextBtn.setTitle(t('codex.next')).layout(0, 0, true)
+    this.nextBtn.visible = showNext && !hideControls
 
     this.targetRect = msg.highlight ?? null
   }
@@ -121,7 +136,7 @@ export class Codex {
     if (this.targetRect) {
       const r = this.targetRect
       const pulse = 0.5 + 0.5 * Math.sin(this.t * 6)
-      const pad = 3 + pulse * 3
+      const pad = 2 + pulse * 2
       this.highlight
         .roundRect(r.x - pad, r.y - pad, r.w + pad * 2, r.h + pad * 2, 8)
         .stroke({ width: 2.5, color: COLORS.warn, alpha: 0.6 + pulse * 0.4 })

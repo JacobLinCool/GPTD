@@ -1,22 +1,44 @@
 import { Application, Container, Graphics } from 'pixi.js'
 import { AudioEngine } from './audio/audio'
 import { DESIGN_H, DESIGN_W, MAX_STEPS, SIM_DT } from './config'
-import type { GameEvent, GameState } from './core/types'
+import type { GameEvent, GameState, PostTrainMethod, PostTrainTarget } from './core/types'
 import { FxManager } from './render/fx'
 import { TextureFactory } from './render/textures'
 import { WorldRenderer } from './render/world'
-import { buyUpgrade, sellTower, startWave, tryBuild } from './sim/actions'
+import {
+  buyUpgrade,
+  continueEndless,
+  cycleRackRole,
+  deployModel,
+  sellTower,
+  startWave,
+  tryBuild,
+  upgradeHardware,
+} from './sim/actions'
+import { startPostTrain, startResearch } from './sim/research'
 import { TOWER_DEFS } from './sim/content'
 import { buildCost } from './sim/actions'
+import { demoCanContinueCampaign, demoPlan, nextDemoWaveNumber } from './sim/demo'
 import { hasLab } from './sim/effects'
 import { isBrownout } from './sim/power'
 import { step } from './sim/sim'
 import { createState } from './sim/state'
+import { getMode, isExpert, setMode } from './mode'
 import { Tutorial } from './tutorial'
 import { BuildBar } from './ui/buildbar'
 import { Codex } from './ui/codex'
 import { Hud } from './ui/hud'
-import { IncidentBanner, InspectPanel, Overlay, TrainingPanel } from './ui/panels'
+import { MetricsHistory } from './ui/metricsHistory'
+import { MetricsPanel } from './ui/metricsPanel'
+import { RequestInspector } from './ui/requestInspector'
+import { tooltip } from './ui/tooltip'
+import { ModelOverview } from './ui/modelOverview'
+import { IncidentBanner, InspectPanel, Overlay, TrainingPanel, WaveReportPanel } from './ui/panels'
+import { serializeState, type AgentSnapshot } from './agent/snapshot'
+import { explainRejection } from './agent/diagnose'
+
+const SPEED_STEPS = [1, 2, 3, 6, 12] as const
+type SpeedStep = (typeof SPEED_STEPS)[number]
 
 export class Game {
   readonly root = new Container()
@@ -25,10 +47,15 @@ export class Game {
   private fx = new FxManager()
   private world: WorldRenderer
   private hud: Hud
+  private metricsHistory = new MetricsHistory()
+  private metrics = new MetricsPanel()
   private buildbar: BuildBar
   private inspect: InspectPanel
+  private requestInspect = new RequestInspector()
   private training: TrainingPanel
+  private models: ModelOverview
   private banner: IncidentBanner
+  private report: WaveReportPanel
   private overlay: Overlay
   private codex: Codex
   private tutorial: Tutorial
@@ -36,12 +63,20 @@ export class Game {
 
   private selectedDefId: string | null = null
   private selectedTowerId: number | null = null
+  private selectedRequestId: number | null = null
   private trainingOpen = false
+  private modelsOpen = false
+  private metricsOpen = false
   private paused = false
-  private speed = 1
+  private speed: SpeedStep = 1
   private acc = 0
   private brownoutCd = 0
   private musicOn = true
+  private demoActive = false
+  private demoPlannedWave = 0
+  private demoBuildTimer = 0
+  private agentMode = false
+  private agentName: string | undefined
 
   constructor(app: Application) {
     this.state = createState((Math.floor(performance.now()) ^ 0x5f3759df) >>> 0)
@@ -55,19 +90,37 @@ export class Game {
       onMusic: () => {
         this.musicOn = this.audio.toggleMusic()
       },
+      onLang: () => this.overlay.refresh(),
+      onModels: () => this.toggleModels(),
+      onMetrics: () => this.toggleMetrics(),
     })
     this.buildbar = new BuildBar(this.factory, {
       onSelect: (id) => this.selectBuild(id),
       onStartWave: () => this.doStartWave(),
       onTrain: () => this.openTraining(),
     })
-    this.inspect = new InspectPanel((id) => this.doSell(id))
+    this.inspect = new InspectPanel({
+      onSell: (id) => this.doSell(id),
+      onDeploy: (id, modelId) => this.doDeploy(id, modelId),
+      onUpgradeHw: (id) => this.doUpgradeHardware(id),
+      onRole: (id) => this.doRackRole(id),
+    })
     this.training = new TrainingPanel(
       (id) => this.doBuy(id),
+      (id) => this.doResearch(id),
+      (baseIds, method, target, effort) => this.doPostTrain(baseIds, method, target, effort),
       () => (this.trainingOpen = false),
     )
+    this.models = new ModelOverview(() => (this.modelsOpen = false))
     this.banner = new IncidentBanner()
-    this.overlay = new Overlay(() => this.onOverlayAction())
+    this.report = new WaveReportPanel()
+    this.overlay = new Overlay(
+      () => this.onOverlayAction(),
+      () => {
+        if (continueEndless(this.state)) this.overlay.hide()
+      },
+      () => this.startDemo(),
+    )
     this.codex = new Codex(this.factory, {
       onNext: () => this.tutorial.requestNext(),
       onSkip: () => this.tutorial.skip(),
@@ -79,15 +132,21 @@ export class Game {
       bg,
       this.world.view,
       this.banner.view,
+      this.report.view,
       this.inspect.view,
+      this.requestInspect.view,
       this.hud.view,
       this.buildbar.view,
+      this.metrics.view,
       this.codex.view,
       this.training.view,
+      this.models.view,
       this.overlay.view,
+      tooltip().view, // always top-most
     )
 
     this.world.onTileTap = (c, r) => this.onTileTap(c, r)
+    this.world.onRequestTap = (id) => this.onRequestTap(id)
     this.overlay.show('menu', this.state)
     this.installKeys()
   }
@@ -99,6 +158,7 @@ export class Game {
   /** Read-only state summary for debugging / E2E harness. */
   get snapshot(): {
     phase: string
+    mode: string
     wave: number
     cash: number
     trust: number
@@ -107,10 +167,19 @@ export class Game {
     towers: number
     served: number
     leaked: number
+    report: number | null
+    loadouts: string[]
+    models: number
+    research: string | null
+    endless: boolean
+    derived: number
+    posttrain: string | null
+    demo: boolean
   } {
     const s = this.state
     return {
       phase: s.phase,
+      mode: getMode(),
       wave: s.waveIndex + 1,
       cash: Math.floor(s.meters.cash),
       trust: Math.round(s.meters.trust),
@@ -119,6 +188,143 @@ export class Game {
       towers: s.towers.length,
       served: s.stats.served,
       leaked: s.stats.leaked,
+      report: s.lastReport ? s.lastReport.waveIndex + 1 : null,
+      loadouts: s.towers
+        .filter((t) => t.def.kind === 'server')
+        .map((t) => `${t.hwId ?? '?'}:${t.modelId ?? '?'}`),
+      models: Object.keys(s.models).length,
+      research: (s.research.infra ?? s.research.posttrain ?? s.research.eval)?.id ?? null,
+      endless: s.endless,
+      // S7/S9 E2E: how many player-derived checkpoints exist + the live posttrain run.
+      derived: Object.keys(s.derivedModels).length,
+      posttrain: s.research.posttrain?.meta?.method ?? null,
+      demo: this.demoActive,
+    }
+  }
+
+  // ---- agent bridge (scripts/bridge.mjs + src/agent/connector.ts) ----
+  /** True once a remote agent has taken over; suppresses the tutorial bubble. */
+  get isAgentMode(): boolean {
+    return this.agentMode
+  }
+
+  /** Hand control to a remote agent: leave the menu, kill demo/tutorial chatter. */
+  enableAgentMode(): void {
+    this.agentMode = true
+    this.demoActive = false
+    if (this.state.phase === 'menu') {
+      this.state.phase = 'build'
+      this.overlay.hide()
+    }
+    // Agent MODE is on, but nothing is connected yet — the bridge/agent dials in
+    // later (the connector's onopen posts the real "connected" note).
+    this.agentNote('Agent mode on — waiting for the bridge. I will narrate each move here once it connects.')
+  }
+
+  /** Free-form status line from the agent (no action), shown in the Codex bubble. */
+  agentNote(text: string): void {
+    this.codex.say({ text, hideControls: true, speaker: this.agentName ?? '' })
+  }
+
+  /** Compact, JSON-safe decision context for the agent. */
+  agentSnapshot(): AgentSnapshot {
+    return serializeState(this.state)
+  }
+
+  /**
+   * Execute one whitelisted action on behalf of the agent. The optional `reason`
+   * is shown in the Codex bubble so a human watching the tab sees WHY each move
+   * was made, in real time, alongside the live board.
+   */
+  agentAct(cmd: { fn: string; args?: unknown[]; reason?: string; name?: string }): {
+    ok: boolean
+    result?: unknown
+    error?: string
+  } {
+    if (!this.agentMode) return { ok: false, error: 'agent mode is off' }
+    const s = this.state
+    const args = cmd.args ?? []
+    // The agent self-identifies (e.g. "Claude" / "Codex"); remember it so the bubble
+    // shows who is playing instead of the default "CODEX:" tutorial persona.
+    if (cmd.name) this.agentName = String(cmd.name).trim().slice(0, 16).toUpperCase()
+    if (cmd.reason) this.codex.say({ text: cmd.reason, hideControls: true, speaker: this.agentName ?? '' })
+    try {
+      let ok = false
+      switch (cmd.fn) {
+        case 'startGame':
+          if (s.phase === 'menu') {
+            s.phase = 'build'
+            this.overlay.hide()
+          }
+          ok = true
+          break
+        case 'build': {
+          const [defId, col, row] = args as [string, number, number]
+          ok = tryBuild(s, defId, col, row)
+          if (ok) this.selectedTowerId = s.towers.find((t) => t.col === col && t.row === row)?.id ?? null
+          break
+        }
+        case 'sell': {
+          const [id] = args as [number]
+          ok = sellTower(s, id)
+          if (ok && this.selectedTowerId === id) this.selectedTowerId = null
+          break
+        }
+        case 'deploy': {
+          const [id, modelId] = args as [number, string]
+          ok = deployModel(s, id, modelId)
+          if (ok) this.selectedTowerId = id
+          break
+        }
+        case 'upgradeHardware': {
+          const [id] = args as [number]
+          ok = upgradeHardware(s, id)
+          if (ok) this.selectedTowerId = id
+          break
+        }
+        case 'cycleRackRole': {
+          const [id] = args as [number]
+          ok = cycleRackRole(s, id)
+          if (ok) this.selectedTowerId = id
+          break
+        }
+        case 'buyUpgrade': {
+          const [id] = args as [string]
+          ok = buyUpgrade(s, id)
+          break
+        }
+        case 'research': {
+          const [id] = args as [string]
+          ok = startResearch(s, id)
+          break
+        }
+        case 'postTrain': {
+          const [rawBases, method, target, effort] = args as [string[] | string, PostTrainMethod, PostTrainTarget, number]
+          // Accept a single id (the GET /do flat-args form) or an array (POST JSON).
+          const baseIds = Array.isArray(rawBases) ? rawBases : rawBases != null ? [rawBases] : []
+          ok = startPostTrain(s, baseIds, method, target, effort)
+          break
+        }
+        case 'startWave':
+          this.trainingOpen = false
+          this.modelsOpen = false
+          ok = startWave(s)
+          break
+        case 'continueEndless':
+          ok = continueEndless(s)
+          break
+        case 'select': {
+          const [id] = args as [number]
+          this.selectedTowerId = s.towers.some((t) => t.id === id) ? id : null
+          ok = this.selectedTowerId === id
+          break
+        }
+        default:
+          return { ok: false, error: `unknown action: ${cmd.fn}` }
+      }
+      return ok ? { ok: true } : { ok: false, error: explainRejection(s, cmd.fn, args) }
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) }
     }
   }
 
@@ -131,30 +337,41 @@ export class Game {
       } else if (e.key === '1') this.speed = 1
       else if (e.key === '2') this.speed = 2
       else if (e.key === '3') this.speed = 3
+      else if (e.key === '6') this.speed = 6
+      else if (e.key === '0') this.speed = 12
       else if (e.key === 'Escape') {
-        if (this.trainingOpen) this.trainingOpen = false
+        if (this.modelsOpen) this.modelsOpen = false
+        else if (this.trainingOpen) this.trainingOpen = false
         else {
           this.selectedDefId = null
           this.selectedTowerId = null
+          this.selectedRequestId = null
         }
       } else if (e.key.toLowerCase() === 'm') this.audio.toggleMute()
+      else if (e.key === '`' || e.key === 'Tab') {
+        e.preventDefault()
+        this.toggleMetrics()
+      }
     })
   }
 
   // ---- actions ----
   private selectBuild(id: string): void {
+    if (this.demoActive) return
     this.selectedDefId = this.selectedDefId === id ? null : id
     this.selectedTowerId = null
+    this.selectedRequestId = null
     this.audio.click()
   }
 
   private onTileTap(col: number, row: number): void {
     if (this.state.phase === 'menu' || this.state.phase === 'won' || this.state.phase === 'lost') return
-    if (this.trainingOpen) return
+    if (this.trainingOpen || this.modelsOpen) return
     const existing = this.state.towers.find((t) => t.col === col && t.row === row)
     if (existing) {
       this.selectedTowerId = existing.id
       this.selectedDefId = null
+      this.selectedRequestId = null
       this.audio.click()
       return
     }
@@ -167,26 +384,79 @@ export class Game {
     this.selectedTowerId = null
   }
 
+  /**
+   * S4: click a request packet to open the RequestInspector (Expert Mode). The
+   * world reports the nearest request to the tap when no build tool is active.
+   */
+  private onRequestTap(id: number): void {
+    if (!isExpert()) return
+    if (this.trainingOpen || this.modelsOpen || this.selectedDefId) return
+    this.selectedRequestId = id
+    this.selectedTowerId = null
+    this.audio.click()
+  }
+
   private doSell(id: number): void {
+    if (this.demoActive) return
     sellTower(this.state, id)
     this.selectedTowerId = null
   }
   private doBuy(id: string): void {
+    if (this.demoActive) return
     buyUpgrade(this.state, id)
+  }
+  private doResearch(id: string): boolean {
+    if (this.demoActive) return false
+    return startResearch(this.state, id)
+  }
+  private doPostTrain(
+    baseIds: string[],
+    method: PostTrainMethod,
+    target: PostTrainTarget,
+    effort: number,
+  ): boolean {
+    if (this.demoActive) return false
+    return startPostTrain(this.state, baseIds, method, target, effort)
+  }
+  private doDeploy(id: number, modelId: string): boolean {
+    if (this.demoActive) return false
+    return deployModel(this.state, id, modelId)
+  }
+  private doUpgradeHardware(id: number): boolean {
+    if (this.demoActive) return false
+    return upgradeHardware(this.state, id)
+  }
+  private doRackRole(id: number): boolean {
+    if (this.demoActive) return false
+    return cycleRackRole(this.state, id)
   }
   private openTraining(): void {
     if (this.state.phase === 'build' && hasLab(this.state)) this.trainingOpen = true
   }
+  /** S7 ModelOverview: toggle the all-checkpoints modal (Expert Mode only). */
+  private toggleModels(): void {
+    if (!isExpert()) return
+    this.modelsOpen = !this.modelsOpen
+    if (this.modelsOpen) this.trainingOpen = false
+  }
+  /** S2 floating telemetry panel — Expert Mode only; a non-blocking overlay. */
+  private toggleMetrics(): void {
+    if (!isExpert()) return
+    this.metricsOpen = !this.metricsOpen
+  }
   private doStartWave(): void {
+    if (this.demoActive) return
     if (this.state.phase !== 'build') return
     this.trainingOpen = false
+    this.modelsOpen = false
     startWave(this.state)
   }
   private togglePause(): void {
     this.paused = !this.paused
   }
   private cycleSpeed(): void {
-    this.speed = this.speed === 1 ? 2 : this.speed === 2 ? 3 : 1
+    const i = SPEED_STEPS.indexOf(this.speed)
+    this.speed = SPEED_STEPS[(i + 1) % SPEED_STEPS.length]
   }
   private onOverlayAction(): void {
     this.audio.resume()
@@ -194,25 +464,80 @@ export class Game {
       this.state.phase = 'build'
       this.overlay.hide()
     } else {
-      // restart
+      // Restart → back to the title screen, where the display mode can be
+      // changed (it is locked while a run is in progress).
       this.state = createState((Math.floor(performance.now()) ^ 0xa5a5a5a5) >>> 0)
-      this.state.phase = 'build'
+      this.demoActive = false
+      this.demoPlannedWave = 0
+      this.demoBuildTimer = 0
       this.selectedDefId = null
       this.selectedTowerId = null
       this.trainingOpen = false
+      this.modelsOpen = false
+      this.metricsOpen = false
       this.speed = 1
       this.paused = false
       this.tutorial.reset()
-      this.overlay.hide()
+      this.overlay.show('menu', this.state)
     }
+  }
+
+  private startDemo(): void {
+    this.audio.resume()
+    setMode('expert')
+    this.state = createState(2026)
+    this.state.phase = 'build'
+    this.demoActive = true
+    this.demoPlannedWave = 0
+    this.demoBuildTimer = 0
+    this.selectedDefId = null
+    this.selectedTowerId = null
+    this.selectedRequestId = null
+    this.trainingOpen = false
+    this.modelsOpen = false
+    this.paused = false
+    this.speed = 12
+    this.tutorial.reset()
+    this.overlay.hide()
+  }
+
+  private updateDemo(dt: number): void {
+    if (!this.demoActive) return
+    const s = this.state
+    if (s.phase === 'won') {
+      if (continueEndless(s)) {
+        this.overlay.hide()
+        this.demoPlannedWave = 0
+        this.demoBuildTimer = 0.35
+        return
+      }
+    }
+    if (s.phase === 'lost') {
+      this.demoActive = false
+      this.speed = 1
+      return
+    }
+    if (this.trainingOpen || this.modelsOpen) return
+    this.selectedDefId = null
+    if (s.phase !== 'build') return
+    const wave = nextDemoWaveNumber(s)
+    if (this.demoPlannedWave !== wave) {
+      demoPlan(s, wave)
+      this.demoPlannedWave = wave
+      this.demoBuildTimer = 0.35
+      return
+    }
+    this.demoBuildTimer -= dt
+    if (this.demoBuildTimer <= 0 && demoCanContinueCampaign(s)) startWave(s)
   }
 
   // ---- main tick ----
   tick(dtMs: number): void {
     const dt = Math.min(0.05, dtMs / 1000)
     const s = this.state
+    this.updateDemo(dt)
 
-    const simRunning = s.phase === 'wave' && !this.paused && !this.trainingOpen
+    const simRunning = s.phase === 'wave' && !this.paused && !this.trainingOpen && !this.modelsOpen
     if (simRunning) {
       this.acc += dt * this.speed
       let n = 0
@@ -242,12 +567,16 @@ export class Game {
     if (this.selectedTowerId != null && !s.towers.some((t) => t.id === this.selectedTowerId)) {
       this.selectedTowerId = null
     }
+    if (this.selectedRequestId != null && !s.requests.some((r) => r.id === this.selectedRequestId && r.alive)) {
+      this.selectedRequestId = null
+    }
     if (this.selectedDefId && s.meters.cash < buildCost(s, TOWER_DEFS[this.selectedDefId])) {
       // keep selected but it shows red ghost
     }
 
     const wv = {
       selectedId: this.selectedTowerId,
+      selectedRequestId: this.selectedRequestId,
       buildDef: this.selectedDefId ? TOWER_DEFS[this.selectedDefId] : null,
       canAfford: this.selectedDefId ? s.meters.cash >= buildCost(s, TOWER_DEFS[this.selectedDefId]) : false,
     }
@@ -257,14 +586,28 @@ export class Game {
       speed: this.speed,
       muted: this.audio.isMuted,
       musicOn: this.musicOn,
+      metricsOpen: this.metricsOpen,
     })
+    // S2 telemetry: sample the rolling history every tick (gated on a live wave
+    // inside), then render the floating panel only while it is open (Expert Mode).
+    this.metricsHistory.sample(s)
+    if (!isExpert()) this.metricsOpen = false
+    this.metrics.view.visible = this.metricsOpen
+    if (this.metricsOpen) this.metrics.update(this.metricsHistory)
+    const modalOpen = this.trainingOpen || this.modelsOpen
     this.buildbar.update(s, this.selectedDefId)
-    this.inspect.update(s, this.trainingOpen ? null : this.selectedTowerId)
+    this.inspect.update(s, modalOpen ? null : this.selectedTowerId)
+    this.requestInspect.update(s, modalOpen ? null : this.selectedRequestId)
     this.banner.update(s)
+    this.report.update(s)
     this.training.view.visible = this.trainingOpen
     if (this.trainingOpen) this.training.update(s)
+    this.models.view.visible = this.modelsOpen
+    if (this.modelsOpen) this.models.update(s)
 
-    if (!this.trainingOpen) this.tutorial.update(s)
+    const reportOpen = this.report.view.visible
+    if (this.trainingOpen || this.modelsOpen || reportOpen) this.codex.hide()
+    else if (!this.agentMode) this.tutorial.update(s)
     this.codex.update(dt)
 
     if (s.phase === 'won' && !this.overlay.view.visible) this.overlay.show('won', s)
@@ -286,7 +629,7 @@ export class Game {
       case 'serve':
         this.fx.serve(ev.x, ev.y, ev.kind, ev.amount)
         if (ev.kind === 'good') this.audio.serveGood()
-        else if (ev.kind === 'bad') this.audio.serveBad()
+        else if (ev.kind === 'bad' || ev.kind === 'over_refused') this.audio.serveBad()
         else this.audio.serveUnsafe()
         break
       case 'cache':
@@ -311,6 +654,9 @@ export class Game {
         break
       case 'train':
         this.audio.train()
+        break
+      case 'research-done':
+        this.audio.waveClear()
         break
       case 'win':
         this.audio.win()

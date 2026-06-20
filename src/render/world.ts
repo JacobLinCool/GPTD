@@ -1,7 +1,16 @@
-import { Container, Graphics, Sprite } from 'pixi.js'
+import { Container, Graphics, Sprite, Text } from 'pixi.js'
 import { COLORS, GRID_COLS, GRID_ROWS, GRID_X, GRID_Y, TILE } from '../config'
 import type { GameState, TowerDef } from '../core/types'
-import { CORE_POS, WAYPOINTS, isBuildable, isPathTile, tileCenter, worldToTile } from '../sim/pathing'
+import { isExpert } from '../mode'
+import { t } from '../i18n'
+import {
+  loadoutOf,
+  serverBandwidthCeiling,
+  serverComputeCeiling,
+  serverFitsMemory,
+  serverSpec,
+} from '../sim/effects'
+import { CORE_POS, LANE_PATHS, isBuildable, isPathTile, tileCenter, worldToTile } from '../sim/pathing'
 import type { FxManager } from './fx'
 import { TextureFactory } from './textures'
 
@@ -10,6 +19,8 @@ const REQ_SIZE = 24
 
 export interface WorldView {
   selectedId: number | null
+  /** S4: the request packet selected for the RequestInspector (Expert Mode). */
+  selectedRequestId?: number | null
   buildDef: TowerDef | null
   canAfford: boolean
 }
@@ -25,15 +36,23 @@ export class WorldRenderer {
   private routeG = new Graphics()
   private requestHost = new Container()
   private barsG = new Graphics()
+  private teleG = new Graphics()
+  private tagHost = new Container()
   private coreGlow = new Graphics()
   private coreSprite: Sprite
   private interact = new Graphics()
 
   private towerSprites = new Map<number, Sprite>()
+  /** which rack tier each server sprite was baked for (re-texture on upgrade) */
+  private towerHw = new Map<number, string>()
   private requestSprites = new Map<number, Sprite>()
+  private tagSprites = new Map<number, Text>()
   hoverCol = -1
   hoverRow = -1
   onTileTap: (col: number, row: number) => void = () => {}
+  /** S4: report the nearest request packet to a tap (when no build tool is active). */
+  onRequestTap: (id: number) => void = () => {}
+  private lastState: GameState | null = null
 
   constructor(
     private factory: TextureFactory,
@@ -47,6 +66,8 @@ export class WorldRenderer {
       this.rangeG,
       this.towerHost,
       this.overlayG,
+      this.teleG,
+      this.tagHost,
       this.routeG,
       this.requestHost,
       this.barsG,
@@ -84,24 +105,30 @@ export class WorldRenderer {
     }
     // lane conduit
     const l = this.lane
-    for (let i = 0; i < WAYPOINTS.length - 1; i++) {
-      const a = WAYPOINTS[i]
-      const b = WAYPOINTS[i + 1]
-      l.moveTo(a.x, a.y)
-        .lineTo(b.x, b.y)
-        .stroke({ width: TILE - 6, color: COLORS.laneFloor })
+    for (const lane of LANE_PATHS) {
+      for (let i = 0; i < lane.waypoints.length - 1; i++) {
+        const a = lane.waypoints[i]
+        const b = lane.waypoints[i + 1]
+        l.moveTo(a.x, a.y)
+          .lineTo(b.x, b.y)
+          .stroke({ width: TILE - 6, color: COLORS.laneFloor })
+      }
     }
-    for (let i = 0; i < WAYPOINTS.length - 1; i++) {
-      const a = WAYPOINTS[i]
-      const b = WAYPOINTS[i + 1]
-      l.moveTo(a.x, a.y)
-        .lineTo(b.x, b.y)
-        .stroke({ width: TILE - 6, color: COLORS.laneEdge, alpha: 0.5 })
-      l.moveTo(a.x, a.y).lineTo(b.x, b.y).stroke({ width: 4, color: COLORS.laneGlow, alpha: 0.5 })
+    for (const lane of LANE_PATHS) {
+      for (let i = 0; i < lane.waypoints.length - 1; i++) {
+        const a = lane.waypoints[i]
+        const b = lane.waypoints[i + 1]
+        l.moveTo(a.x, a.y)
+          .lineTo(b.x, b.y)
+          .stroke({ width: TILE - 6, color: COLORS.laneEdge, alpha: 0.5 })
+        l.moveTo(a.x, a.y).lineTo(b.x, b.y).stroke({ width: 4, color: COLORS.laneGlow, alpha: 0.5 })
+      }
     }
-    // ingress marker
-    const start = WAYPOINTS[0]
-    l.circle(start.x + TILE, start.y, 5).fill({ color: COLORS.laneGlow, alpha: 0.8 })
+    // ingress markers
+    for (const lane of LANE_PATHS) {
+      const entry = lane.waypoints[0]
+      l.circle(entry.x, entry.y, 5).fill({ color: COLORS.laneGlow, alpha: 0.8 })
+    }
   }
 
   private setupInteraction(): void {
@@ -122,19 +149,121 @@ export class WorldRenderer {
     })
     this.interact.on('pointertap', (e) => {
       const p = this.view.toLocal(e.global)
+      // S4: if a request packet is right under the tap (and the tile is empty of a
+      // tower / no build tool), open the RequestInspector for it. Tower/tile taps
+      // still win when a server occupies that tile.
+      const req = this.pickRequest(p.x, p.y)
       const { col, row } = worldToTile(p.x, p.y)
+      const onTower =
+        col >= 0 &&
+        row >= 0 &&
+        !!this.lastState?.towers.some((t) => t.col === col && t.row === row)
+      if (req != null && !onTower) {
+        this.onRequestTap(req)
+        return
+      }
       if (col >= 0 && col < GRID_COLS && row >= 0 && row < GRID_ROWS) this.onTileTap(col, row)
     })
   }
 
+  /** Nearest alive request within a small radius of (x,y), or null. */
+  private pickRequest(x: number, y: number): number | null {
+    if (!this.lastState) return null
+    let best: number | null = null
+    let bd = (REQ_SIZE * 0.8) ** 2
+    for (const r of this.lastState.requests) {
+      if (!r.alive) continue
+      const dx = r.x - x
+      const dy = r.y - y
+      const d = dx * dx + dy * dy
+      if (d < bd) {
+        bd = d
+        best = r.id
+      }
+    }
+    return best
+  }
+
   sync(s: GameState, wv: WorldView, dt: number): void {
+    this.lastState = s
     this.syncTowers(s)
     this.syncRequests(s)
     this.drawOverlays(s, wv)
     this.drawRouting(s)
-    this.drawBars(s)
+    this.drawBars(s, wv.selectedRequestId ?? null)
+    this.drawTelemetry(s)
     this.drawHint(s, wv)
     this.updateCore(s, dt)
+  }
+
+  /**
+   * Expert Mode rack telemetry: a live load bar under each server and a
+   * roofline-bottleneck tag in its corner (compute-bound / bandwidth-bound /
+   * model does not fit VRAM). Display-only — reads the same sim the Normal
+   * Mode player runs.
+   */
+  private drawTelemetry(s: GameState): void {
+    const g = this.teleG
+    g.clear()
+    const expert = isExpert()
+    const seen = new Set<number>()
+    if (expert) {
+      for (const tw of s.towers) {
+        if (tw.def.kind !== 'server') continue
+        seen.add(tw.id)
+        let tag = this.tagSprites.get(tw.id)
+        if (!tag) {
+          tag = new Text({
+            text: '',
+            style: { fontFamily: 'ui-monospace, Menlo, Consolas, monospace', fontSize: 10, fontWeight: 'bold' },
+          })
+          tag.resolution = 2
+          tag.anchor.set(1, 0)
+          this.tagHost.addChild(tag)
+          this.tagSprites.set(tw.id, tag)
+        }
+        const lo = loadoutOf(s, tw)
+        const fits = serverFitsMemory(s, lo)
+        const cc = serverComputeCeiling(s, lo)
+        const bc = serverBandwidthCeiling(s, lo)
+        const computeBound = cc <= bc
+        tag.text = tw.training
+          ? t('world.tagTraining')
+          : !fits
+            ? t('world.tagNoFit')
+            : computeBound
+              ? t('world.tagCompute')
+              : t('world.tagBandwidth')
+        tag.style.fill = tw.training
+          ? COLORS.data
+          : !fits
+            ? COLORS.danger
+            : computeBound
+              ? COLORS.power
+              : COLORS.cooling
+        tag.x = tw.x + TILE / 2 - 3
+        tag.y = tw.y - TILE / 2 + 2
+        // live batch-slot load while serving
+        if (s.phase === 'wave' && tw.online) {
+          const w = TILE - 12
+          const x = tw.x - w / 2
+          const y = tw.y + TILE / 2 - 7
+          g.rect(x, y, w, 3).fill({ color: 0x0a0e14, alpha: 0.85 })
+          if (tw.load > 0) {
+            g.rect(x, y, w * tw.load, 3).fill({
+              color: tw.load >= 1 ? COLORS.warn : COLORS.good,
+              alpha: 0.95,
+            })
+          }
+        }
+      }
+    }
+    for (const [id, tag] of this.tagSprites) {
+      if (!expert || !seen.has(id)) {
+        tag.destroy()
+        this.tagSprites.delete(id)
+      }
+    }
   }
 
   /** Routing lines: each routed request is steered toward its best-matching server. */
@@ -142,7 +271,7 @@ export class WorldRenderer {
     const g = this.routeG
     g.clear()
     if (s.routingPower <= 0) return
-    const servers = s.towers.filter((t) => t.def.kind === 'server' && t.online)
+    const servers = s.towers.filter((t) => t.def.kind === 'server' && t.online && !t.training)
     if (!servers.length) return
     const maxD2 = (6 * TILE) ** 2
     for (const r of s.requests) {
@@ -150,7 +279,7 @@ export class WorldRenderer {
       let best: { x: number; y: number } | null = null
       let bd = maxD2
       for (const t of servers) {
-        if (t.def.spec !== r.def.affinity) continue
+        if (serverSpec(loadoutOf(s, t)) !== r.def.primaryAxis) continue
         const dx = t.x - r.x
         const dy = t.y - r.y
         const d = dx * dx + dy * dy
@@ -176,8 +305,14 @@ export class WorldRenderer {
     for (const t of s.towers) {
       seen.add(t.id)
       let sp = this.towerSprites.get(t.id)
+      if (sp && t.def.kind === 'server' && t.hwId && this.towerHw.get(t.id) !== t.hwId) {
+        // rack tier upgraded in place — re-bake the sprite
+        sp.destroy()
+        this.towerSprites.delete(t.id)
+        sp = undefined
+      }
       if (!sp) {
-        sp = new Sprite(this.factory.tower(t.def))
+        sp = new Sprite(this.factory.tower(t.def, t.hwId))
         sp.anchor.set(0.5)
         sp.width = TOWER_SIZE
         sp.height = TOWER_SIZE
@@ -185,12 +320,14 @@ export class WorldRenderer {
         sp.y = t.y
         this.towerHost.addChild(sp)
         this.towerSprites.set(t.id, sp)
+        if (t.hwId) this.towerHw.set(t.id, t.hwId)
       }
       // muzzle pop
       const pop = t.muzzle > 0 ? 1 + t.muzzle * 0.6 : 1
       sp.width = TOWER_SIZE * pop
       sp.height = TOWER_SIZE * pop
       if (!t.online) sp.tint = 0x55607a
+      else if (t.training) sp.tint = 0xc792ea // requisitioned for a training run
       else if (t.def.kind === 'server' && t.throttle < 1) sp.tint = 0xff9a7a
       else sp.tint = 0xffffff
       sp.alpha = t.online ? 1 : 0.7
@@ -199,6 +336,7 @@ export class WorldRenderer {
       if (!seen.has(id)) {
         sp.destroy()
         this.towerSprites.delete(id)
+        this.towerHw.delete(id)
       }
     }
   }
@@ -234,7 +372,7 @@ export class WorldRenderer {
     }
   }
 
-  private drawBars(s: GameState): void {
+  private drawBars(s: GameState, selectedRequestId: number | null): void {
     const g = this.barsG
     g.clear()
     for (const r of s.requests) {
@@ -252,6 +390,10 @@ export class WorldRenderer {
       // routed tag
       if (r.routed) {
         g.rect(r.x + REQ_SIZE / 2 - 3, y - 3, 4, 4).fill({ color: COLORS.power, alpha: 0.9 })
+      }
+      // S4 selection ring
+      if (selectedRequestId === r.id) {
+        g.circle(r.x, r.y, REQ_SIZE / 2 + 4).stroke({ width: 2, color: COLORS.sla, alpha: 0.95 })
       }
     }
   }
