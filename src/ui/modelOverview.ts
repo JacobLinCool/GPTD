@@ -22,6 +22,7 @@ import { Container, Graphics, Text } from 'pixi.js'
 import { COLORS, DESIGN_H, DESIGN_W, FRAMEWORK_GB } from '../config'
 import type { CapabilityAxis, GameState, ModelDef } from '../core/types'
 import { MODEL_DEFS, sizeLabel } from '../sim/content'
+import { AA_BENCH } from '../sim/roster.bench.generated'
 import { loadout, resolveModel, serverFitsMemory } from '../sim/effects'
 import { fmtDollarsPerMtoken, fmtGb, fmtTokS, rackDollarsPerMtoken, rooflineOf } from './metrics'
 import { QualitySparks } from './charts'
@@ -626,14 +627,21 @@ export class ModelOverview {
     } else if (m.real) {
       lines.push({ text: t('models.detail.real'), fill: COLORS.textBright })
       lines.push({ text: t('models.detail.dev', { dev: m.real.developer, lic: m.real.license, rel: m.real.released }), fill: COLORS.text })
-      lines.push({ text: t('models.detail.weights', { ow: m.real.openWeights ? t('reqi.yes') : t('reqi.no'), conf: m.real.confidence }), fill: COLORS.textDim })
-      const b = m.real.benchmarks
+      // The six real Artificial Analysis benchmarks that feed this checkpoint's
+      // qualityBy (src/sim/roster.bench.generated.ts). Wraps to two lines.
+      const bench = AA_BENCH[m.id]
       const benchParts: string[] = []
-      if (b.mmluPro != null) benchParts.push('MMLU-Pro ' + b.mmluPro)
-      if (b.gpqaDiamond != null) benchParts.push('GPQA ' + b.gpqaDiamond)
-      if (b.liveCodeBench != null) benchParts.push('LCB ' + b.liveCodeBench)
-      if (b.sweBench != null) benchParts.push('SWE ' + b.sweBench)
-      if (b.aime != null) benchParts.push('AIME ' + b.aime)
+      if (bench) {
+        const add = (lbl: string, v: number | undefined): void => {
+          if (v != null) benchParts.push(`${lbl} ${Math.round(v)}`)
+        }
+        add('GPQA', bench.gpqaDiamond)
+        add('IFBench', bench.ifBench)
+        add('LCR', bench.lcr)
+        add('SciCode', bench.sciCode)
+        add('TB-Hard', bench.terminalBenchHard)
+        add('HLE', bench.hle)
+      }
       lines.push({ text: benchParts.join(' · ') || t('models.detail.noBench'), fill: COLORS.sla })
     }
 

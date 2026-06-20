@@ -70,8 +70,11 @@ import type { IncidentDef, ModelDef, RequestTypeDef, TowerDef, UpgradeDef, WaveD
  * (falling back to the English in content.ts); player-derived checkpoints carry
  * their generated name verbatim (it is composed, not a translatable string).
  */
+/** Drop a trailing variant annotation, e.g. "DeepSeek V4 Flash (Reasoning, Max Effort)" → "DeepSeek V4 Flash". */
+const stripVariant = (s: string): string => s.replace(/\s*\([^)]*\)\s*$/, '')
+
 export const modelName = (m: ModelDef | null | undefined): string =>
-  m ? (m.origin === 'derived' ? m.name : t(`model.${m.id}.name`, undefined, m.name)) : ''
+  m ? (m.origin === 'derived' ? m.name : stripVariant(t(`model.${m.id}.name`, undefined, m.name))) : ''
 
 export const reqName = (d: RequestTypeDef) => t(`req.${d.id}.name`, undefined, d.name)
 export const reqDesc = (d: RequestTypeDef) => t(`req.${d.id}.desc`, undefined, d.desc)

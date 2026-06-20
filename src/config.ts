@@ -67,6 +67,14 @@ export const METER_MAX = { trust: 100, sla: 100 }
 export const CREDIT_USD = 1000
 
 /**
+ * §4.5 research data investment. Every authored research `dataCost` (the 22 infra
+ * nodes + post-training method unlocks + red-team evals) is scaled by this so
+ * unlocking a technique is a meaningful Data sink — real R&D, not pocket change.
+ * Tuned against the autoplay depth gate (raising it slows the tech tree).
+ */
+export const RESEARCH_DATA_SCALE = 1.5
+
+/**
  * §6.6 traffic multiplier. Each request SPRITE stands for this many real traffic
  * streams, so the real $/Mtoken income on one sprite is meaningful against real
  * GPU capex/operating cost. Applied to BOTH token revenue AND the wall-clock

@@ -1,4 +1,4 @@
-import { COLORS, CREDIT_USD } from '../config'
+import { COLORS, CREDIT_USD, RESEARCH_DATA_SCALE } from '../config'
 import type {
   AlignmentProfile,
   ServerSpec,
@@ -1189,6 +1189,9 @@ evalNode(
   'r_eval_redteam_v2', 'Red-Team Eval II', 18, 1800, ['r_eval_redteam_v1'],
   'A deeper red-team campaign. Further cuts over-refusal, adds a touch more recall, and unlocks PII-leak detection.',
 )
+
+// §4.5 scale every research data cost into a meaningful investment (RESEARCH_DATA_SCALE).
+for (const d of Object.values(RESEARCH_DEFS)) d.dataCost = Math.round(d.dataCost * RESEARCH_DATA_SCALE)
 
 export const RESEARCH_LIST = Object.values(RESEARCH_DEFS)
 

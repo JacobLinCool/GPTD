@@ -101,6 +101,7 @@ Extracted from the **code** (the source of truth: `src/sim/**` + `src/config.ts`
 | `TRAFFIC_SCALE` | 100000 | Real streams per sprite; scales BOTH token revenue and op bill |
 | `OP_COST_SCALE` | 0.036 | Calibrates real $/GPU-hr bill to playable (depth lever) |
 | `CLEAR_BONUS_SCALE` | 0.08 | Rescales authored wave clear bonus into credits |
+| `RESEARCH_DATA_SCALE` | 1.5 | Multiplies authored infra / method-unlock / eval research `dataCost` |
 | `SIM_TIME_SCALE` | 10 | Real datacenter sec per board sec (dual clock); SLO judged on real axis |
 | `SIM_DT` / `MAX_STEPS` | 1/60 / 5 | Fixed deterministic timestep (s) / max steps per frame |
 | `FRAMEWORK_GB` | 1.5 | Per-rack VRAM overhead before KV |
@@ -386,6 +387,7 @@ fleetFlops  = Σ (server ? hw.bf16Tflops : 0)
 pool        = anyResearchActive ? fleetFlops · RESEARCH_MAX_SHARE(0.45) : 0
 selection   = servers by rackFlops desc, requisition until taken ≥ pool (browned-out excluded)
 perTrackRate= min(rate, pool) / activeTracks
+research dataCost = round(authored dataCost · RESEARCH_DATA_SCALE(1.5))  # infra / method unlock / eval defs
 slot.progress += perTrackRate · dt ;  complete ⟺ ≥ slot.compute  (= max(1, computeCost) post-train, else def.compute)
 applyInfraEffects: max(utilization, prefixCeil, specLevel, loraSlots, engineTier) ; min(kvQuantBytes, weightQuantBytes) ; add(multiStep, throughput, flash)
 ```
