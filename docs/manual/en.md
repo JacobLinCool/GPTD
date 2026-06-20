@@ -1,6 +1,6 @@
 # GigaPrompt Tower Defense — Player Manual
 
-This document is for players opening the game for the first time. You do not need to know anything about AI serving, and you do not need to read the design blueprint. Just remember one thing: GPTD is not a tower defense where you kill enemies — it is a **realistic LLM-inference data center** drawn as a tower-defense board. Waves of user requests arrive through four ingress lanes and converge on a central Trust Core; you do not kill them, you **serve** them — fast, cheap, correct, and safe — before they leak into the core.
+This document is for players opening the game for the first time. You do not need to know anything about AI serving, and you do not need to read the design blueprint. Just remember one thing: GPTD is a tower defense — but instead of killing the enemies, you **serve** them. The board is a real LLM-inference data center, built on real-world data: waves of user requests arrive through four ingress lanes and converge on a central Trust Core; you do not kill them, you **serve** them — fast, cheap, correct, and safe — before they leak into the core.
 
 The board is the metaphor; the numbers underneath are real. A request carries real token counts; a rack carries a real GPU's VRAM and bandwidth; the money is real $/Mtoken. The campaign is a **100-wave march through real 2023→2026 data-center history**, drawn as an escalating elimination gauntlet — hold the central Trust Core as deep as you can, then (if you reach the end) survive endless mode.
 

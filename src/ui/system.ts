@@ -69,7 +69,7 @@ export class SystemMenu {
       { key: 'sys.help', fallback: 'How to Play', onTap: cb.onHelp, accent: COLORS.data },
       { key: 'sys.codex', fallback: 'Codex', onTap: cb.onCodex, accent: COLORS.data },
       { key: 'sys.about', fallback: 'About', onTap: cb.onAbout, accent: COLORS.data },
-      { key: 'sys.ach', fallback: 'Achievements', onTap: cb.onAchievements, soon: true },
+      { key: 'sys.ach', fallback: 'Achievements', onTap: cb.onAchievements, accent: COLORS.trust },
       { key: 'sys.restart', fallback: 'Restart Run', onTap: cb.onRestart, accent: COLORS.warn },
       { key: 'sys.quit', fallback: 'Quit to Title', onTap: cb.onQuit, accent: COLORS.danger },
     ]

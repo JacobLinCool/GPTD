@@ -1,6 +1,6 @@
 # GPTD Realism Ledger
 
-> **Single source of truth.** GPTD is a realistic data-center LLM-inference simulator delivered as tower defense — *"the board is the metaphor, the numbers are real."* The authoritative design spec is [BLUEPRINT.md](./BLUEPRINT.md) (§0–§7), grounded by [REFERENCE-DOSSIER.md](./REFERENCE-DOSSIER.md) (the real-world citations). **This ledger is reconciled to the shipped code** — it is the "how the game stays true to reality" view of the blueprint. Where this file and the blueprint/code disagree, the code wins.
+> **Single source of truth.** GPTD is a tower-defense game built on real-world simulation — a tower defense grounded in real data-center LLM-inference engineering — *"the board is the metaphor, the numbers are real."* The authoritative design spec is [BLUEPRINT.md](./BLUEPRINT.md) (§0–§7), grounded by [REFERENCE-DOSSIER.md](./REFERENCE-DOSSIER.md) (the real-world citations). **This ledger is reconciled to the shipped code** — it is the "how the game stays true to reality" view of the blueprint. Where this file and the blueprint/code disagree, the code wins.
 
 > New here? GPTD is a tower-defense game simulating an LLM-inference data center — start with the README.
 

@@ -107,26 +107,21 @@ export class WorldRenderer {
         g.rect(x + 1, y + 1, TILE - 2, TILE - 2).stroke({ width: 1, color: COLORS.bgGrid, alpha: 0.8 })
       }
     }
-    // lane conduit
+    // lane conduit — each lane is ONE continuous path with round joins/caps so
+    // corners turn cleanly (no butt-cap offset boxes), and the floor is OPAQUE so
+    // overlapping lanes redraw the same colour instead of stacking into brighter
+    // patches. A thin centerline glow rides on top.
     const l = this.lane
+    const LANE_FLOOR = 0x152b4b // laneFloor blended with laneEdge, drawn opaque
     for (const lane of LANE_PATHS) {
-      for (let i = 0; i < lane.waypoints.length - 1; i++) {
-        const a = lane.waypoints[i]
-        const b = lane.waypoints[i + 1]
-        l.moveTo(a.x, a.y)
-          .lineTo(b.x, b.y)
-          .stroke({ width: TILE - 6, color: COLORS.laneFloor })
-      }
+      l.moveTo(lane.waypoints[0].x, lane.waypoints[0].y)
+      for (let i = 1; i < lane.waypoints.length; i++) l.lineTo(lane.waypoints[i].x, lane.waypoints[i].y)
+      l.stroke({ width: TILE - 6, color: LANE_FLOOR, cap: 'round', join: 'round' })
     }
     for (const lane of LANE_PATHS) {
-      for (let i = 0; i < lane.waypoints.length - 1; i++) {
-        const a = lane.waypoints[i]
-        const b = lane.waypoints[i + 1]
-        l.moveTo(a.x, a.y)
-          .lineTo(b.x, b.y)
-          .stroke({ width: TILE - 6, color: COLORS.laneEdge, alpha: 0.5 })
-        l.moveTo(a.x, a.y).lineTo(b.x, b.y).stroke({ width: 4, color: COLORS.laneGlow, alpha: 0.5 })
-      }
+      l.moveTo(lane.waypoints[0].x, lane.waypoints[0].y)
+      for (let i = 1; i < lane.waypoints.length; i++) l.lineTo(lane.waypoints[i].x, lane.waypoints[i].y)
+      l.stroke({ width: 4, color: COLORS.laneGlow, alpha: 0.4, cap: 'round', join: 'round' })
     }
     // ingress markers
     for (const lane of LANE_PATHS) {

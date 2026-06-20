@@ -1383,7 +1383,8 @@ export const BUILD_ORDER = [
   'cache',
   'guard_encoder',
   'guard_llm',
-  'guard_mod',
+  // 'guard_mod' (Moderation) hidden for now — no harmful/pii traffic in the
+  // current roster makes it situational; the def + safety logic stay for re-enable.
   'power',
   'cooling',
   'cooling_liquid',

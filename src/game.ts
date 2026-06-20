@@ -36,6 +36,9 @@ import { ModelOverview } from './ui/modelOverview'
 import { IncidentBanner, InspectPanel, Overlay, TrainingPanel, WaveReportPanel } from './ui/panels'
 import { SettingsPanel, SystemMenu } from './ui/system'
 import { AboutPanel, CodexBrowser, HelpPanel } from './ui/browsers'
+import { ChatPanel } from './ui/chat'
+import { AchievementsPanel, AchievementToast } from './ui/achievements'
+import { AchievementTracker } from './achievements'
 import { getSettings, onLangChange, setMuted, subscribe as subscribeSettings } from './settings'
 import { serializeState, type AgentSnapshot } from './agent/snapshot'
 import { explainRejection } from './agent/diagnose'
@@ -64,9 +67,16 @@ export class Game {
   private settingsPanel: SettingsPanel
   private helpPanel: HelpPanel
   private codexBrowser: CodexBrowser
+  /** DOM chat overlay (Codex → Chat tab); positioned over the Pixi body each frame. */
+  private chatPanel = new ChatPanel()
+  /** whether the Codex Chat tab is selected (source of truth for the overlay). */
+  private chatTabActive = false
   private aboutPanel: AboutPanel
+  private achievementsPanel: AchievementsPanel
+  private achievements = new AchievementTracker()
+  private achToast = new AchievementToast()
   /** the content browser currently open over the hub (null = none). */
-  private activeBrowser: HelpPanel | CodexBrowser | AboutPanel | null = null
+  private activeBrowser: HelpPanel | CodexBrowser | AboutPanel | AchievementsPanel | null = null
   private codex: Codex
   private tutorial: Tutorial
   private audio = new AudioEngine()
@@ -144,15 +154,22 @@ export class Game {
       isModeUnlocked: () => this.state.phase === 'menu' || this.tutorial.finished,
     })
     this.helpPanel = new HelpPanel(() => this.closeContent(), this.factory)
-    this.codexBrowser = new CodexBrowser(() => this.closeContent(), this.factory)
+    this.codexBrowser = new CodexBrowser(() => this.closeContent(), this.factory, {
+      setActive: (active) => {
+        this.chatTabActive = active
+        if (!active) this.chatPanel.hide()
+      },
+      refreshText: () => this.chatPanel.refreshText(),
+    })
     this.aboutPanel = new AboutPanel(() => this.closeContent())
+    this.achievementsPanel = new AchievementsPanel(() => this.closeContent(), this.achievements, () => this.state)
     this.systemMenu = new SystemMenu({
       onResume: () => this.closeSystemMenu(),
       onSettings: () => this.openSettings(),
       onHelp: () => this.openContent(this.helpPanel),
       onCodex: () => this.openContent(this.codexBrowser),
       onAbout: () => this.openContent(this.aboutPanel),
-      onAchievements: () => {}, // P2: achievements grid
+      onAchievements: () => this.openContent(this.achievementsPanel),
       onRestart: () => this.restartRun(false),
       onQuit: () => this.restartRun(true),
     })
@@ -176,7 +193,9 @@ export class Game {
       this.helpPanel.view,
       this.codexBrowser.view,
       this.aboutPanel.view,
+      this.achievementsPanel.view,
       this.overlay.view,
+      this.achToast.view,
       tooltip().view, // always top-most
     )
 
@@ -280,6 +299,8 @@ export class Game {
   /** Hand control to a remote agent: leave the menu, kill demo/tutorial chatter. */
   enableAgentMode(): void {
     this.agentMode = true
+    this.achievements.resetRun()
+    this.achievements.markAgentMode()
     this.demoActive = false
     if (this.state.phase === 'menu') {
       this.state.phase = 'build'
@@ -399,6 +420,11 @@ export class Game {
 
   private installKeys(): void {
     window.addEventListener('keydown', (e) => {
+      // While typing in a DOM input (e.g. the chat overlay), don't fire game
+      // hotkeys — but let Escape through so the system close-stack still works.
+      const tgt = e.target as HTMLElement | null
+      const editable = !!tgt && (tgt.tagName === 'INPUT' || tgt.tagName === 'TEXTAREA' || tgt.isContentEditable)
+      if (editable && e.key !== 'Escape') return
       if (e.key === ' ') {
         e.preventDefault()
         if (this.state.phase === 'build') this.doStartWave()
@@ -574,7 +600,7 @@ export class Game {
     if (this.systemMenuOpen) this.systemMenu.show()
   }
   /** Open a content browser (How to Play / Codex / About) over the paused hub. */
-  private openContent(panel: HelpPanel | CodexBrowser | AboutPanel): void {
+  private openContent(panel: HelpPanel | CodexBrowser | AboutPanel | AchievementsPanel): void {
     this.settingsOpen = false
     this.settingsPanel.hide()
     this.systemMenu.hide()
@@ -590,6 +616,7 @@ export class Game {
   /** Restart into a fresh run (toTitle → back to the title screen, else straight to build). */
   private restartRun(toTitle: boolean): void {
     this.closeSystemMenu()
+    this.achievements.resetRun()
     this.state = createState((Math.floor(performance.now()) ^ 0xa5a5a5a5) >>> 0)
     this.demoActive = false
     this.demoPlannedWave = 0
@@ -624,6 +651,7 @@ export class Game {
     this.audio.resume()
     if (this.state.phase === 'menu') {
       this.speed = this.startSpeed()
+      this.achievements.resetRun()
       this.state.phase = 'build'
       this.overlay.hide()
     } else {
@@ -775,12 +803,42 @@ export class Game {
 
     if (s.phase === 'won' && !this.overlay.view.visible) this.overlay.show('won', s)
     if (s.phase === 'lost' && !this.overlay.view.visible) this.overlay.show('lost', s)
+
+    // achievements: scan live state, surface any unlocks via the toast (not in demo)
+    if (!this.demoActive && (s.phase === 'build' || s.phase === 'wave')) this.achievements.tick(s)
+    const newAch = this.achievements.drainUnlocks()
+    if (newAch.length) this.achToast.push(newAch)
+    this.achToast.update(dt)
+
+    this.syncChatOverlay()
+  }
+
+  /** Track the DOM chat overlay onto the Pixi Codex body region (screen px + scale). */
+  private syncChatOverlay(): void {
+    const shouldShow = this.chatTabActive && this.codexBrowser.view.visible
+    if (!shouldShow) {
+      if (this.chatPanel.visible) this.chatPanel.hide()
+      return
+    }
+    // Show + position in the same frame so the overlay never paints mis-placed.
+    if (!this.chatPanel.visible) this.chatPanel.show()
+    const s = this.root.scale.x
+    const r = this.codexBrowser.bodyDesignRect()
+    this.chatPanel.layout(this.root.x + r.x * s, this.root.y + r.y * s, s, r.w, r.h)
   }
 
   private consumeEvents(): void {
     const s = this.state
     if (!s.events.length) return
-    for (const ev of s.events) this.dispatch(ev)
+    for (const ev of s.events) {
+      this.dispatch(ev)
+      if (!this.demoActive) {
+        this.achievements.onEvent(s, ev)
+        if (ev.type === 'wave-clear') this.achievements.onWaveCleared(s, s.lastReport)
+        else if (ev.type === 'win') this.achievements.onRunEnd(s, true)
+        else if (ev.type === 'lose') this.achievements.onRunEnd(s, false)
+      }
+    }
     s.events.length = 0
   }
 

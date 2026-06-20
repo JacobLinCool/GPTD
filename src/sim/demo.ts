@@ -451,7 +451,6 @@ export function demoPlan(s: GameState, waveAbout: number): void {
   const guardSlots = SLOTS.core.length ? SLOTS.core : SLOTS.lane
   ensureSupport(s, 'guard_encoder', waveAbout >= 14 ? 3 : waveAbout >= 10 ? 2 : waveAbout >= 4 ? 1 : 0, guardSlots, 20)
   ensureSupport(s, 'guard_llm', waveAbout >= 14 ? 1 : 0, guardSlots, 30)
-  ensureSupport(s, 'guard_mod', waveAbout >= 12 ? 1 : 0, guardSlots, 35)
   ensureSupport(s, 'cache', waveAbout >= 8 ? 3 : waveAbout >= 6 ? 2 : waveAbout >= 4 ? 1 : 0, SLOTS.lane)
   ensureBigRacks(s, waveAbout, waveAbout >= 12 ? 3 : waveAbout >= 9 ? 2 : 1)
   ensurePodShowcase(s, waveAbout)

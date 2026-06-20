@@ -507,7 +507,7 @@ export const en: Record<string, string> = {
   'tut.throttle':
     'Your racks are thermal-throttling (❄) — you are over heat capacity, so every GPU serves slower. Add a Cooling Tower to clear it.',
   'tut.jailbreak':
-    'See the red “!” packets? Those are Jailbreaks. A high-safety model may self-handle them, but to be sure, place a guardrail (Encoder, LLM Guard, or Moderation) before the central core — a jailbreak that reaches the core unscreened breaches Trust.',
+    'See the red “!” packets? Those are Jailbreaks. A high-safety model may self-handle them, but to be sure, place a guardrail (Encoder or LLM Guard) before the central core — a jailbreak that reaches the core unscreened breaches Trust.',
   'tut.lowtrust':
     'Trust is critical! If Trust, SLA, or Cash hits zero, the run ends. Tighten coverage, add a Cache for repeat traffic, or sell and relocate.',
 
@@ -528,8 +528,54 @@ export const en: Record<string, string> = {
   'codex.tab.hardware': 'Hardware',
   'codex.tab.requests': 'Requests',
   'codex.tab.research': 'Research',
+  'codex.tab.chat': 'Chat',
   'codex.req.note': 'Base values shown; later waves scale prompt + output length with the era — the end-of-campaign range is in parentheses.',
   'codex.req.late': 'late',
+
+  // --- codex chat assistant (src/ui/chat.ts) ---
+  'chat.setup.title': 'Ask the Codex',
+  'chat.setup.blurb':
+    'Chat with an assistant that knows this game — the models, hardware, request types, and research tree. It runs on your own OpenAI API key.',
+  'chat.setup.key': 'OpenAI API key',
+  'chat.setup.model': 'Model',
+  'chat.setup.effort': 'Reasoning',
+  'chat.setup.save': 'Save & start chatting',
+  'chat.setup.note':
+    'Your key is stored only in this browser (localStorage) and sent directly to the OpenAI API — never to any GPTD server. Your usage is billed to your own account.',
+  'chat.setup.getkey': 'Get an API key ↗',
+  'chat.using': '{model} · reasoning {effort}',
+  'chat.effort.minimal': 'minimal',
+  'chat.effort.low': 'low',
+  'chat.effort.medium': 'medium',
+  'chat.effort.high': 'high',
+  'chat.clear': 'Clear',
+  'chat.changekey': 'API key',
+  'chat.send': 'Send',
+  'chat.stop': 'Stop',
+  'chat.placeholder': 'Ask about models, hardware, requests, strategy…',
+  'chat.empty': '(no response)',
+  'chat.error.401': 'Invalid API key (401). Check your OpenAI key.',
+  'chat.error.429': 'Rate limited or out of quota (429).',
+  'chat.error.api': 'OpenAI API error {status}',
+  'chat.greet':
+    'Hi — I’m your in-game guide. Ask me anything about GPTD: which model to deploy, how the request types differ, what to research next, or how to survive deeper waves.',
+
+  // --- achievements (chrome; per-achievement name/desc default from achievements.ts) ---
+  'ach.progress': 'Unlocked {n} / {total}',
+  'ach.unlocked': 'Achievement unlocked',
+  'ach.hiddenHint': 'Hidden — keep playing',
+  'ach.maxed': 'Maxed ({lvl})',
+  'ach.tierprog': '{cur} / {max}',
+  'ach.cat.progress': 'Progress',
+  'ach.cat.economy': 'Economy',
+  'ach.cat.serving': 'Serving',
+  'ach.cat.safety': 'Safety',
+  'ach.cat.models': 'Models',
+  'ach.cat.studio': 'Studio',
+  'ach.cat.research': 'Research',
+  'ach.cat.hardware': 'Hardware',
+  'ach.cat.history': 'History',
+  'ach.cat.hidden': 'Hidden',
 
   // --- about (links) ---
   'about.benchmarks': 'Artificial Analysis benchmarks:',

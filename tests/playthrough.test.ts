@@ -636,13 +636,12 @@ describe('balance: heuristic autoplay survives deep into the 100-wave gauntlet',
     const r = productionDemoAutoplay(2026)
     const s = r.state
     const kindCount = (kind: string) => s.towers.filter((t) => t.def.kind === kind).length
-    const idCount = (id: string) => s.towers.filter((t) => t.def.id === id).length
     const hwIds = new Set(s.towers.filter((t) => t.def.kind === 'server').map((t) => t.hwId))
     const roles = new Set(s.towers.filter((t) => t.def.kind === 'server').map((t) => t.role).filter(Boolean))
     const derivedTargets = new Set(Object.values(s.derivedModels).map((m) => m.lineage?.target).filter(Boolean))
     console.log(
       `production demo coverage: reached=${r.reached} kinds=${JSON.stringify(Object.fromEntries(['server', 'router', 'cache', 'guardrail', 'power', 'cooling', 'cooling_liquid', 'lab'].map((k) => [k, kindCount(k)])))} ` +
-        `guard_mod=${idCount('guard_mod')} hw=${JSON.stringify([...hwIds])} roles=${JSON.stringify([...roles])} derived=${JSON.stringify([...derivedTargets])} upgrades=${JSON.stringify(s.upgrades)}`,
+        `hw=${JSON.stringify([...hwIds])} roles=${JSON.stringify([...roles])} derived=${JSON.stringify([...derivedTargets])} upgrades=${JSON.stringify(s.upgrades)}`,
     )
     // the full platform is stood up well before the elimination point (~wave 15-18).
     expect(r.reached).toBeGreaterThanOrEqual(GAUNTLET_FLOOR)
@@ -650,7 +649,6 @@ describe('balance: heuristic autoplay survives deep into the 100-wave gauntlet',
     expect(kindCount('router')).toBeGreaterThanOrEqual(1)
     expect(kindCount('cache')).toBeGreaterThanOrEqual(1)
     expect(kindCount('guardrail')).toBeGreaterThanOrEqual(1)
-    expect(idCount('guard_mod')).toBeGreaterThanOrEqual(1)
     expect(kindCount('power')).toBeGreaterThanOrEqual(1)
     expect(kindCount('cooling')).toBeGreaterThanOrEqual(1)
     expect(kindCount('cooling_liquid')).toBeGreaterThanOrEqual(1)

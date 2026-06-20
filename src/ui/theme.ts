@@ -171,9 +171,6 @@ export class UIButton extends Container {
       color: this.active ? this._accent : COLORS.panelEdge,
       alpha: this.enabled ? 1 : 0.5,
     })
-    if (this.active) {
-      g.roundRect(0, 0, 4, this._h, 2).fill({ color: this._accent, alpha: 0.9 })
-    }
     this.titleText.alpha = this.enabled ? 1 : 0.5
     this.subText.alpha = this.enabled ? 1 : 0.4
     this.iconHost.alpha = this.enabled ? 1 : 0.5

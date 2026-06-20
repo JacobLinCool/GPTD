@@ -11,9 +11,10 @@
 > the Slider/SegmentedControl/Toggle widgets, the SystemMenu hub, the four-tab
 > SettingsPanel, the ⚙/ESC entry + pause gate, the three-bus audio engine, and
 > reduced-motion. P1 content browsers — How to Play, Codex (Models/Hardware/
-> Requests/Research), and About/Data-source (`src/ui/browsers.ts`). Remaining: P1
-> view-layer a11y (colorblind, UI font scale) + confirm-before-sell; P2
-> (achievements). Decisions in §15 are settled.
+> Requests/Research), and About/Data-source (`src/ui/browsers.ts`). P2 — ~48
+> achievements with hand-drawn icons (`src/achievements.ts`, `src/ui/achievements.ts`).
+> Remaining: P1 view-layer a11y (colorblind, UI font scale) + confirm-before-sell.
+> Decisions in §15 are settled.
 >
 > **Code is the source of truth.** Every API this spec leans on is named against
 > the real code: `src/audio/audio.ts`, `src/i18n/index.ts`, `src/mode.ts`,
@@ -323,30 +324,35 @@ masked wheel-scroll). Reached from the Hub; ESC backs out to the Hub.
 
 ---
 
-## 11. Achievements: forward design
+## 11. Achievements — **shipped (2026-06-21)**
 
-UI is P2, but **define the data model now** so events can start recording —
-retrofitting event hooks later is the expensive path.
+~48 achievements across 10 categories, each with a hand-drawn vector glyph in the
+house pixel-neon style (`drawAchIcon`, `src/ui/achievements.ts`).
 
-- **(new) type:**
-  ```ts
-  interface Achievement {
-    id: string
-    name: string
-    desc: string
-    hidden?: boolean          // shown as "???" until unlocked
-    predicate: (s: GameState, ev?: GameEvent) => boolean
-    progress?: (s: GameState) => { cur: number; max: number }
-  }
-  ```
-- **Recording:** evaluate predicates off the existing `GameEvent` stream / tick;
-  persist unlocked ids + first-unlock order in SettingsStore (`gptd_achievements`
-  or a section of `gptd_settings`).
-- **Placeholder:** reserve the Hub row now (visible, "coming soon" or hidden
-  behind a flag) so adding the panel later is not a layout retrofit.
-- **Seed ideas** (grounded in existing meters/events): clear the 100-wave
-  gauntlet; survive a wave at <25% trust; serve N requests with zero leaks; run a
-  fully player-derived (post-trained) roster; hit a goodput threshold.
+- **Definitions** (`src/achievements.ts`, `AchievementDef`): `id`, `category`,
+  `name`, `desc`, `hidden?`, `goals?` (tiered bronze/silver/gold). Metadata only —
+  the unlock LOGIC lives in `AchievementTracker`, driven from `game.ts` so
+  `src/sim/**` stays pure (it never imports achievements).
+- **Tracker hooks:** `onEvent` (GameEvent stream), `onWaveCleared(s, lastReport)`,
+  `tick(s)` (live state scan), `onRunEnd(s, won)`, `resetRun()`, `markAgentMode()`.
+  Demo runs are excluded (`!demoActive`). New unlocks drain into an `AchievementToast`.
+- **Lifetime vs per-run:** the tracker keeps a small persisted lifetime blob
+  (served, cashEarned, distinct base models deployed, post-training methods used)
+  plus transient per-run state (bosses cleared, comeback armed, brownout-this-wave).
+  Tiered live progress = lifetime + current run.
+- **Persistence:** `gptd_achievements` localStorage (`{ v, unlocked: {id→level}, lifetime }`).
+- **UI:** `AchievementsPanel` (a 2-column grid over the `ContentPanel` scroll base)
+  reached from the Hub's Achievements row; locked cells dimmed, hidden cells "???",
+  tiered cells show a level + progress bar; header "Unlocked X / Y". An unlock
+  `AchievementToast` banner appears mid-game.
+- **No early flood (design rule):** tutorial-step "first X" milestones are
+  deliberately omitted — the earliest unlock requires real progress (≈ wave 10);
+  tiered lowest thresholds are set above what a first wave yields.
+- **Categories:** progress · economy · serving · safety · models · studio ·
+  research · hardware · history (real 2023–26 bosses/crises, mapped via
+  `CAMPAIGN_THEMES[idx].boss/.special`) · hidden.
+- **i18n:** chrome + per-achievement `ach.<id>.name/desc` (English source in the
+  defs as fallback; zh-TW in the dict).
 
 ---
 

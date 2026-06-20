@@ -62,6 +62,7 @@ import {
   incDesc,
   incName,
   LANG_LABEL,
+  modelName,
   t,
   towerName,
   towerTagline,
@@ -81,9 +82,15 @@ function modelShort(s: GameState, id: string): string {
   return `${sizeLabel(m.paramsTotalB)} ${suffix}`
 }
 
+/** Initial deploy-slot pool size; the grid grows past this as needed (panel scrolls). */
 const DEPLOY_SLOTS = 8
 
-/** Owned models deployable on this rack — fit VRAM and methods unlocked (or currently loaded), biggest first. */
+/**
+ * ALL owned models deployable on this rack — fit VRAM and methods unlocked (or
+ * currently loaded), biggest first. No cap: the inspect panel scrolls, so the
+ * full list is reachable (a small rack still only fits a few; a frontier rack
+ * with weight-quant / MoE researched fits many).
+ */
 function deployableModels(s: GameState, tw: Tower): string[] {
   const ids = Object.keys(s.models).filter(
     (id) => resolveModel(s, id) && (serverDeployable(s, loadout(s, tw.hwId, id)) || tw.modelId === id),
@@ -95,7 +102,7 @@ function deployableModels(s: GameState, tw: Tower): string[] {
     if (!ma || !mb) return ma ? -1 : mb ? 1 : 0
     return mb.paramsTotalB - ma.paramsTotalB || vOrder[ma.variant] - vOrder[mb.variant]
   })
-  return ids.slice(0, DEPLOY_SLOTS)
+  return ids
 }
 
 export interface InspectCallbacks {
@@ -183,6 +190,8 @@ export class InspectPanel {
   private sparks = new QualitySparks(360 - 28 - 16, 13)
   private deployHead = label('', 11, COLORS.textDim, 'bold')
   private modelBtns: { btn: UIButton; modelId: string | null }[] = []
+  private bw = 0
+  private deploy!: (towerId: number, modelId: string) => void
   private hwBtn: UIButton
   private roleBtn: UIButton
   private sellBtn: UIButton
@@ -220,19 +229,9 @@ export class InspectPanel {
     this.content.addChild(this.cardHw.view, this.cardModel.view, this.cardRoof.view, this.cardLive.view)
 
     this.addContent(this.deployHead, 14, 204)
-    const bw = (this.W - 28 - 6) / 2
-    for (let i = 0; i < DEPLOY_SLOTS; i++) {
-      const slot: { btn: UIButton; modelId: string | null } = { btn: null as unknown as UIButton, modelId: null }
-      slot.btn = new UIButton({
-        w: bw,
-        h: 34,
-        accent: COLORS.data,
-        onTap: () => this.curId != null && slot.modelId && cb.onDeploy(this.curId, slot.modelId),
-      })
-      slot.btn.x = 14 + (i % 2) * (bw + 6)
-      this.content.addChild(slot.btn)
-      this.modelBtns.push(slot)
-    }
+    this.bw = (this.W - 28 - 6) / 2
+    this.deploy = cb.onDeploy
+    for (let i = 0; i < DEPLOY_SLOTS; i++) this.addSlot()
     this.hwBtn = new UIButton({
       w: this.W - 28,
       h: 26,
@@ -260,6 +259,24 @@ export class InspectPanel {
     this.view.visible = false
   }
   private curId: number | null = null
+
+  /** Create one deploy-grid button (x/y are positioned each frame in update()). */
+  private addSlot(): void {
+    const slot: { btn: UIButton; modelId: string | null } = { btn: null as unknown as UIButton, modelId: null }
+    slot.btn = new UIButton({
+      w: this.bw,
+      h: 34,
+      accent: COLORS.data,
+      onTap: () => this.curId != null && slot.modelId && this.deploy(this.curId, slot.modelId),
+    })
+    this.content.addChild(slot.btn)
+    this.modelBtns.push(slot)
+  }
+  /** Grow the slot pool so every deployable model has a button. */
+  private ensureSlots(n: number): void {
+    while (this.modelBtns.length < n) this.addSlot()
+  }
+
   private add(t: Text, x: number, y: number): void {
     t.x = x
     t.y = y
@@ -309,6 +326,7 @@ export class InspectPanel {
     const expertServer = isServer && isExpert()
     const lo = isServer ? loadoutOf(s, tw) : null
     const deployable = isServer ? deployableModels(s, tw) : []
+    if (isServer) this.ensureSlots(deployable.length)
     const gridRows = Math.max(1, Math.ceil(deployable.length / 2))
 
     if (isServer && lo) {
@@ -337,6 +355,7 @@ export class InspectPanel {
     this.deployHead.y = bodyBottom
     for (let i = 0; i < this.modelBtns.length; i++) {
       const slot = this.modelBtns[i]
+      slot.btn.x = 14 + (i % 2) * (this.bw + 6)
       slot.btn.y = gridY + Math.floor(i / 2) * 38
     }
     const hwY = isServer ? gridY + gridRows * 38 + 6 : bodyBottom
@@ -380,10 +399,14 @@ export class InspectPanel {
       this.deployHead.text = t('inspect.deploy')
       for (const slot of this.modelBtns) {
         if (!slot.modelId) continue
+        const md = resolveModel(s, slot.modelId)
         const current = tw.modelId === slot.modelId
         const fits = serverFitsMemory(s, loadout(s, tw.hwId, slot.modelId))
-        slot.btn.setTitle(t(`model.${slot.modelId}.short`, undefined, modelShort(s, slot.modelId)))
-        slot.btn.setSub(current ? t('inspect.loaded') : fits ? t('inspect.deployFree') : t('inspect.noFit'))
+        const status = current ? t('inspect.loaded') : fits ? t('inspect.deployFree') : t('inspect.noFit')
+        // title = the model's NAME (so same-size models are distinguishable);
+        // sub = size + deploy status.
+        slot.btn.setTitle(md ? modelName(md) : modelShort(s, slot.modelId))
+        slot.btn.setSub(md ? `${sizeLabel(md.paramsTotalB)} · ${status}` : status)
         slot.btn.setEnabled(!current && fits)
         slot.btn.setActive(current)
         slot.btn.layout(0, 8)

@@ -1,6 +1,6 @@
 # GPTD — Game Design Document
 
-> **GPTD (GigaPrompt Tower Defense)** is a realistic data-center LLM-inference simulator delivered as a pixel tower-defense game. Waves of AI user requests stream in from four global ingress lanes toward your central Trust Core; you build a serving platform — GPU racks, models, caches, routers, guardrails, power and cooling — to answer them correctly, safely, and within their latency SLO. The board is the experience layer; the math underneath is real.
+> **GPTD (GigaPrompt Tower Defense)** is a pixel tower-defense game built on real-world simulation — a tower defense first, designed around real data-center LLM-inference engineering so every number has a real basis. Waves of AI user requests stream in from four global ingress lanes toward your central Trust Core; you build a serving platform — GPU racks, models, caches, routers, guardrails, power and cooling — to answer them correctly, safely, and within their latency SLO. The board is the experience layer; the math underneath is real.
 >
 > **Slogan: "the board is the metaphor, the numbers are real."**
 

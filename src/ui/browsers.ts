@@ -34,7 +34,7 @@ const CODEX_REQ_NOTE =
   'Base values shown; later waves scale prompt + output length with the era — the end-of-campaign range is in parentheses.'
 
 /** Full-screen reading surface with a masked, wheel-scrollable body. */
-abstract class ContentPanel {
+export abstract class ContentPanel {
   readonly view = new Container()
   protected dim = new Graphics()
   protected panel = new Graphics()
@@ -96,6 +96,10 @@ abstract class ContentPanel {
   protected resetScroll(): void {
     this.scrollY = 0
     this.body.y = this.bodyTop
+  }
+  /** The masked body region in design pixels (for a DOM overlay to track). */
+  bodyDesignRect(): { x: number; y: number; w: number; h: number } {
+    return { x: this.px + 20, y: this.bodyTop, w: this.PW - 40, h: this.viewH }
   }
   protected clearBody(): void {
     this.body.removeChildren()
@@ -269,7 +273,7 @@ const CODEX_TABS = [
  * are the encyclopedia explanations. Post-training / eval nodes keep their own
  * `desc` (used as the fallback). English source — zh-TW overrides via i18n.
  */
-const CODEX_TECH: Record<string, string> = {
+export const CODEX_TECH: Record<string, string> = {
   inf_batching:
     'Continuous batching swaps finished sequences out and new ones in at every decode step instead of waiting for a whole batch to end — so the GPU never idles between requests. (vLLM / Orca.)',
   inf_multistep:
@@ -316,13 +320,26 @@ const CODEX_TECH: Record<string, string> = {
     'Multi-LoRA serving runs many LoRA adapters over one shared base model, swapping adapters per request so hundreds of fine-tunes share a single deployment. (S-LoRA.)',
 }
 
+/**
+ * The chat tab swaps the Codex body for a DOM chat overlay (src/ui/chat.ts). The
+ * browser doesn't own the overlay (it lives in screen space); it just toggles it
+ * via this host, which the Game implements (positioning + show/hide).
+ */
+export interface ChatHost {
+  setActive(active: boolean): void
+  refreshText(): void
+}
+
 export class CodexBrowser extends ContentPanel {
   private tabBtns: UIButton[] = []
+  private chatBtn: UIButton
   private current = 0
+  private chatActive = false
 
   constructor(
     onBack: () => void,
     private factory: TextureFactory,
+    private chat: ChatHost,
   ) {
     super(onBack, 'sys.codex', 'Codex', 112)
     const segW = 132
@@ -334,10 +351,23 @@ export class CodexBrowser extends ContentPanel {
       this.view.addChild(btn)
       this.tabBtns.push(btn)
     }
+    // The chat tab is right-aligned and a distinct accent — it's a different kind
+    // of tab (an AI assistant, not a data table).
+    this.chatBtn = new UIButton({ w: segW, h: 30, accent: COLORS.trust, onTap: () => this.selectChat() })
+    this.chatBtn.x = this.px + this.PW - 28 - segW
+    this.chatBtn.y = this.py + 64
+    this.view.addChild(this.chatBtn)
   }
 
   private selectTab(i: number): void {
+    this.chatActive = false
     this.current = i
+    this.resetScroll()
+    this.refresh()
+  }
+
+  private selectChat(): void {
+    this.chatActive = true
     this.resetScroll()
     this.refresh()
   }
@@ -345,14 +375,31 @@ export class CodexBrowser extends ContentPanel {
   refresh(): void {
     this.refreshChrome()
     CODEX_TABS.forEach((tab, i) =>
-      this.tabBtns[i].setTitle(t(tab.key, undefined, tab.fallback)).setActive(i === this.current).layout(0, 0, true),
+      this.tabBtns[i]
+        .setTitle(t(tab.key, undefined, tab.fallback))
+        .setActive(!this.chatActive && i === this.current)
+        .layout(0, 0, true),
     )
+    this.chatBtn.setTitle(t('codex.tab.chat', undefined, 'Chat')).setActive(this.chatActive).layout(0, 0, true)
     this.clearBody()
+    if (this.chatActive) {
+      // The DOM overlay covers the body; leave the Pixi body empty.
+      this.setContentHeight(0)
+      this.chat.setActive(true)
+      this.chat.refreshText()
+      return
+    }
+    this.chat.setActive(false)
     const id = CODEX_TABS[this.current].id
     if (id === 'models') this.buildModels()
     else if (id === 'hardware') this.buildHardware()
     else if (id === 'requests') this.buildRequests()
     else this.buildResearch()
+  }
+
+  override hide(): void {
+    this.chat.setActive(false)
+    super.hide()
   }
 
   private buildModels(): void {
@@ -417,11 +464,16 @@ export class CodexBrowser extends ContentPanel {
     let y = 0
     const kindColor: Record<string, number> = { model: COLORS.data, tech: COLORS.sla, eval: COLORS.warn }
     for (const d of RESEARCH_LIST) {
-      this.swatch(kindColor[d.kind] ?? COLORS.textDim, y, 48)
-      this.addText(d.name, 14, COLORS.textBright, 16, y, true)
-      this.addText(`${d.kind} · ${d.dataCost} data`, 12, kindColor[d.kind] ?? COLORS.textDim, this.bodyW - 160, y)
+      const top = y
+      const col = kindColor[d.kind] ?? COLORS.textDim
+      this.addText(d.name, 14, COLORS.textBright, 16, top, true)
+      this.addText(`${d.kind} · ${d.dataCost} data`, 12, col, this.bodyW - 160, top)
       const explain = t('codex.tech.' + d.id, undefined, CODEX_TECH[d.id] ?? d.desc)
-      y = this.para(explain, 12, COLORS.text, 16, y + 22, this.bodyW - 16) + 16
+      const bottom = this.para(explain, 12, COLORS.text, 16, top + 22, this.bodyW - 16)
+      // left bar spans the whole row (name → end of the wrapped description) so
+      // rows of different line counts read evenly.
+      this.swatch(col, top, bottom - top)
+      y = bottom + 16
     }
     this.setContentHeight(y + 10)
   }
@@ -432,7 +484,7 @@ export class CodexBrowser extends ContentPanel {
 const GAME_VERSION = '0.1.0'
 
 const ABOUT_DATA =
-  'GPTD is a data-center LLM-inference simulator dressed as a tower defense. The roster is drawn from real open-weight models; each model’s capability vector is calibrated from public Artificial Analysis benchmark scores, and the serving math — rooflines, KV cache, power/cooling in real kW, token-priced revenue — is grounded in real hardware and pricing.'
+  'GPTD is a tower-defense game built on real-world simulation — every number is grounded in real data. The roster is drawn from real open-weight models; each model’s capability vector is calibrated from public Artificial Analysis benchmark scores, and the serving math — rooflines, KV cache, power/cooling in real kW, token-priced revenue — is grounded in real hardware and pricing.'
 
 const ABOUT_LINKS: { key: string; fallback: string; url: string }[] = [
   { key: 'about.link.aa', fallback: 'Artificial Analysis — the benchmark source', url: 'https://artificialanalysis.ai' },
