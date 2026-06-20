@@ -2,6 +2,7 @@ import { Container, Graphics, Sprite, Text } from 'pixi.js'
 import { COLORS, GRID_COLS, GRID_ROWS, GRID_X, GRID_Y, TILE } from '../config'
 import type { GameState, TowerDef } from '../core/types'
 import { isExpert } from '../mode'
+import { prefersReducedMotion } from '../settings'
 import { t } from '../i18n'
 import {
   loadoutOf,
@@ -58,10 +59,20 @@ export class WorldRenderer {
     private factory: TextureFactory,
     fx: FxManager,
   ) {
+    // The core is a board-floor feature: it sits just above the lane glow but
+    // BELOW towers/requests, so a tower built on the tile directly above/below
+    // the core (its 1.3-tile sprite overspills ~7px each side) isn't clipped.
+    this.coreSprite = new Sprite(this.factory.core())
+    this.coreSprite.anchor.set(0.5)
+    this.coreSprite.width = TILE * 1.3
+    this.coreSprite.height = TILE * 1.3
+    this.coreSprite.x = CORE_POS.x
+    this.coreSprite.y = CORE_POS.y
     this.view.addChild(
       this.bg,
       this.lane,
       this.coreGlow,
+      this.coreSprite,
       this.hint,
       this.rangeG,
       this.towerHost,
@@ -74,13 +85,6 @@ export class WorldRenderer {
       fx.view,
       this.interact,
     )
-    this.coreSprite = new Sprite(this.factory.core())
-    this.coreSprite.anchor.set(0.5)
-    this.coreSprite.width = TILE * 1.3
-    this.coreSprite.height = TILE * 1.3
-    this.coreSprite.x = CORE_POS.x
-    this.coreSprite.y = CORE_POS.y
-    this.view.addChild(this.coreSprite)
 
     this.buildStatic()
     this.setupInteraction()
@@ -456,7 +460,7 @@ export class WorldRenderer {
     g.clear()
     const trust = s.meters.trust / 100
     const col = trust > 0.5 ? COLORS.core : trust > 0.25 ? COLORS.warn : COLORS.danger
-    const pulse = 1 + Math.sin(s.time * 4) * 0.12
+    const pulse = prefersReducedMotion() ? 1 : 1 + Math.sin(s.time * 4) * 0.12
     g.circle(CORE_POS.x, CORE_POS.y, TILE * 0.9 * pulse).fill({ color: col, alpha: 0.12 })
     g.circle(CORE_POS.x, CORE_POS.y, TILE * 0.6 * pulse).fill({ color: col, alpha: 0.12 })
     this.coreSprite.tint = col

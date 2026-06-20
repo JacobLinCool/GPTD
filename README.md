@@ -36,6 +36,7 @@ All documentation lives in **[`docs/`](./docs/)** (see the **[docs index](./docs
 
 - **[docs/DESIGN.md](./docs/DESIGN.md)** — the **canonical Game Design Document** (the readable design of record). Start here.
 - **[docs/BLUEPRINT.md](./docs/BLUEPRINT.md)** — the **authoritative design spec** (the unified data model, the serving spine, the dual-clock/SLO physics, every subsystem) — the deeper implementation layer beneath the GDD.
+- **[docs/MATH.md](./docs/MATH.md)** — the **math reference**: every formula, constant, and variable the sim uses (glossary + constants + formulas by subsystem), extracted from the code.
 - **[docs/REFERENCE-DOSSIER.md](./docs/REFERENCE-DOSSIER.md)** — the **real-world grounding**: the GPU specs, model figures, benchmark numbers, and serving-systems literature the simulation is calibrated against.
 - **[docs/REALISM.md](./docs/REALISM.md)** / **[docs/REALISM-MODELS.md](./docs/REALISM-MODELS.md)** — the realism ledgers (mechanic → real-world basis, citations, deviations).
 - **[docs/MODEL-CATALOG.md](./docs/MODEL-CATALOG.md)** — the fact-checked model-roster reference (developer, license, benchmarks, lineage).

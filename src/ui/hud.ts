@@ -5,7 +5,7 @@ import { isExpert } from '../mode'
 import { WAVES } from '../sim/content'
 import { isBrownout, isLiquidGated, isThrottling } from '../sim/power'
 import { addTooltip } from './tooltip'
-import { cycleLang, getLang, LANG_LABEL, t, waveName } from '../i18n'
+import { getLang, t, waveName } from '../i18n'
 import { drawPanel, label, UIButton } from './theme'
 
 /** Left edge of the centered wave-title band (right of the HEAT readout). */
@@ -40,8 +40,8 @@ export interface HudCallbacks {
   onPause: () => void
   onSpeed: () => void
   onMute: () => void
-  onMusic: () => void
-  onLang: () => void
+  /** open the system menu / settings hub. */
+  onSettings: () => void
   /** §5.2 S7: open the ModelOverview modal (Expert Mode). */
   onModels: () => void
   /** §5.2 S2: toggle the floating telemetry panel (Expert Mode). */
@@ -75,11 +75,10 @@ export class Hud {
   private btnPause: UIButton
   private btnSpeed: UIButton
   private btnMute: UIButton
-  private btnMusic: UIButton
-  private btnLang: UIButton
-  // hand-drawn speaker / note glyphs (cleaner than emoji at this size).
+  private btnSettings: UIButton
+  // hand-drawn speaker / gear glyphs (cleaner than emoji at this size).
   private muteIcon = new Graphics()
-  private musicIcon = new Graphics()
+  private gearIcon = new Graphics()
 
   constructor(cb: HudCallbacks) {
     this.view.addChild(this.bg, this.bars)
@@ -105,25 +104,23 @@ export class Hud {
     this.add(this.phaseText, TITLE_LEFT, 44)
     this.add(this.warnText, TITLE_LEFT, 66)
 
-    // Row 1: the playback/control cluster, tightened (w48/step54) and right-aligned
-    // so the wave-title band's right edge sits as far right as possible.
+    // Row 1: the playback/control cluster — Pause · Speed · Mute · ⚙ (settings),
+    // tightened (w48/step54) and right-aligned so the wave-title band runs as wide
+    // as possible. Music volume + language moved into Settings (the ⚙ hub).
     const step = 54
-    const bx = DESIGN_W - 5 * step - 12
+    const bx = DESIGN_W - 4 * step - 12
     this.btnPause = this.ctrl(bx, cb.onPause)
     this.btnSpeed = this.ctrl(bx + step, cb.onSpeed)
     this.btnMute = this.ctrl(bx + step * 2, cb.onMute)
-    this.btnMusic = this.ctrl(bx + step * 3, cb.onMusic)
-    this.btnLang = this.ctrl(bx + step * 4, () => {
-      cycleLang()
-      cb.onLang()
-    })
-    // vector audio glyphs, centered in their (48×30) buttons.
+    this.btnSettings = this.ctrl(bx + step * 3, cb.onSettings)
+    // vector glyphs, centered in their (48×30) buttons.
     this.muteIcon.x = 24
     this.muteIcon.y = 15
     this.btnMute.addChild(this.muteIcon)
-    this.musicIcon.x = 24
-    this.musicIcon.y = 15
-    this.btnMusic.addChild(this.musicIcon)
+    this.gearIcon.x = 24
+    this.gearIcon.y = 15
+    this.btnSettings.addChild(this.gearIcon)
+    this.drawGear(this.gearIcon)
     // Row 2 (Expert Mode): METRICS + MODELS drop UNDER the control row so the wave
     // title band can run much wider. Right-aligned to share the cluster's edge.
     const r2y = 52
@@ -170,14 +167,16 @@ export class Hud {
     }
   }
 
-  /** A small eighth-note glyph; off → dim with a red slash. */
-  private drawNote(g: Graphics, on: boolean): void {
+  /** A small cog glyph for the settings button (8 teeth + hub + hole). */
+  private drawGear(g: Graphics): void {
     g.clear()
-    const col = on ? COLORS.text : COLORS.textDim
-    g.ellipse(-4, 5.5, 3.6, 2.7).fill({ color: col })
-    g.rect(-1, -7, 1.8, 12.5).fill({ color: col })
-    g.moveTo(0.8, -7).lineTo(6.5, -3.5).lineTo(6, 1).stroke({ width: 1.8, color: col })
-    if (!on) g.moveTo(-9, -8).lineTo(9, 9).stroke({ width: 1.6, color: COLORS.danger })
+    const col = COLORS.text
+    for (let i = 0; i < 8; i++) {
+      const a = (i / 8) * Math.PI * 2
+      g.rect(Math.cos(a) * 8 - 1.6, Math.sin(a) * 8 - 1.6, 3.2, 3.2).fill({ color: col })
+    }
+    g.circle(0, 0, 6).fill({ color: col })
+    g.circle(0, 0, 2.4).fill({ color: COLORS.panel })
   }
 
   /** The horizontal band the centered wave title / phase / warning may occupy:
@@ -213,7 +212,7 @@ export class Hud {
 
   update(
     s: GameState,
-    ui: { paused: boolean; speed: number; muted: boolean; musicOn: boolean; metricsOpen?: boolean },
+    ui: { paused: boolean; speed: number; muted: boolean; metricsOpen?: boolean },
   ): void {
     const g = this.bars
     g.clear()
@@ -278,8 +277,6 @@ export class Hud {
       .layout(0, 14)
     this.btnMute.setTitle('').setActive(ui.muted).layout()
     this.drawSpeaker(this.muteIcon, ui.muted)
-    this.btnMusic.setTitle('').setActive(ui.musicOn).layout()
-    this.drawNote(this.musicIcon, ui.musicOn)
-    this.btnLang.setTitle(LANG_LABEL[getLang()]).layout(0, 14)
+    this.btnSettings.setTitle('').layout()
   }
 }

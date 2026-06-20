@@ -10,7 +10,7 @@ import {
   tryBuild,
   upgradeHardware,
 } from '../src/sim/actions'
-import { HARDWARE_DEFS, INFRA_NODES, METHOD_RECIPES, MODEL_DEFS, RESEARCH_DEFS, TOWER_DEFS, UPGRADE_MAP, UPGRADES, WAVES } from '../src/sim/content'
+import { DEFAULT_MODEL_ID, HARDWARE_DEFS, INFRA_NODES, METHOD_RECIPES, MODEL_DEFS, RESEARCH_DEFS, TOWER_DEFS, UPGRADE_MAP, UPGRADES, WAVES } from '../src/sim/content'
 import {
   TAX_K,
   alignmentTax,
@@ -70,21 +70,26 @@ import { createState } from '../src/sim/state'
 import { newWaveStats } from '../src/sim/telemetry'
 
 /* --------------------------------------------------------------------------
- * Real-model roster used by the tests. Open weights are owned for free from
- * the start; gates are VRAM (paramsTotalB) and METHOD unlocks (MoE/Reasoning).
- *   STARTER  : Llama-3.1-8B  — 8 GB, dense, no method. The free default.
- *   GENERAL  : Qwen3-32B     — 32.8 GB, dense, REASONING-gated. Fits Standard.
- *   CODER    : Devstral-24B  — 24 GB, dense, no method. Coding specialist.
- *   BIG      : Llama-3.3-70B — 70 GB, dense, no method. Fits Frontier.
- *   MOE      : Qwen3-30B-A3B — 30.5 GB total / 3.3 B active, MoE+reasoning.
- *   FRONTIER : DeepSeek-V3.1 — 671 GB, MoE+reasoning. Fits SuperPod.
+ * Active-roster checkpoints used by the tests (the frontier-tolerance gate, §calibrate,
+ * trims the candidate pool to ~42). Open weights are owned for free; gates are VRAM
+ * (paramsTotalB) and METHOD unlocks (MoE/Reasoning).
+ *   STARTER  : Granite 4.0 H 1B  — 1 GB, dense, no method. The free default starter.
+ *   GENERAL  : Qwen3.6-27B       — 27 GB dense, REASONING model. Fits Standard at FP8.
+ *   CODER    : Gemma 4 31B       — 31 GB dense, no method. The most code-leaning kept model.
+ *   BIG      : Qwen3-Next-80B    — 80 GB total / 3 B active, MoE. Overflows Frontier, fits Pod.
+ *   WEAK     : Nemotron 3 Nano 4B— 4 GB dense; below the reasoning/agentic lines (post-train headroom).
+ *   MOE      : Nemotron 3 Nano 30B — 30 GB total / 3.5 B active, MoE+reasoning.
+ *   FRONTIER : Qwen3-235B-A22B   — 235 GB MoE+reasoning. Fits SuperPod; big yet agentic < 82 (scale≠agentic).
+ *   MLA      : Kimi K2 Thinking  — 1 T MoE, MLA attention (latent-KV tests).
  * ------------------------------------------------------------------------ */
-const STARTER = 'llama31_8b'
-const GENERAL = 'qwen3_32b'
-const CODER = 'devstral_24b'
-const BIG = 'llama33_70b'
-const MOE = 'qwen3_30b_a3b'
-const FRONTIER = 'deepseek_v31'
+const STARTER = DEFAULT_MODEL_ID
+const GENERAL = 'qwen36_27b'
+const CODER = 'g_gemma_4_31b_2'
+const BIG = 'qwen3_next_80b'
+const WEAK = 'g_nvidia_nemotron_3_nano_4b_2'
+const MOE = 'nemotron3_nano_30b'
+const FRONTIER = 'qwen3_235b'
+const MLA = 'kimi_k2'
 
 function runFor(s: GameState, seconds: number): void {
   const steps = Math.round(seconds / SIM_DT)
@@ -207,9 +212,9 @@ describe('request resolution', () => {
       const t = lastTower(s)
       upgradeHardware(s, t.id) // edge → standard
       upgradeHardware(s, t.id) // standard → performance (meets jailbreak's IN TPOT)
-      deployModel(s, t.id, 'mistral_small_24b')
+      deployModel(s, t.id, 'g_qwen3_5_9b_2')
       // shadow a near-zero-safety variant so layer 1 cannot save it (deterministic breach)
-      const base = resolveModel(s, 'mistral_small_24b')!
+      const base = resolveModel(s, 'g_qwen3_5_9b_2')!
       const low = { ...base, id: 'low_safety', alignment: { safety: 15, refusalStyle: 'none' as const, overRefusal: 0.02 } }
       s.derivedModels['low_safety'] = low
       s.models['low_safety'] = true
@@ -524,7 +529,7 @@ describe('model methods (MoE / Reasoning as deploy gates)', () => {
   it('MoE serves cheap (active params) but VRAM tracks ALL experts (total params)', () => {
     const s = createState(42)
     const moeLo = loadout(s, 'hw_perf', MOE) // 30.5B total / 3.3B active
-    const denseLo = loadout(s, 'hw_perf', 'gemma3_27b') // 27B dense, ~27B active
+    const denseLo = loadout(s, 'hw_perf', 'qwen36_27b') // 27B dense, ~27B active
     expect(serverFitsMemory(s, moeLo)).toBe(true)
     expect(serverFitsMemory(s, denseLo)).toBe(true)
     // sparse activation → far higher token throughput than a similarly-sized dense model
@@ -533,14 +538,14 @@ describe('model methods (MoE / Reasoning as deploy gates)', () => {
     expect(decodeTokSb1(s, moeLo)).toBeGreaterThan(decodeTokSb1(s, denseLo))
     // but VRAM is all experts resident = paramsTotalB × bytesPerParam (FP16=2, §4.8/§5.6)
     expect(serverModelMemory(s, moeLo)).toBeCloseTo(MODEL_DEFS[MOE].paramsTotalB * 2, 6)
-    expect(serverModelMemory(s, denseLo)).toBeCloseTo(MODEL_DEFS['gemma3_27b'].paramsTotalB * 2, 6)
+    expect(serverModelMemory(s, denseLo)).toBeCloseTo(MODEL_DEFS['qwen36_27b'].paramsTotalB * 2, 6)
   })
 
   it('a reasoning model deploys without a gate (R4) and answers a lane a non-reasoner cannot', () => {
     // intrinsic quality (no global buff): the thinking model clears reason=82,
     // the dense generalist does not.
     expect(MODEL_DEFS[GENERAL].qualityBy.reasoning).toBeGreaterThanOrEqual(82)
-    expect(MODEL_DEFS[BIG].qualityBy.reasoning).toBeLessThan(82)
+    expect(MODEL_DEFS[WEAK].qualityBy.reasoning).toBeLessThan(82)
     expect(MODEL_DEFS[GENERAL].isReasoning).toBe(true)
 
     // P3c: reasoning is a MODEL attribute (its gain is already in qualityBy) — there
@@ -884,12 +889,14 @@ describe('Studio preview parity (§5.2 S9)', () => {
 describe('roster balance fixes (§1.5)', () => {
   it('H2: a small MoE genuinely lags on agentic (its real wall); a frontier / GRPO-agentic derived clears it', () => {
     const AGENT_DIFFICULTY = 82 // agent archetype primaryAxis difficulty (content.ts)
-    // the small MoE answers fast but its SWE-calibrated agentic axis is below the wall
+    // the small MoE answers fast but its agentic axis is below the wall
     expect(MODEL_DEFS[MOE].qualityBy.agentic).toBeLessThan(AGENT_DIFFICULTY)
-    // a frontier base clears the agentic lane
-    expect(MODEL_DEFS[FRONTIER].qualityBy.agentic).toBeGreaterThanOrEqual(AGENT_DIFFICULTY)
-    // and a player GRPO-agentic derived (on a frontier base) does too
+    // a top terminal-agent frontier clears the lane outright
+    expect(MODEL_DEFS['kimi_k2'].qualityBy.agentic).toBeGreaterThanOrEqual(AGENT_DIFFICULTY)
+    // …but even a 235B SuperPod frontier (Qwen3-235B) is only MID on Terminal-Bench Hard,
+    // so its base agentic is short of the wall — a player GRPO-agentic run lifts it over.
     const s = studioRig(59, ['pt_rl'])
+    expect(MODEL_DEFS[FRONTIER].qualityBy.agentic).toBeLessThan(AGENT_DIFFICULTY)
     expect(startPostTrain(s, [FRONTIER], 'grpo', 'agentic', 2.0)).toBe(true)
     trainToCompletion(s)
     const drv = s.derivedModels[`drv_0`]
@@ -918,7 +925,7 @@ describe('hardware/model split (expert mechanics)', () => {
   const PAIRS: [string, string][] = [
     ['hw_edge', STARTER], // 8B → 24 GB L4
     ['hw_standard', GENERAL], // 32.8B → 48 GB L40S
-    ['hw_perf', 'gemma3_27b'], // 27B → 80 GB H100
+    ['hw_perf', 'qwen36_27b'], // 27B → 80 GB H100
     ['hw_frontier', BIG], // 70B (FP8) → 141 GB H200
     ['hw_pod', 'nemotron_super'], // 120B MoE / 12B active → 8× H200 (1128 GB)
     ['hw_superpod', FRONTIER], // 671B → 8× B200 (1536 GB)
@@ -952,11 +959,11 @@ describe('hardware/model split (expert mechanics)', () => {
   it('decode b=1 tracks real HBM bandwidth: HBM_BW / (2·activeB·bytes) (§5.7)', () => {
     const s = createState(28) // FP16, no upgrades
     // gemma3_27b (27B active) FP16 fits an 80 GB H100: decodeTokS_b1 = 3.35e12 / (2 × 27e9 × 2)
-    const gemma = MODEL_DEFS['gemma3_27b']
+    const gemma = MODEL_DEFS['qwen36_27b']
     const expected = (3.35e12) / (2 * gemma.paramsActiveB * 1e9 * 2)
-    expect(decodeTokSb1(s, loadout(s, 'hw_perf', 'gemma3_27b'))).toBeCloseTo(expected, 2)
+    expect(decodeTokSb1(s, loadout(s, 'hw_perf', 'qwen36_27b'))).toBeCloseTo(expected, 2)
     // compute roof = aggTflops / (2 × activeB) = 989e12 / (2 × 27e9)
-    expect(computeRoofTokS(s, loadout(s, 'hw_perf', 'gemma3_27b'))).toBeCloseTo(
+    expect(computeRoofTokS(s, loadout(s, 'hw_perf', 'qwen36_27b'))).toBeCloseTo(
       (989e12) / (2 * gemma.paramsActiveB * 1e9),
       0,
     )
@@ -967,7 +974,7 @@ describe('hardware/model split (expert mechanics)', () => {
 
   it('prefill is compute-bound and super-linear in prompt length (O(n²) attention, §1.1)', () => {
     const s = createState(29)
-    const lo = loadout(s, 'hw_perf', 'gemma3_27b') // 27B FP16 fits the 80 GB H100
+    const lo = loadout(s, 'hw_perf', 'qwen36_27b') // 27B FP16 fits the 80 GB H100
     const short = prefillTokS(s, lo, 512)
     const long = prefillTokS(s, lo, 16000)
     expect(short).toBeGreaterThan(0)
@@ -1091,7 +1098,8 @@ describe('prefill vs decode (two-phase serving, real tokens)', () => {
   it('prefill must finish before decode starts, and records TTFT', () => {
     const s = createState(81)
     richBuild(s)
-    buildServerAs(s, 'frontier', 3, 2) // 70B (FP8) — a slow-enough prefill to observe
+    buildServerAs(s, 'frontier', 3, 2)
+    deployModel(s, lastTower(s).id, CODER) // 31B dense (high active) — a slow-enough prefill to observe
     liveWave(s)
     s.spawns = [{ typeId: 'summ', count: 1, interval: 1, delay: 0, spawned: 0, timer: 0, started: false }]
     runFor(s, 0.05) // a few board-steps: summ's 12000-token prompt is still ingesting
@@ -1111,7 +1119,8 @@ describe('prefill vs decode (two-phase serving, real tokens)', () => {
       const s = createState(82)
       richBuild(s)
       if (withChunked) s.infra.scheduling.chunked = true
-      buildServerAs(s, 'frontier', 3, 2) // 70B FP8; KV budget fits rag + summ together
+      buildServerAs(s, 'frontier', 3, 2)
+      deployModel(s, lastTower(s).id, CODER) // 31B dense (high active); KV budget fits rag + summ together
       liveWave(s)
       // a RAG request gets fully prefilled and starts decoding
       const rag = spawnRequest(s, 'rag')
@@ -1147,9 +1156,14 @@ describe('benchmark calibration (capability is a per-axis vector)', () => {
   const q = (id: string, axis: 'chat' | 'coding' | 'reasoning' | 'general') =>
     MODEL_DEFS[id].qualityBy[axis]
 
-  it('a coder checkpoint beats a generalist on code but slips on chat', () => {
-    expect(q(CODER, 'coding')).toBeGreaterThan(q('mistral_small_24b', 'coding'))
-    expect(q(CODER, 'chat')).toBeLessThan(q('mistral_small_24b', 'chat'))
+  it('a coder checkpoint leans into code harder than a generalist does', () => {
+    // the coder clears the coding line above the generalist…
+    expect(q(CODER, 'coding')).toBeGreaterThan(q('g_qwen3_5_9b_2', 'coding'))
+    // …and is more code-leaning: its coding-minus-chat margin beats the generalist's.
+    // (On real benchmarks the two sit near the same MMLU-Pro chat level, so capability
+    // is a per-axis VECTOR — the specialism shows as a relative lean, not a higher chat.)
+    const lean = (id: string) => q(id, 'coding') - q(id, 'chat')
+    expect(lean(CODER)).toBeGreaterThan(lean('g_qwen3_5_9b_2'))
   })
 
   it('a small model fails the coding line; a coder clears it', () => {
@@ -1158,9 +1172,10 @@ describe('benchmark calibration (capability is a per-axis vector)', () => {
   })
 
   it('only reasoning models clear the hardest reasoning lane (82)', () => {
-    // non-reasoning generalists fall short on reason=82
-    expect(q(BIG, 'reasoning')).toBeLessThan(82)
-    expect(q('gemma3_27b', 'reasoning')).toBeLessThan(82)
+    // small non-reasoning checkpoints fall short on reason=82 (post-compression, only
+    // the small end sits below the line — every kept mid/large model is a strong reasoner)
+    expect(q(WEAK, 'reasoning')).toBeLessThan(82)
+    expect(q(STARTER, 'reasoning')).toBeLessThan(82)
     // thinking models clear it
     expect(q(GENERAL, 'reasoning')).toBeGreaterThanOrEqual(82)
     expect(q(FRONTIER, 'reasoning')).toBeGreaterThanOrEqual(82)
@@ -1191,8 +1206,10 @@ describe('benchmark calibration (capability is a per-axis vector)', () => {
     const bestMargin = Math.max(...reqs.filter((r) => !r.overRefused).map((r) => r.bestQuality))
     // chat(18) is within a coder's chat aptitude — served well
     expect(bestMargin).toBeGreaterThan(0)
-    // but the margin reflects the chat axis, not the coding peak
-    expect(MODEL_DEFS[CODER].qualityBy.chat).toBeLessThan(MODEL_DEFS[CODER].qualityBy.coding)
+    // the request is judged on the CHAT axis — a distinct number from the coder's coding
+    // aptitude (capability is a per-axis vector), and that chat aptitude clears the line.
+    expect(MODEL_DEFS[CODER].qualityBy.chat).not.toBe(MODEL_DEFS[CODER].qualityBy.coding)
+    expect(MODEL_DEFS[CODER].qualityBy.chat).toBeGreaterThanOrEqual(18)
   })
 })
 
@@ -1252,10 +1269,10 @@ describe('the serving-systems era ladder (Orca → vLLM, s.infra-driven)', () =>
 
   it('per-request KV follows the real formula (2·layers·kvHeads·headDim·seq·bytes)', () => {
     const s = createState(92)
-    const model = MODEL_DEFS[BIG] // 80 layers, 8 kvHeads, 128 headDim, GQA
-    // 70B @ 8192 tokens, FP16 KV (2 bytes/elem); GQA is reflected by the low kvHeads
+    const model = MODEL_DEFS[GENERAL] // Qwen3.6-27B: 64 layers, 8 kvHeads, 128 headDim, GQA
+    // 27B @ 8192 tokens, FP16 KV (2 bytes/elem); GQA is reflected by the low kvHeads
     // already (NO global GQA ×0.4 any more — R4: attention family is a model attr).
-    const expected = (2 * 80 * 8 * 128 * 8192 * 2) / 1e9
+    const expected = (2 * 64 * 8 * 128 * 8192 * 2) / 1e9
     expect(kvPerReqGb(s, model, 8192)).toBeCloseTo(expected, 4)
     // KV grows linearly with sequence length (decode inflates it)
     expect(kvPerReqGb(s, model, 16384)).toBeCloseTo(kvPerReqGb(s, model, 8192) * 2, 4)
@@ -1266,7 +1283,7 @@ describe('the serving-systems era ladder (Orca → vLLM, s.infra-driven)', () =>
 
   it('MLA stores a compact latent: far less KV than a GQA model of similar shape', () => {
     const s = createState(93)
-    const mla = MODEL_DEFS[FRONTIER] // DeepSeek-V3.1: attn MLA
+    const mla = MODEL_DEFS[MLA] // Kimi K2 Thinking: attn MLA
     expect(mla.attn).toBe('MLA')
     // MLA applies the ×0.067 latent factor (DeepSeek −93.3%, §4.6)
     const raw = (2 * mla.layers * mla.kvHeads * mla.headDim * 8192 * 2) / 1e9
@@ -1351,22 +1368,22 @@ describe('directional fidelity — every technique keeps its real cost', () => {
   })
 })
 
-/** Build a Phi-4 (general, 16K real window) rack on a Standard GPU rack. */
+/** Build a small-window model (Qwen3-1.7B, 32K real window) rack on a Standard GPU rack. */
 function buildPhi4(s: GameState, col: number, row: number): void {
   tryBuild(s, 'srv_edge', col, row)
   const t = lastTower(s)
-  upgradeHardware(s, t.id) // edge → standard (48 GB fits Phi-4 14B at FP16)
-  deployModel(s, t.id, 'phi4_14b')
+  upgradeHardware(s, t.id) // edge → standard (48 GB fits the 1.7B model easily)
+  deployModel(s, t.id, 'g_qwen3_1_7b_instruct_reasonin')
 }
 
 describe('long context (real-token window, KV admission, cache rescue)', () => {
   it('a prompt beyond the model real context window is unservable, not just worse', () => {
     const s = createState(60)
     richBuild(s)
-    // Phi-4's real window is 16K tokens; a 36K-token summ prompt does not fit ANY of them.
+    // Qwen3-1.7B's real window is 32K tokens; a 36K-token summ prompt does not fit ANY of them.
     for (const col of [2, 5, 8, 11]) buildPhi4(s, col, 2)
-    const windowTokens = serverCtxWindowTokens(s, loadout(s, 'hw_standard', 'phi4_14b'))
-    expect(windowTokens).toBeCloseTo(16 * 1000 * (1 + 0), 0)
+    const windowTokens = serverCtxWindowTokens(s, loadout(s, 'hw_standard', 'g_qwen3_1_7b_instruct_reasonin'))
+    expect(windowTokens).toBeCloseTo(32 * 1000 * (1 + 0), 0)
     expect(windowTokens).toBeLessThan(36000) // the oversized prompt
     liveWave(s)
     spawnRequest(s, 'summ', 1, 1, 1, 1, 3) // contextMul 3 → ~36000 input tokens
@@ -1386,10 +1403,10 @@ describe('long context (real-token window, KV admission, cache rescue)', () => {
     for (const col of [2, 5, 8]) buildPhi4(s, col, 2)
     tryBuild(s, 'cache', 5, 0) // aura over the Phi-4 racks
     liveWave(s)
-    // rag is cacheable long-context: 8000 × contextMul 3 = ~24000 tokens, over the 16K window
-    for (let i = 0; i < 6; i++) spawnRequest(s, 'rag', 1, 1, 1, 1, 3)
+    // rag is cacheable long-context: 8000 × contextMul 5 = ~40000 tokens, over the 32K window
+    for (let i = 0; i < 6; i++) spawnRequest(s, 'rag', 1, 1, 1, 1, 5)
     runFor(s, 80)
-    // some cache-serve even though no 16K window could fit them (the rest are
+    // some cache-serve even though no 32K window could fit them (the rest are
     // unservable — rejected on the window gate, §2.5; a benign rag may also be
     // over-refused by the model's intrinsic over-refusal, §3.6).
     expect(s.stats.served).toBeGreaterThan(0)
@@ -1398,7 +1415,7 @@ describe('long context (real-token window, KV admission, cache rescue)', () => {
   })
 
   it('long contexts crowd out batch concurrency (real KV admission)', () => {
-    // Gemma-3-27B has heavy KV (62 layers × 16 kvHeads): two 32K-token rag prompts
+    // Qwen3.6-27B's KV (64 layers × 8 kvHeads): two 48K-token rag prompts
     // cannot both fit the KV budget of a Performance (H100, 80 GB) rack.
     const build = (extraUpgrades?: (g: GameState) => void): GameState => {
       const s = createState(62)
@@ -1409,18 +1426,18 @@ describe('long context (real-token window, KV admission, cache rescue)', () => {
       const t = lastTower(s)
       upgradeHardware(s, t.id) // → standard
       upgradeHardware(s, t.id) // → performance (80 GB)
-      deployModel(s, t.id, 'gemma3_27b')
+      deployModel(s, t.id, 'qwen36_27b')
       return s
     }
     const s = build()
     const t = lastTower(s)
     const lo = loadout(s, t.hwId, t.modelId)
-    const model = MODEL_DEFS['gemma3_27b']
-    // two 32K-token requests exceed the KV budget → only one is admitted (rag ISL 8000 × ctx 4)
-    expect(kvPerReqGb(s, model, 32000) * 2).toBeGreaterThan(kvFreeGb(s, lo))
+    const model = MODEL_DEFS['qwen36_27b']
+    // two 48K-token requests exceed the KV budget → only one is admitted (rag ISL 8000 × ctx 6)
+    expect(kvPerReqGb(s, model, 48000) * 2).toBeGreaterThan(kvFreeGb(s, lo))
     liveWave(s)
-    spawnRequest(s, 'rag', 1, 1, 1, 1, 4) // 32K-token prompt
-    spawnRequest(s, 'rag', 1, 1, 1, 1, 4)
+    spawnRequest(s, 'rag', 1, 1, 1, 1, 6) // 48K-token prompt
+    spawnRequest(s, 'rag', 1, 1, 1, 1, 6)
     runFor(s, 3)
     expect(t.load).toBeCloseTo(0.5, 6) // 1 of 2 slots — the second rag is locked out
 
@@ -1431,10 +1448,10 @@ describe('long context (real-token window, KV admission, cache rescue)', () => {
     })
     const t2 = lastTower(s2)
     const lo2 = loadout(s2, t2.hwId, t2.modelId)
-    expect(kvPerReqGb(s2, model, 32000) * 2).toBeLessThan(kvFreeGb(s2, lo2))
+    expect(kvPerReqGb(s2, model, 48000) * 2).toBeLessThan(kvFreeGb(s2, lo2))
     liveWave(s2)
-    spawnRequest(s2, 'rag', 1, 1, 1, 1, 4)
-    spawnRequest(s2, 'rag', 1, 1, 1, 1, 4)
+    spawnRequest(s2, 'rag', 1, 1, 1, 1, 6)
+    spawnRequest(s2, 'rag', 1, 1, 1, 1, 6)
     runFor(s2, 3)
     expect(t2.load).toBeCloseTo(1, 6) // both admitted now
   })
@@ -1715,7 +1732,7 @@ describe('two-layer safety (§3)', () => {
     const run = (safety: number, n: number): { unsafe: number; served: number; cleared: number } => {
       const s = createState(301)
       richBuild(s)
-      shadowModel(s, 'mistral_small_24b', { safety, refusalStyle: 'hard-refusal', overRefusal: 0 }, 'sh')
+      shadowModel(s, 'g_qwen3_5_9b_2', { safety, refusalStyle: 'hard-refusal', overRefusal: 0 }, 'sh')
       // a fat, fast fleet so jailbreaks are actually served (not just leaking uncleared)
       for (const [c, r] of [[3, 2], [8, 2], [14, 2], [20, 2], [6, 6], [12, 6], [18, 6]] as const)
         buildGeneralRack(s, c, r, 'sh')
@@ -1744,7 +1761,7 @@ describe('two-layer safety (§3)', () => {
     richBuild(s)
     expect(guardLatencyMs(s, enc)).toBe(92) // fixed, not the roofline
     // a low-safety rack + an encoder guard before the core → the jailbreak is caught
-    shadowModel(s, 'mistral_small_24b', { safety: 15, refusalStyle: 'none', overRefusal: 0 }, 'sh')
+    shadowModel(s, 'g_qwen3_5_9b_2', { safety: 15, refusalStyle: 'none', overRefusal: 0 }, 'sh')
     for (const c of [3, 8, 14, 20]) buildGeneralRack(s, c, 2, 'sh')
     tryBuild(s, 'guard_encoder', 6, 0)
     tryBuild(s, 'guard_encoder', 12, 0)
@@ -1794,7 +1811,7 @@ describe('two-layer safety (§3)', () => {
       s.guardrailThreshold = threshold
       // a low-recall guardrail (low base × low threshold) so the recall gap is visible:
       // a low-safety model so layer 1 never saves the jailbreaks.
-      shadowModel(s, 'mistral_small_24b', { safety: 15, refusalStyle: 'none', overRefusal: 0 }, 'sh')
+      shadowModel(s, 'g_qwen3_5_9b_2', { safety: 15, refusalStyle: 'none', overRefusal: 0 }, 'sh')
       for (const c of [3, 8, 14, 20]) buildGeneralRack(s, c, 2, 'sh')
       tryBuild(s, 'guard_encoder', 6, 0)
       liveWave(s)
@@ -1814,7 +1831,7 @@ describe('two-layer safety (§3)', () => {
     const s = createState(306)
     richBuild(s)
     // a model with a guaranteed over-refusal (1.0) over-refuses every benign request
-    shadowModel(s, BIG, { safety: 60, refusalStyle: 'hard-refusal', overRefusal: 1 }, 'paranoid')
+    shadowModel(s, 'g_qwen3_5_9b_2', { safety: 60, refusalStyle: 'hard-refusal', overRefusal: 1 }, 'paranoid')
     buildGeneralRack(s, 3, 2, 'paranoid')
     buildGeneralRack(s, 8, 2, 'paranoid')
     const trust0 = s.meters.trust

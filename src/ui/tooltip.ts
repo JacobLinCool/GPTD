@@ -64,6 +64,7 @@ class TooltipLayer {
 
   private arm(spec: () => TooltipSpec, gx: number, gy: number): void {
     this.dismiss()
+    if (!tooltipsEnabled) return
     this.pending = { spec, gx, gy }
     this.timer = setTimeout(() => this.show(), DELAY_MS)
   }
@@ -137,11 +138,18 @@ class TooltipLayer {
 }
 
 let layer: TooltipLayer | null = null
+let tooltipsEnabled = true
 
 /** The shared tooltip layer (created on first use). Add `tooltip().view` to the root. */
 export function tooltip(): TooltipLayer {
   if (!layer) layer = new TooltipLayer()
   return layer
+}
+
+/** Global on/off (Settings ▸ Gameplay). When off, no tooltip arms or shows. */
+export function setTooltipsEnabled(v: boolean): void {
+  tooltipsEnabled = v
+  if (!v && layer) layer.view.visible = false
 }
 
 /** Convenience: attach a tooltip provider to an element. */

@@ -25,8 +25,10 @@ and execution stay in the tab; the relay only forwards intents and results.
 
 This is the zero-setup path for someone with Claude Code / Codex installed:
 
-1. Open the game in your browser and add `?agent=1`, e.g. `https://jacoblincool.github.io/GPTD/?agent=1`.
-   A small **Agent bridge** panel appears with a ready-to-paste command and a live
+1. Open the game and enter agent mode — either click **AGENT MODE** on the title screen
+   (beside START), or add `?agent=1` to the URL (e.g. `https://jacoblincool.github.io/GPTD/?agent=1`).
+   Either way the display defaults to **Expert Mode** and a small **Agent bridge** panel
+   appears with a ready-to-paste command and a live
    connection status.
 2. Paste that command to your agent. It runs (in the background):
    ```bash

@@ -949,6 +949,7 @@ export class Overlay {
   private actionBtn: UIButton
   private continueBtn: UIButton
   private demoBtn: UIButton
+  private agentBtn: UIButton
   private langBtn: UIButton
   private modeBtns: { mode: 'normal' | 'expert'; btn: UIButton }[] = []
   private modeDesc = label('', 12, COLORS.textDim)
@@ -957,7 +958,7 @@ export class Overlay {
   private lastKind: 'menu' | 'won' | 'lost' = 'menu'
   private lastState: GameState | null = null
 
-  constructor(onAction: () => void, onContinue: () => void, onDemo: () => void) {
+  constructor(onAction: () => void, onContinue: () => void, onDemo: () => void, onAgent: () => void) {
     const px = (DESIGN_W - this.PW) / 2
     const py = (DESIGN_H - this.PH) / 2
     this.dim.rect(0, 0, DESIGN_W, DESIGN_H).fill({ color: 0x05080d, alpha: 0.82 })
@@ -989,6 +990,13 @@ export class Overlay {
     this.demoBtn.y = py + 16
     this.demoBtn.visible = false
     this.view.addChild(this.demoBtn)
+
+    // Menu only: a smaller button beside START that hands the run to a local CLI
+    // agent over the bridge (Expert display by default). Positioned in show().
+    this.agentBtn = new UIButton({ w: 160, h: 46, accent: COLORS.data, onTap: onAgent })
+    this.agentBtn.y = py + this.PH - 72
+    this.agentBtn.visible = false
+    this.view.addChild(this.agentBtn)
 
     // Display-mode selector (menu only): chosen here, locked for the run.
     const modes: ('normal' | 'expert')[] = ['normal', 'expert']
@@ -1075,6 +1083,17 @@ export class Overlay {
     }
     this.demoBtn.visible = menu
     if (menu) this.demoBtn.setTitle(t('menu.demo')).layout(0, 0, true)
+    // START is centered alone on win/lose; in the menu it shares its row with a
+    // smaller AGENT button (enter the agent bridge, Expert display by default).
+    this.agentBtn.visible = menu
+    if (menu) {
+      const pairW = 280 + 12 + 160
+      this.actionBtn.x = (DESIGN_W - pairW) / 2
+      this.agentBtn.x = this.actionBtn.x + 280 + 12
+      this.agentBtn.setAccent(COLORS.data).setTitle(t('menu.agent')).layout(0, 0, true)
+    } else {
+      this.actionBtn.x = (DESIGN_W - 280) / 2
+    }
     this.modeDesc.visible = menu
     if (menu) this.modeDesc.text = t(getMode() === 'expert' ? 'mode.expertDesc' : 'mode.normalDesc')
     this.continueBtn.visible = kind === 'won' && !s.endless

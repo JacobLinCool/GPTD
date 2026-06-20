@@ -167,8 +167,24 @@ export class Tutorial {
     this.nextFlag = true
   }
 
+  /** True once the tutorial is finished or skipped (gates mid-run mode switching). */
+  get finished(): boolean {
+    return !this.enabled
+  }
+
   skip(): void {
     this.disable()
+  }
+
+  /** Settings ▸ Gameplay — re-arm the tutorial from scratch and clear the saved flag. */
+  replay(): void {
+    this.reset()
+    this.enabled = true
+    try {
+      localStorage.removeItem('gptd_tut_done')
+    } catch {
+      /* ignore */
+    }
   }
 
   private disable(): void {

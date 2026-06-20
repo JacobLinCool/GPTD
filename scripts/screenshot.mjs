@@ -29,6 +29,20 @@ page.on('pageerror', (e) => errors.push('pageerror: ' + (e?.message || e)))
 const shot = (name) => page.screenshot({ path: `${OUT}/${name}.png` }).then(() => console.log('shot:', name))
 const wait = (ms) => page.waitForTimeout(ms)
 const snap = () => page.evaluate(() => window.__game?.snapshot ?? null)
+const clearSelection = () =>
+  page.evaluate(() => {
+    const g = window.__game
+    if (!g) return
+    g.selectedDefId = null
+    g.selectedTowerId = null
+    g.selectedRequestId = null
+  })
+const closeModels = () =>
+  page.evaluate(() => {
+    const g = window.__game
+    if (!g) return
+    g.modelsOpen = false
+  })
 const tile = (col, row) => [64 + (col + 0.5) * 48, 96 + (row + 0.5) * 48]
 const BUILD_COUNT = 11
 const BUILD_PAD_X = 12
@@ -162,7 +176,11 @@ await wait(200)
 await page.mouse.click(...tile(4, 2)) // select the rack
 await wait(200)
 await shot('5a-inspect-rack')
-await page.keyboard.press('Escape')
+// Do not use Escape here: after the system-menu work, Escape is a global
+// priority stack and may open the hub once the selection is gone. This smoke test
+// only needs to dismiss the inspect panel before continuing to build.
+await clearSelection()
+await wait(100)
 const s1 = await snap()
 console.log('loadouts:', JSON.stringify(s1?.loadouts))
 
@@ -176,7 +194,9 @@ await shot('8a-models-overview')
 await page.mouse.click(1126, 110)
 await wait(300)
 await shot('8b-lineage-graph')
-await page.keyboard.press('Escape') // close the modal
+// Avoid the global Escape stack here; close the modal state directly so the new
+// System hub cannot accidentally open and block the following build clicks.
+await closeModels()
 await wait(200)
 
 // Place a Training Lab (build index 10) — it unlocks the tech tree + the Studio,
@@ -264,7 +284,7 @@ await shot('8c-models-with-derived')
 await page.mouse.click(180, 208) // select the first derived row; validates the detail card layout
 await wait(200)
 await shot('8d-derived-detail')
-await page.keyboard.press('Escape')
+await closeModels()
 await wait(150)
 
 await browser.close()

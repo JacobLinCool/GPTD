@@ -25,6 +25,8 @@ agents, kept at the root so tools discover it).
 | --- | --- |
 | **[DESIGN.md](./DESIGN.md)** | The **canonical Game Design Document** — the readable design of record. **Start here to understand the design.** |
 | **[BLUEPRINT.md](./BLUEPRINT.md)** | The **authoritative design spec** (§0–§7): the unified data model, the serving spine, the dual-clock / SLO physics, and every subsystem — the deepest implementation layer beneath the GDD. (正體中文.) |
+| **[MATH.md](./MATH.md)** | Quick reference: every formula, constant, and variable the simulation uses, extracted from the code (glossary → constants → formulas by subsystem). |
+| **[SYSTEM-MENU.md](./SYSTEM-MENU.md)** | Design spec for the implemented system/pause menu, settings & options (audio volume, language, accessibility, gameplay), content browsers (How to Play / Codex / About, with Achievements reserved), and the persistence layer. |
 
 ## Real-world grounding
 
@@ -36,4 +38,5 @@ are where the numbers come from and how they map to reality.
 | **[REALISM.md](./REALISM.md)** | The realism ledger: each mechanic → its real-world basis, the literature, what GPTD ships, and where it knowingly deviates. |
 | **[REALISM-MODELS.md](./REALISM-MODELS.md)** | The real-model grounding: how the model roster, capability calibration, and post-training tie to real open-weight models and public benchmarks. |
 | **[MODEL-CATALOG.md](./MODEL-CATALOG.md)** | The fact-checked model-roster reference — real developer, release, license, link, the five benchmarks, and lineage for every model the in-game roster is drawn from. |
+| **[PARETO.md](./PARETO.md)** | Roster Pareto analysis — the five size↔capability frontiers (mermaid charts), per-size-bucket ceilings, and a frontier-coverage review of the curated models. |
 | **[REFERENCE-DOSSIER.md](./REFERENCE-DOSSIER.md)** | Deep background: the real-world 2024–2026 facts about LLM inference, post-training, safety, serving systems, and hardware the simulation is calibrated against. The blueprint's `§ref` citations resolve here. (正體中文; not required to play.) |

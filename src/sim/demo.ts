@@ -146,7 +146,11 @@ function ensureCapacity(s: GameState, addDraw: number, addHeat: number): void {
 }
 
 function reserveOf(s: GameState): number {
-  return 25 + estDraw(s) * 6.5
+  // Cushion scaled by fleet power draw — a proxy for the next wave's wall-clock operating
+  // bill (charged DURING the wave, after the build phase has spent). Scaling harder with
+  // draw keeps the autoplayer from over-building into bankruptcy on a tight wave.
+  // (Re-tuned to 32 + draw·9 after the composite-benchmark recalibration shifted economics.)
+  return 32 + estDraw(s) * 9
 }
 
 function hasTowerKind(s: GameState, kind: string): boolean {
@@ -387,7 +391,7 @@ function ensurePodShowcase(s: GameState, waveAbout: number): void {
       .sort((a, b) => HARDWARE_TIERS.indexOf(b.hwId ?? '') - HARDWARE_TIERS.indexOf(a.hwId ?? ''))[0]
     if (!t) return
     const cost = hardwareUpgradeCost(s, t)
-    if (s.meters.cash <= cost + 45) return
+    if (s.meters.cash <= cost + reserveOf(s)) return // keep the full wave-operating-bill buffer
     if (!upgradeHardware(s, t.id)) return
     deployBest(s, t.id, t.hwId, t.modelId)
   }
@@ -411,7 +415,7 @@ function assignDisaggRoles(s: GameState): void {
 
 function ensureBigRacks(s: GameState, waveAbout: number, want: number): void {
   if (!fp8Ready(s) || !ownsBigSpecialist(s)) return
-  const bigReserve = 20 + estDraw(s) * 3
+  const bigReserve = reserveOf(s) // keep the full wave-operating-bill buffer (was 20 + draw·3)
   let guard = 0
   while (bigRackCount(s) < want && guard++ < 4) {
     const perf = s.towers.find((t) => t.def.kind === 'server' && t.hwId === 'hw_perf')

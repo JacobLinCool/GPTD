@@ -16,9 +16,9 @@ GPTD's model system has five pillars: a **real roster** of open-weight checkpoin
 
 The model system rests on two data moves and the structural mechanics built on them:
 
-1. **Real roster + free-deploy economy.** 30 real open-weight checkpoints (from the fact-checked 130-model `MODEL-CATALOG.md`), owned free from turn one (`STARTER_MODELS = OPEN_MODEL_IDS`); gated only by VRAM fit (`serverFitsMemory` on `paramsTotalB`). Real metadata (developer / license / openWeights / released / contextWindowK / source) rides as inert display fields the sim never reads.
+1. **Real roster + free-deploy economy.** 42 active real open-weight checkpoints — frontier-tolerance-gated from a ~98-model candidate pool (30 hand-authored from the fact-checked 130-model `MODEL-CATALOG.md` + 68 auto-selected from the Artificial Analysis snapshot on the per-size-bucket Pareto frontier) — owned free from turn one (`STARTER_MODELS = OPEN_MODEL_IDS`); gated only by VRAM fit (`serverFitsMemory` on `paramsTotalB`). Real metadata (developer / license / openWeights / released / contextWindowK / source) rides as inert display fields the sim never reads.
 2. **`qualityBy` calibrated from benchmarks, never hand-edited.** `qualityFromBenchmarks` + the piecewise-linear `CURVES` (`calibrate.ts`) set each checkpoint's quality from its real benchmark scores; that calibration is the single path by which quality is set.
-3. **The agentic / SWE wall (§5 below).** A 5th capability axis `agentic`, calibrated from **SWE-bench Verified** (the unsaturated benchmark), drives the late-game `agent` request — the answer to capability compression.
+3. **The agentic wall (§5 below).** A 5th capability axis `agentic`, calibrated from **Terminal-Bench Hard** (the unsaturated agentic terminal/SWE-grade benchmark, ceiling ~50%), drives the late-game `agent` request — the answer to capability compression.
 4. **MoE = total-vs-active split (§4 below).** VRAM ∝ `paramsTotalB`, compute/decode ∝ `paramsActiveB`, computed on the real roofline. MoE is purely a model property; the serving-layer sharding node is `inf_par_ep` (Expert Parallelism).
 5. **Post-Training Studio.** Derived models (an agentic specialist, the endless quality ceiling) are **player-created**: a GRPO-agentic Studio run on a frontier base is your agentic specialist; a deep iterative finetune-of-a-finetune chain is the endless ceiling. (Details: REALISM.md §3.)
 
@@ -29,7 +29,7 @@ The model system rests on two data moves and the structural mechanics built on t
 - **Correctness gate.** A request is answered **correctly iff** `effQ ≥ difficulty[primaryAxis]`, where `effQ = serverQualityVs(...) − contextGapPenalty − int4ContextPenalty` and `serverQualityVs = qualityBy[axis] − int4Tax − alignmentTax(model)` (`src/sim/effects.ts`, `src/sim/combat.ts`). Below the line → `bad` (still billed, but Trust bleeds). The model number that decides this is `qualityBy[axis]` on the ~0–130 scale, minus the alignment tax.
 - **Difficulty is a per-axis vector.** Each `RequestTypeDef` carries `difficulty: Record<CapabilityAxis, number>` and a `primaryAxis` (`content.ts` REQUEST_TYPES). E.g. `chat.difficulty.chat = 18`, `comp.difficulty.coding = 56`, `reason.difficulty.reasoning = 82`, `agent.difficulty.agentic = 82`. Grading is per-axis, not a single scalar `complexity`.
 - **Capability axes.** `qualityBy = {chat, coding, reasoning, general, agentic}` (`ServerSpec`). Requests are graded on `primaryAxis`.
-- **Models are real and free.** `ROSTER` (`content.ts`) generates 30 base `ModelDef`s; every one is owned from the start; deploying costs nothing; VRAM fit (and the rack tier a 100B+ model needs) is the gate. Derived models the player mints in the Studio live in `s.derivedModels`, resolved via `resolveModel(s, id)`.
+- **Models are real and free.** `ROSTER` (`content.ts`) generates a ~98-model candidate pool; the 10% frontier-tolerance gate (`withinFrontierTolerance`) trims it to the 42 active base `ModelDef`s in `MODEL_DEFS`; every active one is owned from the start; deploying costs nothing; VRAM fit (and the rack tier a 100B+ model needs) is the gate. Derived models the player mints in the Studio live in `s.derivedModels`, resolved via `resolveModel(s, id)`.
 - **VRAM vs serve cost.** `modelMemory = paramsTotalB × bytesPerParam` gates residency; serve speed = the real roofline `min(compute roof, bandwidth roof)` keyed on `paramsActiveB` (`effects.ts`).
 - **Modes.** `normal` vs `expert` (= "Professional"): identical deterministic sim, expert only reveals telemetry. `src/sim/**` never imports `mode.ts`.
 
@@ -45,9 +45,9 @@ The model system rests on two data moves and the structural mechanics built on t
 | `reasoning` | **GPQA-Diamond** | `AIME × 0.78 + 10` |
 | `chat` | **MMLU-Pro** | `MMLU − 14` |
 | `general` | **MMLU-Pro** | same as chat |
-| `agentic` | **SWE-bench Verified** | discounted LiveCodeBench (`× 0.7`) |
+| `agentic` | **Terminal-Bench Hard** | `SWE-bench Verified × 0.42` |
 
-A per-tier `QUALITY_FLOOR` fills any axis a model has no benchmark for. The agentic floors are deliberately low (small 20, general 40, frontier 70) — without a real SWE-bench score a model is assumed weak at autonomous work.
+A per-tier `QUALITY_FLOOR` fills any axis a model has no benchmark for. The agentic floors are deliberately low (small 20, general 40, frontier 70) — without a real Terminal-Bench Hard score a model is assumed weak at autonomous work.
 
 ### 2.2 The curves (per-axis piecewise-linear, `CURVES`)
 
@@ -56,7 +56,7 @@ coding    (LiveCodeBench %):   (10→30) (30→56) (66→78) (84→95) (95→112
 reasoning (GPQA-Diamond %):    (28→40) (50→72) (70→86) (81→100) (90→118)
 chat      (MMLU-Pro %):        (40→30) (56→52) (70→72) (84→95) (91→112)
 general   (MMLU-Pro %):        same as chat
-agentic   (SWE-bench Verified %): (20→30) (45→60) (60→78) (72→95) (82→112)
+agentic   (Terminal-Bench Hard %): (5→30) (12→55) (20→72) (28→88) (38→105)
 ```
 
 `pwl(anchors, b)`: linear to origin below the first anchor, gentle `+1.5×` extrapolation above the last, linear interpolation within; clamped to `[8, 130]`. Monotonic, deterministic, table-driven.
@@ -66,7 +66,7 @@ agentic   (SWE-bench Verified %): (20→30) (45→60) (60→78) (72→95) (82→
 - **chat trivial:** any real instruct model (MMLU-Pro ≥ 40) → quality ≥ 30 ≫ the chat line 18.
 - **coding needs a real coder / ~30B+:** LCB 30 → exactly 56 (the code line). Llama-3.1-8B (HumanEval 72.6 → LCB≈15 → ~37) ships bad code; Qwen3-32B (LCB 65.7) clears comfortably.
 - **hardest reasoning needs GPQA ≳ 65:** GPQA 70 → 86 clears the reason line 82; GPQA 50 → 72 fails. Non-reasoning models (Llama-3.3-70B GPQA 50.5, Gemma-3-27B GPQA 42.4) fail the hardest lane; thinking models clear it — the realism payoff, and the compression problem (§5).
-- **agentic separates by SWE:** the agent line 82 sits around SWE-bench Verified ~63; only strong-SWE frontier (or self-trained) models clear it.
+- **agentic separates by Terminal-Bench Hard:** the agent line 82 sits at Terminal-Bench Hard ≈ 25; only strong-terminal frontier (or self-trained) models clear it (DeepSeek-V3.1 TB-Hard 25 → 82, Kimi K2 31 → 93, Nemotron-3-Super 28.8 → 89). Raw scale is not agentic: the big non-terminal Qwen3-235B (TB-Hard 13.6 → 58) fails the line while clearing every saturated knowledge axis.
 
 ### 2.4 Do NOT derive quality from the AA Intelligence Index
 
@@ -76,7 +76,7 @@ The AA composite re-baselines hard between versions (MiniMax-M2 read 61 on v3.0,
 
 ## 3. The roster (computed, fact-checked)
 
-The roster is **30 real open-weight base checkpoints** (`content.ts` ROSTER), drawn from the fact-checked **130-model catalog** in [`MODEL-CATALOG.md`](MODEL-CATALOG.md) — the single source-of-truth (developer / release / license / official link / the 5 benchmarks / lineage / confidence, sourced from Artificial Analysis + official model cards and refreshed by the `gptd-model-catalog` + `gptd-newest-models` research workflows). `qualityBy` is computed by the §2 calibration from each model's benchmark inputs — **never hand-edited**.
+The active roster is **42 real open-weight base checkpoints**, selected in two stages from a **~98-model candidate pool**: **30 hand-authored** (high arch-confidence, in `content.ts` ROSTER) plus **68 auto-selected** on the per-size-bucket Pareto frontier of the 5 capability axes (`roster.generated.ts`, emitted by `scripts/gen-roster.mjs` from the Artificial Analysis snapshot), then a **10% frontier-tolerance gate** (`withinFrontierTolerance`, `calibrate.ts`) that keeps a checkpoint only if it is within 10% of the size↔capability Pareto frontier on at least one axis (drops the 56 sub-frontier candidates — older models the 2026 frontier beats by >10% everywhere). See [PARETO.md](PARETO.md) for the gate + the five frontiers. The hand-authored picks are drawn from the fact-checked **130-model catalog** in [`MODEL-CATALOG.md`](MODEL-CATALOG.md) — the single source-of-truth (developer / release / license / official link / the 6 benchmarks / lineage / confidence, sourced from Artificial Analysis + official model cards and refreshed by the `gptd-model-catalog` + `gptd-newest-models` research workflows). `qualityBy` is computed by the §2 calibration from each model's benchmark inputs — **never hand-edited**.
 
 The in-game roster spans small→large (≈1B → 1.6T): edge (Llama-3.2-1B, Qwen3-4B, Nemotron Nano 9B), small/mid (Llama-3.1-8B, Gemma-3-12B, Phi-4, gpt-oss-20B, Qwen3-32B, Qwen3-30B-A3B, Qwen3-Coder-30B, Nemotron-3-Nano-30B, Qwen3.6-27B), large (Llama-3.3-70B, Qwen3-Next-80B, GLM-4.5-Air, gpt-oss-120B, Nemotron-3-Super-120B, Qwen3.5-122B), and the 2026 frontier (Qwen3-235B, MiniMax-M3, Qwen3.5-397B, Nemotron-3-Ultra-550B, DeepSeek-V3.1, GLM-5.2, DeepSeek-V4-Pro, Kimi K2). **See `MODEL-CATALOG.md` for full per-model detail** (params/arch, benchmarks, links, lineage).
 
@@ -97,7 +97,7 @@ The in-game roster spans small→large (≈1B → 1.6T): edge (Llama-3.2-1B, Qwe
 
 With real 2025–26 benchmarks, a 32B thinking model clears every *reasoning/knowledge* line a 671B frontier model does — top-end benchmarks have converged, and capability tracks post-training (reasoning RL / instruct) more than parameter count. This is correct realism, and it flattens the "scale up" progression. Two mechanics restore the top-end wall:
 
-1. **The agentic / SWE wall (primary).** `agentic` is calibrated from **SWE-bench Verified**, the one benchmark family that has not saturated (Devstral 53.6, GLM-4.5-Air 57.6, DeepSeek-V3.1 66, Kimi K2 71.3). The late-game `agent` request (`difficulty.agentic = 82`, which sits around SWE ~63) only true frontier checkpoints clear. Models with no SWE score fall to the low agentic floor. This restores a top-end wall grounded in real, unsaturated data.
+1. **The agentic wall (primary).** `agentic` is calibrated from **Terminal-Bench Hard**, the unsaturated agentic terminal/SWE-grade benchmark (ceiling ~50%): DeepSeek-V3.1 25, Nemotron-3-Super 28.8, Kimi K2 31. The late-game `agent` request (`difficulty.agentic = 82`, which sits at Terminal-Bench Hard ≈ 25) only strong-terminal frontier checkpoints clear. Crucially, raw scale does not buy it: the big non-terminal **Qwen3-235B (TB-Hard 13.6 → agentic 58) does NOT clear** the line despite tying the frontier on saturated knowledge — and the cheap mid MoEs (Qwen3-30B-A3B 31, Qwen3-32B 18, gpt-oss-20B 50, gpt-oss-120B 79) fall short too. Models with no Terminal-Bench Hard score fall to the low agentic floor. This restores a top-end wall grounded in real, unsaturated data.
 2. **Throughput as the other late-game axis.** A fast small MoE answers correctly but cannot soak Black Friday volume from one rack; frontier value is also VRAM headroom → batch → Goodput. The compression becomes the point: everyone has a smart model; can you serve it at scale within SLO?
 
 This also sets the balance for **Qwen3 30B-A3B**: it serves fastest (3.3B active) and answers reasoning, but its **calibrated agentic score genuinely lags** (a calibration fact, not a hand-edit), so the `agent` lane is the wall it cannot pass. **DeepSeek-V3.1** ties the 235B on saturated knowledge axes (that tie is real) and differentiates via `paramsActiveB` 37, the 671B residency requiring a SuperPod, and the agentic/context axes.

@@ -11,6 +11,7 @@ import {
   upgradeHardware,
 } from '../src/sim/actions'
 import {
+  DEFAULT_MODEL_ID,
   HARDWARE_DEFS,
   METHOD_RECIPES,
   MODEL_DEFS,
@@ -624,8 +625,8 @@ describe('balance: heuristic autoplay survives deep into the 100-wave gauntlet',
     expect(s.upgrades['inf_paged']).toBeGreaterThanOrEqual(1)
     //   • trained at least one player-derived checkpoint in the Post-Training Studio,
     expect(derivedCount).toBeGreaterThanOrEqual(1)
-    //   • and deploys a model beyond the free llama31_8b starter on its racks.
-    expect([...deployed].some((id) => id !== 'llama31_8b')).toBe(true)
+    //   • and deploys a model beyond the free default starter on its racks.
+    expect([...deployed].some((id) => id !== DEFAULT_MODEL_ID)).toBe(true)
     expect(deployed.size).toBeGreaterThanOrEqual(1)
     // served a large volume of real traffic across the run (sanity: not stalled).
     expect(s.stats.served).toBeGreaterThan(800)
@@ -666,7 +667,7 @@ describe('balance: heuristic autoplay survives deep into the 100-wave gauntlet',
     expect(roles.has('decode')).toBe(true)
     expect(derivedTargets.has('reasoning')).toBe(true)
     expect(derivedTargets.has('agentic')).toBe(true)
-    expect([...productionDemoDeployedModelIds(s)].some((id) => id !== 'llama31_8b')).toBe(true)
+    expect([...productionDemoDeployedModelIds(s)].some((id) => id !== DEFAULT_MODEL_ID)).toBe(true)
   })
 
   it('the economy rewards good serving over the run (clean serves dominate)', () => {
@@ -752,8 +753,8 @@ describe('balance: heuristic autoplay survives deep into the 100-wave gauntlet',
  * independent of any single playthrough.
  */
 describe('balance: teaching invariants (H2 agent wall / capability compression)', () => {
-  it('H2: the tiny MoE qwen3_30b_a3b is fast+smart but the AGENT lane is its wall', () => {
-    const q = MODEL_DEFS['qwen3_30b_a3b'].qualityBy
+  it('H2: the tiny MoE nemotron3_nano_30b is fast+smart but the AGENT lane is its wall', () => {
+    const q = MODEL_DEFS['nemotron3_nano_30b'].qualityBy
     // it clears chat/reasoning with margin (the MoE "frontier answers at 3.3B active"),
     expect(q.reasoning).toBeGreaterThanOrEqual(82)
     expect(q.chat).toBeGreaterThanOrEqual(82)
@@ -762,19 +763,21 @@ describe('balance: teaching invariants (H2 agent wall / capability compression)'
     expect(q.agentic).toBeLessThan(82)
   })
 
-  it('the agent lane requires scale OR a trained specialist (it does not compress)', () => {
+  it('the agent lane requires terminal-agent strength OR a trained specialist (it does not compress)', () => {
     const AGENT_LINE = 82
-    // a true open FRONTIER (the SuperPod-class Qwen3-235B / DeepSeek-V3.1) clears it,
-    expect(MODEL_DEFS['qwen3_235b'].qualityBy.agentic).toBeGreaterThanOrEqual(AGENT_LINE)
-    expect(MODEL_DEFS['deepseek_v31'].qualityBy.agentic).toBeGreaterThanOrEqual(AGENT_LINE)
-    // …while the cheap mid-tier MoEs that compress chat/reasoning do NOT clear it,
-    for (const id of ['qwen3_30b_a3b', 'qwen3_32b', 'gptoss_120b', 'gptoss_20b']) {
+    // a true terminal-agent-grade frontier (Kimi K2 / GLM-5.2) clears it,
+    expect(MODEL_DEFS['kimi_k2'].qualityBy.agentic).toBeGreaterThanOrEqual(AGENT_LINE)
+    expect(MODEL_DEFS['glm_5_2'].qualityBy.agentic).toBeGreaterThanOrEqual(AGENT_LINE)
+    // …while the cheap mid MoEs do NOT — and crucially, neither does raw SCALE: big MoEs
+    // (Qwen3-235B, gpt-oss-120B, Qwen3-Next-80B) are only MID on the agentic blend
+    // (Terminal-Bench Hard-led), so they fall short of the wall.
+    for (const id of ['nemotron3_nano_30b', 'qwen3_next_80b', 'gptoss_20b', 'qwen3_235b', 'gptoss_120b']) {
       expect(MODEL_DEFS[id].qualityBy.agentic).toBeLessThan(AGENT_LINE)
     }
-    // …and a PLAYER GRPO-agentic run on an agentic-capable base (Nemotron-Super, a
-    // 120B that fits a 141 GB Frontier rack at FP8) DOES close the loop — the Studio
-    // is the player's path to the agent lane when no frontier is afforded.
-    const base = MODEL_DEFS['nemotron_super']
+    // …and a PLAYER GRPO-agentic run on an agentic-capable base (gpt-oss-120B — strong but
+    // lands just short of the line, and fits a 141 GB Frontier rack at FP8) DOES close the
+    // loop — the Studio is the player's path to the agent lane when no frontier is afforded.
+    const base = MODEL_DEFS['gptoss_120b']
     const f = computeDerivedFields(base, METHOD_RECIPES['grpo'], 'agentic', 1.5, null)
     expect(base.qualityBy.agentic).toBeLessThan(AGENT_LINE) // the base alone is short,
     expect(f.qualityBy.agentic).toBeGreaterThanOrEqual(AGENT_LINE) // the GRPO-agent run clears it.

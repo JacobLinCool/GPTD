@@ -21,7 +21,7 @@ export function spawnRequest(
   const p = posAt(0, lane)
   // Real token counts (§2): prefill ingests inputTokens, decode emits outputTokens.
   // workMul scales the generation load (output, with input following along);
-  // contextMul inflates the prompt length (endless "token inflation", §2.6).
+  // contextMul inflates the prompt length (era "token inflation", REALISM §1.8).
   const inputTokens = Math.max(1, Math.round(def.inputTokens * contextMul * Math.max(1, Math.sqrt(workMul))))
   // a pure-prefill request (embed: OSL 0) generates no decode tokens; everything
   // else scales its OSL with workMul. Floor at 0 (not 1) so embed stays prefill-only.

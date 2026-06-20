@@ -14,7 +14,9 @@ import type {
   UpgradeDef,
   WaveDef,
 } from '../core/types'
-import { calibrateRecipes, qualityFromBenchmarks, type BenchInputs } from './calibrate'
+import { calibrateRecipes, qualityFromBenchmarks, withinFrontierTolerance, type BenchInputs } from './calibrate'
+import { AA_BENCH } from './roster.bench.generated'
+import { GENERATED_ROSTER } from './roster.generated'
 import { buildCampaign, CAMPAIGN_THEMES, themedIncidentId } from './campaign'
 
 /* ------------------------------------------------------------------ *
@@ -378,7 +380,7 @@ export const HARDWARE_TIERS = ['hw_edge', 'hw_standard', 'hw_perf', 'hw_frontier
 export const sizeLabel = (p: number): string =>
   p >= 1000 ? `${Number((p / 1000).toFixed(p % 1000 ? 1 : 0))}T` : `${p}B`
 
-interface RosterEntry {
+export interface RosterEntry {
   id: string
   name: string
   tier: ModelDef['tier']
@@ -695,6 +697,9 @@ const ROSTER: RosterEntry[] = [
     real: R('NVIDIA', 'OpenMDW v1.1', true, '2026-Q2', 262, 'high', 'hf:nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16'),
     desc: 'NVIDIA\'s from-scratch frontier flagship: a 550B/55B Latent-MoE (hybrid Mamba-2 + MoE + attention) — the strongest US open-weight model on the AA index at launch.',
   },
+  // ---- Part B: ~68 generated open-weight models (Pareto-selected across scales; arch resolved,
+  //      benchmarks from AA). High-confidence hand-authored picks are the 30 above. ----
+  ...GENERATED_ROSTER,
 ]
 
 /** Per-tier baseline that fills any qualityBy axis a model has no benchmark for.
@@ -707,10 +712,19 @@ const QUALITY_FLOOR: Record<ModelDef['tier'], Record<ServerSpec, number>> = {
   frontier: { chat: 85, coding: 80, reasoning: 85, general: 85, agentic: 70 },
 }
 
-export const MODEL_DEFS: Record<string, ModelDef> = {}
+// The ROSTER above (30 hand-authored + ~68 Pareto-selected) is the CANDIDATE POOL.
+// The active roster is the subset that clears the frontier-tolerance gate (§calibrate
+// `withinFrontierTolerance`, 10%): a checkpoint stays only if it is within 10% of the
+// size↔capability Pareto frontier on at least one axis. Models that trail the frontier
+// on EVERY axis (strictly beaten by something no bigger) are dropped — see docs/PARETO.md.
+const _candidates: ModelDef[] = []
 for (const e of ROSTER) {
-  const qualityBy = qualityFromBenchmarks(e.bench, QUALITY_FLOOR[e.tier])
-  MODEL_DEFS[e.id] = {
+  // Merge the live Artificial-Analysis benchmark cells (scripts/aa-sync.mjs) OVER the
+  // hand-authored `bench`: AA is the source of truth where it has a number; the manual
+  // value fills the gaps AA does not publish (e.g. the newest frontier's MMLU-Pro/LCB).
+  const bench: BenchInputs = { ...e.bench, ...AA_BENCH[e.id] }
+  const qualityBy = qualityFromBenchmarks(bench, QUALITY_FLOOR[e.tier])
+  _candidates.push({
     id: e.id,
     name: e.name,
     tier: e.tier,
@@ -733,12 +747,16 @@ for (const e of ROSTER) {
     alignment: e.alignment ?? { ...INSTRUCT_ALIGNMENT },
     instructFollow: e.instructFollow ?? INSTRUCT_INSTRUCT_FOLLOW,
     desc: e.desc,
-    real: { ...e.real, benchmarks: e.bench },
-  }
+    real: { ...e.real, benchmarks: bench },
+  })
 }
 
+/** The active roster: candidates that clear the frontier-tolerance gate (docs/PARETO.md). */
+export const MODEL_DEFS: Record<string, ModelDef> = {}
+for (const d of withinFrontierTolerance(_candidates)) MODEL_DEFS[d.id] = d
+
 /** Open-weight checkpoints are free to own from the start (the weights are a download). */
-export const OPEN_MODEL_IDS = ROSTER.map((e) => e.id)
+export const OPEN_MODEL_IDS = Object.keys(MODEL_DEFS)
 
 /* ------------------------------------------------------------------ *
  *  DERIVED CHECKPOINTS — the closed `ft_agent`/`pt_giga` cards are     *
@@ -750,8 +768,11 @@ export const OPEN_MODEL_IDS = ROSTER.map((e) => e.id)
  * ------------------------------------------------------------------ */
 
 export const MODEL_LIST = Object.values(MODEL_DEFS)
-/** The small dense instruct model every new rack ships with. */
-export const DEFAULT_MODEL_ID = 'llama31_8b'
+/** The small dense instruct model every new rack ships with: the smallest active
+ *  checkpoint that deploys WITHOUT a method gate (dense, non-reasoning, non-MoE). */
+export const DEFAULT_MODEL_ID = MODEL_LIST.filter((m) => !m.isMoE && !m.isReasoning).reduce((a, b) =>
+  b.paramsTotalB < a.paramsTotalB ? b : a,
+).id
 /** Bootstrap: every open model is owned (free) from the start; VRAM + method gate use. */
 export const STARTER_MODELS = OPEN_MODEL_IDS
 

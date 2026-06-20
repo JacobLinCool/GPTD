@@ -10,7 +10,7 @@ import type {
   PostTrainMethod,
   PostTrainTarget,
 } from '../core/types'
-import { METHOD_RECIPES, MODEL_DEFS } from './content'
+import { DEFAULT_MODEL_ID, METHOD_RECIPES, MODEL_DEFS } from './content'
 
 /**
  * The SINGLE model-resolution point (R7 / C4). Derived (player-created)
@@ -467,7 +467,7 @@ function pickDistillStudent(teacher: ModelDef): ModelDef {
     if (m.paramsTotalB >= teacher.paramsTotalB) continue
     if (!best || m.paramsActiveB > best.paramsActiveB) best = m
   }
-  return best ?? MODEL_DEFS['llama31_8b']
+  return best ?? MODEL_DEFS[DEFAULT_MODEL_ID]
 }
 
 /** Derive a display tier from the resulting capability + size. */

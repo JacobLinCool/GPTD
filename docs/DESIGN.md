@@ -110,7 +110,7 @@ Key physics the ladder teaches:
 
 ## 4. Models & the qualityBy Calibration
 
-The roster is **30 real open-weight base checkpoints** (`ROSTER` → `MODEL_DEFS`), spanning ~1B to 1.6T parameters across Meta, Alibaba, OpenAI, Google, Microsoft, Mistral, Z.ai, DeepSeek, NVIDIA, MiniMax, and Moonshot — including the 2026 frontier (GLM-5.2, DeepSeek-V4-Pro, Qwen3.5-397B, Nemotron 3 Ultra). The roster is drawn from a fact-checked **130-model catalog** (`MODEL-CATALOG.md`) sourced from Artificial Analysis + official model cards; `qualityBy` is calibrated from those real benchmarks (`calibrate.ts`), never hand-written. Every base checkpoint is owned free from turn one (the weights are a download); the only deploy gate is **VRAM fit**.
+The active roster is **42 real open-weight base checkpoints** (`MODEL_DEFS`) — frontier-tolerance-gated (10%) from a ~98-model candidate pool of 30 hand-authored plus 68 per-size-bucket Pareto picks (`ROSTER`; see [PARETO.md](PARETO.md)) — spanning ~1B to 1.6T parameters across Alibaba, OpenAI, Google, NVIDIA, Z.ai, DeepSeek, MiniMax, and Moonshot, including the 2026 frontier (GLM-5.2, DeepSeek-V4-Pro, Qwen3.5-397B, Nemotron 3 Ultra). The hand-authored picks are drawn from a fact-checked **130-model catalog** (`MODEL-CATALOG.md`) sourced from Artificial Analysis + official model cards; `qualityBy` is calibrated from those real benchmarks (`calibrate.ts`), never hand-written. Every base checkpoint is owned free from turn one (the weights are a download); the only deploy gate is **VRAM fit**.
 
 ### qualityBy: a 5-axis capability vector
 
@@ -121,11 +121,11 @@ Each model carries `qualityBy`, a vector over five **capability axes**: `chat`, 
 | `chat` / `general` | MMLU-Pro | (MMLU → MMLU-Pro) |
 | `coding` | LiveCodeBench | SWE-bench Verified, HumanEval |
 | `reasoning` | GPQA-Diamond | AIME |
-| `agentic` | SWE-bench Verified | LiveCodeBench (discounted ×0.7) |
+| `agentic` | Terminal-Bench Hard | SWE-bench Verified (converted ×0.42) |
 
 The decision to use **per-benchmark percentages** (not the Artificial Analysis composite Intelligence Index) is deliberate: that composite re-baselines between versions, whereas per-benchmark %s are scale-stable.
 
-**`agentic` is the anti-saturation axis.** SWE-bench Verified keeps a real frontier gap where LiveCodeBench has compressed — so late-game agentic traffic stays a wall only true frontier (or self-trained) checkpoints clear. This is the "big models still matter" property encoded into the data.
+**`agentic` is the anti-saturation axis.** Terminal-Bench Hard keeps a real frontier gap (ceiling ~50%) where LiveCodeBench has compressed — so late-game agentic traffic stays a wall only strong-terminal frontier (or self-trained) checkpoints clear. Raw scale is not agentic: Terminal-Bench Hard ranks terminal-agent skill, where some big non-terminal MoEs (e.g. Qwen3-235B at TB-Hard 13.6 → agentic 58) genuinely lag below cheap mid models. This is the "big models still matter, but the right kind of big" property encoded into the data.
 
 ### Total vs active parameters (the MoE split)
 
@@ -394,7 +394,7 @@ Three lessons the numbers are tuned to teach:
 
 1. **Not every request deserves the frontier model.** A chat flood served by Llama-8B on a cheap rack is *more profitable* than over-provisioning a SuperPod for it — the wall-clock operating bill punishes idle frontier iron. Match the model (and rack) to the request's primary axis and SLO class. The whole economy rewards the right tool, not the biggest tool.
 
-2. **The agentic wall is real.** Because `agentic` is calibrated from unsaturated SWE-bench, late-game agentic traffic stays a genuine frontier gap. Code completion yields to a good coder; autonomous agentic tasks need a true frontier model — or one you trained yourself in the Studio with a GRPO-agentic run. This is the deliberate "big models still matter" counterweight to capability compression.
+2. **The agentic wall is real.** Because `agentic` is calibrated from unsaturated Terminal-Bench Hard (ceiling ~50%), late-game agentic traffic stays a genuine frontier gap. Code completion yields to a good coder; autonomous agentic tasks need a strong-terminal frontier model — or one you trained yourself in the Studio with a GRPO-agentic run (e.g. on gpt-oss-120B, whose agentic 79 sits just short of the agent line 82 and closes to ~95 after GRPO). This is the deliberate "big models still matter" counterweight to capability compression.
 
 3. **Capability compression is real too.** Tiny MoE thinkers (gpt-oss 20B at 3.6B active, Qwen3-30B-A3B at 3.3B active) deliver frontier-grade reasoning at a fraction of the serving cost — the MoE memory-vs-compute split made playable. The skill is knowing where compression holds (reasoning, chat) and where the wall stands (agentic).
 

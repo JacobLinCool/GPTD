@@ -21,7 +21,7 @@
  * system (sim.ts, seeded by s.rng). Nothing here uses RNG — the table is static.
  */
 
-import type { SpawnGroup, WaveDef } from '../core/types'
+import type { RequestTypeDef, SpawnGroup, WaveDef } from '../core/types'
 import { LANE_COUNT } from './pathing'
 
 // the 100 authored real-history waves (generated from the research synthesis).
@@ -101,12 +101,15 @@ function waveBudget(tier: number, volume: WaveVolume): number {
 }
 
 /**
- * Per-request generation load (decode tokens). Escalates moderately and PLATEAUS:
- * longer answers cost more decode time (throughput pressure), but we never make a
- * single request physically unservable. Tier 1 = 1.0× … tier 12 ≈ 1.5×.
+ * Per-request generation load (decode tokens). Ramps CONVEXLY — gentle early,
+ * steep late — toward ~3× by tier 12, so a late reasoning lane emits ~18K output
+ * tokens (real long-CoT: o1 ≈ 5K avg, hard tasks tens of K; §ref). Early waves
+ * stay near 1.0×. Throughput pressure scales, but a maxed fleet + long-context
+ * tech keeps single requests servable (validated by the autoplay depth gate).
  */
 function tierWork(tier: number): number {
-  return 1 + (tier - 1) * 0.045
+  const r = (tier - 1) / 11
+  return 1 + Math.pow(r, 1.5) * 2
 }
 
 /**
@@ -119,14 +122,61 @@ function tierComplexity(tier: number): number {
   return 1 + Math.min(tier - 1, 10) * 0.02
 }
 
-/** Era token inflation (context windows grow 8k→128k→1M…): KV/prefill pressure. */
+/**
+ * Prompt-length inflation — the real 8K→1M context-window arc (REALISM §1.8). Ramps
+ * CONVEXLY to ~2.9× by tier 12; combined with √workMul the effective input grows
+ * ~5×, so a late RAG/agent lane ingests ~40K and summarization ~60K tokens — real
+ * long-context territory (Mooncake/Kimi conversation avg ≈ 12K input, long-doc QA
+ * ≈ 100K; agentic coding steps push 100K-2M). This finally pressures the model
+ * context window + the KV / prefill / prefix-cache tech tree (the late-game test).
+ */
 function tierContext(tier: number): number {
-  return 1 + (tier - 1) * 0.05
+  const r = (tier - 1) / 11
+  return 1 + Math.pow(r, 1.5) * 1.9
 }
 
 /** Clear bonus (pre-CLEAR_BONUS_SCALE): a meaningful kicker that grows with tier. */
 function tierBonus(tier: number, boss: boolean): number {
   return Math.round(60 + tier * 45 + (boss ? 320 : 0))
+}
+
+/**
+ * Per-archetype length-scaling sensitivity (0..1): how much of the era's token
+ * inflation each lane actually takes. Long-context / offline lanes (RAG, summ,
+ * agent, reason) scale FULLY toward real 2024-25 magnitudes; latency-critical
+ * interactive lanes (chat / code-completion / jailbreak — tight TTFT) scale LESS
+ * so they stay inside their SLO instead of mass-slo_missing. Difficulty is NOT
+ * damped here (that is tierComplexity, capped separately).
+ */
+const LENGTH_SENS: Record<string, number> = {
+  embed: 0.6,
+  chat: 0.4,
+  comp: 0.5,
+  rag: 1.0,
+  summ: 1.0,
+  reason: 0.9,
+  agent: 1.0,
+  batch: 0.8,
+  jailbreak: 0.3,
+}
+
+/** The authored campaign tier ceiling (wave 100 ≈ 2026+, tier 12). */
+export const MAX_TIER = 12
+
+/**
+ * The late-game (max-tier) spawn token counts for an archetype — the SAME math
+ * buildWave + spawnRequest apply at the end of the campaign (tier scaling ×
+ * per-archetype LENGTH_SENS, then input = base × ctx × √work). The Codex shows
+ * this as the "base → era" range so the displayed numbers aren't read as fixed.
+ */
+export function eraTokenRange(def: RequestTypeDef, tier = MAX_TIER): { input: number; output: number } {
+  const sens = LENGTH_SENS[def.id] ?? 0.7
+  const ctx = 1 + (tierContext(tier) - 1) * sens
+  const wrk = 1 + (tierWork(tier) - 1) * sens
+  return {
+    input: Math.round(def.inputTokens * ctx * Math.max(1, Math.sqrt(wrk))),
+    output: Math.round(def.outputTokens * wrk),
+  }
 }
 
 /** Natural per-archetype cadence (seconds between spawns) at steady volume. */
@@ -174,14 +224,19 @@ export function buildWave(theme: WaveTheme): WaveDef {
     // stagger the bursts; high-tier waves overlap more (sustained pressure).
     const spacing = Math.max(3, 7 - tier * 0.25)
     const delay = Math.round(i * spacing * 10) / 10
+    // per-archetype length sensitivity: damp token inflation on the tight-SLO
+    // interactive lanes, let long-context / offline lanes scale fully (REALISM §1.8).
+    const sens = LENGTH_SENS[m.typeId] ?? 0.7
+    const gWork = 1 + (workMul - 1) * sens
+    const gContext = 1 + (contextMul - 1) * sens
     const g: SpawnGroup = {
       typeId: m.typeId,
       count,
       interval: Math.round(interval * 100) / 100,
       delay,
-      workMul: Math.round(workMul * 100) / 100,
+      workMul: Math.round(gWork * 100) / 100,
       complexityMul: Math.round(complexityMul * 100) / 100,
-      contextMul: Math.round(contextMul * 100) / 100,
+      contextMul: Math.round(gContext * 100) / 100,
     }
     // a surge wave pins EVERY burst onto the one ingress lane — all traffic
     // crashes into one region while the other three sit idle (the spatial test).

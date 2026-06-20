@@ -14,6 +14,7 @@ export const en: Record<string, string> = {
   'menu.l5': 'Press Space to start.',
   'menu.start': '▶  START',
   'menu.demo': 'DEMO',
+  'menu.agent': 'AGENT MODE',
 
   // --- display modes (chosen on the menu, locked for the run) ---
   'mode.normal': 'NORMAL MODE',
@@ -509,6 +510,57 @@ export const en: Record<string, string> = {
     'See the red “!” packets? Those are Jailbreaks. A high-safety model may self-handle them, but to be sure, place a guardrail (Encoder, LLM Guard, or Moderation) before the central core — a jailbreak that reaches the core unscreened breaches Trust.',
   'tut.lowtrust':
     'Trust is critical! If Trust, SLA, or Cash hits zero, the run ends. Tighten coverage, add a Cache for repeat traffic, or sell and relocate.',
+
+  // --- system menu (pause hub) ---
+  'sys.title': 'System',
+  'sys.resume': 'Resume',
+  'sys.settings': 'Settings',
+  'sys.help': 'How to Play',
+  'sys.codex': 'Codex',
+  'sys.about': 'About',
+  'sys.ach': 'Achievements',
+  'sys.restart': 'Restart Run',
+  'sys.quit': 'Quit to Title',
+  'sys.soon': 'Coming soon',
+
+  // --- codex browser ---
+  'codex.tab.models': 'Models',
+  'codex.tab.hardware': 'Hardware',
+  'codex.tab.requests': 'Requests',
+  'codex.tab.research': 'Research',
+  'codex.req.note': 'Base values shown; later waves scale prompt + output length with the era — the end-of-campaign range is in parentheses.',
+  'codex.req.late': 'late',
+
+  // --- about (links) ---
+  'about.benchmarks': 'Artificial Analysis benchmarks:',
+  'about.links.h': 'Links',
+  'about.link.aa': 'Artificial Analysis — the benchmark source',
+  'about.link.repo': 'GitHub repository',
+  'about.link.play': 'Play it online',
+
+  // --- settings ---
+  'set.title': 'Settings',
+  'set.tab.audio': 'Audio',
+  'set.tab.display': 'Display',
+  'set.tab.a11y': 'Accessibility',
+  'set.tab.gameplay': 'Gameplay',
+  'set.master': 'Master',
+  'set.music': 'Music',
+  'set.sfx': 'SFX',
+  'set.mute': 'Mute',
+  'set.language': 'Language',
+  'set.mode': 'Display Mode',
+  'set.mode.normal': 'Normal',
+  'set.mode.expert': 'Expert',
+  'set.mode.locked': 'Unlocks after the tutorial',
+  'set.reducedMotion': 'Reduced Motion',
+  'set.reducedMotion.sub': 'Hold pulsing animations steady',
+  'set.defaultSpeed': 'Default Speed',
+  'set.tooltips': 'Tooltips',
+  'set.replayTut': 'Tutorial',
+  'set.replayTutBtn': 'Replay Tutorial',
+  'set.back': 'Back',
+  'set.reset': 'Reset to Defaults',
 
   // --- misc ---
   'boot.loading': 'BOOTING GIGAPROMPT…',

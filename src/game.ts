@@ -31,9 +31,12 @@ import { Hud } from './ui/hud'
 import { MetricsHistory } from './ui/metricsHistory'
 import { MetricsPanel } from './ui/metricsPanel'
 import { RequestInspector } from './ui/requestInspector'
-import { tooltip } from './ui/tooltip'
+import { setTooltipsEnabled, tooltip } from './ui/tooltip'
 import { ModelOverview } from './ui/modelOverview'
 import { IncidentBanner, InspectPanel, Overlay, TrainingPanel, WaveReportPanel } from './ui/panels'
+import { SettingsPanel, SystemMenu } from './ui/system'
+import { AboutPanel, CodexBrowser, HelpPanel } from './ui/browsers'
+import { getSettings, onLangChange, setMuted, subscribe as subscribeSettings } from './settings'
 import { serializeState, type AgentSnapshot } from './agent/snapshot'
 import { explainRejection } from './agent/diagnose'
 
@@ -57,6 +60,13 @@ export class Game {
   private banner: IncidentBanner
   private report: WaveReportPanel
   private overlay: Overlay
+  private systemMenu: SystemMenu
+  private settingsPanel: SettingsPanel
+  private helpPanel: HelpPanel
+  private codexBrowser: CodexBrowser
+  private aboutPanel: AboutPanel
+  /** the content browser currently open over the hub (null = none). */
+  private activeBrowser: HelpPanel | CodexBrowser | AboutPanel | null = null
   private codex: Codex
   private tutorial: Tutorial
   private audio = new AudioEngine()
@@ -71,12 +81,15 @@ export class Game {
   private speed: SpeedStep = 1
   private acc = 0
   private brownoutCd = 0
-  private musicOn = true
+  /** §3: the system/pause hub is up (freezes the sim); settingsOpen is its sub-view. */
+  private systemMenuOpen = false
+  private settingsOpen = false
   private demoActive = false
   private demoPlannedWave = 0
   private demoBuildTimer = 0
   private agentMode = false
   private agentName: string | undefined
+  private agentConnectorAttached = false
 
   constructor(app: Application) {
     this.state = createState((Math.floor(performance.now()) ^ 0x5f3759df) >>> 0)
@@ -86,11 +99,8 @@ export class Game {
     this.hud = new Hud({
       onPause: () => this.togglePause(),
       onSpeed: () => this.cycleSpeed(),
-      onMute: () => this.audio.toggleMute(),
-      onMusic: () => {
-        this.musicOn = this.audio.toggleMusic()
-      },
-      onLang: () => this.overlay.refresh(),
+      onMute: () => this.toggleMute(),
+      onSettings: () => this.openSystemMenu(),
       onModels: () => this.toggleModels(),
       onMetrics: () => this.toggleMetrics(),
     })
@@ -120,12 +130,32 @@ export class Game {
         if (continueEndless(this.state)) this.overlay.hide()
       },
       () => this.startDemo(),
+      () => this.enterAgentMode(),
     )
     this.codex = new Codex(this.factory, {
       onNext: () => this.tutorial.requestNext(),
       onSkip: () => this.tutorial.skip(),
     })
     this.tutorial = new Tutorial(this.codex)
+    this.settingsPanel = new SettingsPanel({
+      onBack: () => this.closeSettings(),
+      onPreview: () => this.audio.click(),
+      onReplayTutorial: () => this.tutorial.replay(),
+      isModeUnlocked: () => this.state.phase === 'menu' || this.tutorial.finished,
+    })
+    this.helpPanel = new HelpPanel(() => this.closeContent(), this.factory)
+    this.codexBrowser = new CodexBrowser(() => this.closeContent(), this.factory)
+    this.aboutPanel = new AboutPanel(() => this.closeContent())
+    this.systemMenu = new SystemMenu({
+      onResume: () => this.closeSystemMenu(),
+      onSettings: () => this.openSettings(),
+      onHelp: () => this.openContent(this.helpPanel),
+      onCodex: () => this.openContent(this.codexBrowser),
+      onAbout: () => this.openContent(this.aboutPanel),
+      onAchievements: () => {}, // P2: achievements grid
+      onRestart: () => this.restartRun(false),
+      onQuit: () => this.restartRun(true),
+    })
 
     const bg = new Graphics().rect(0, 0, DESIGN_W, DESIGN_H).fill({ color: 0x0a0e14 })
     this.root.addChild(
@@ -141,9 +171,24 @@ export class Game {
       this.codex.view,
       this.training.view,
       this.models.view,
+      this.systemMenu.view,
+      this.settingsPanel.view,
+      this.helpPanel.view,
+      this.codexBrowser.view,
+      this.aboutPanel.view,
       this.overlay.view,
       tooltip().view, // always top-most
     )
+
+    // Settings → systems: re-apply on any change; keep static panels localized.
+    subscribeSettings(() => this.applySettings())
+    this.applySettings()
+    onLangChange(() => {
+      this.overlay.refresh()
+      if (this.systemMenu.visible) this.systemMenu.refresh()
+      if (this.settingsPanel.visible) this.settingsPanel.refresh()
+      if (this.activeBrowser?.visible) this.activeBrowser.refresh()
+    })
 
     this.world.onTileTap = (c, r) => this.onTileTap(c, r)
     this.world.onRequestTap = (id) => this.onRequestTap(id)
@@ -206,6 +251,30 @@ export class Game {
   /** True once a remote agent has taken over; suppresses the tutorial bubble. */
   get isAgentMode(): boolean {
     return this.agentMode
+  }
+
+  /**
+   * Enter agent-bridge mode from the UI (the title-screen AGENT button or `?agent`):
+   * default the display to Expert, hand the run to the bridge, and dial out the
+   * connector (idempotent). The local relay + CLI agent connect from the panel.
+   */
+  enterAgentMode(): void {
+    this.audio.resume()
+    setMode('expert') // agent mode defaults to the full Expert telemetry view
+    this.selectedDefId = null
+    this.selectedTowerId = null
+    this.selectedRequestId = null
+    this.trainingOpen = false
+    this.modelsOpen = false
+    this.paused = false
+    this.tutorial.reset()
+    this.enableAgentMode()
+    if (!this.agentConnectorAttached) {
+      this.agentConnectorAttached = true
+      void import('./agent/connector')
+        .then((m) => m.attach(this))
+        .catch((err) => console.error('[agent] connector failed to attach', err))
+    }
   }
 
   /** Hand control to a remote agent: leave the menu, kill demo/tutorial chatter. */
@@ -340,14 +409,20 @@ export class Game {
       else if (e.key === '6') this.speed = 6
       else if (e.key === '0') this.speed = 12
       else if (e.key === 'Escape') {
-        if (this.modelsOpen) this.modelsOpen = false
+        // §3 priority stack: sub-view → hub → modals → selection → open hub.
+        if (this.activeBrowser) this.closeContent()
+        else if (this.settingsOpen) this.closeSettings()
+        else if (this.systemMenuOpen) this.closeSystemMenu()
+        else if (this.modelsOpen) this.modelsOpen = false
         else if (this.trainingOpen) this.trainingOpen = false
-        else {
+        else if (this.selectedDefId || this.selectedTowerId != null || this.selectedRequestId != null) {
           this.selectedDefId = null
           this.selectedTowerId = null
           this.selectedRequestId = null
+        } else {
+          this.openSystemMenu()
         }
-      } else if (e.key.toLowerCase() === 'm') this.audio.toggleMute()
+      } else if (e.key.toLowerCase() === 'm') this.toggleMute()
       else if (e.key === '`' || e.key === 'Tab') {
         e.preventDefault()
         this.toggleMetrics()
@@ -454,6 +529,93 @@ export class Game {
   private togglePause(): void {
     this.paused = !this.paused
   }
+
+  /** Push SettingsStore values into the live systems (audio buses, tooltips). */
+  private applySettings(): void {
+    const s = getSettings()
+    this.audio.setMasterVolume(s.audio.master)
+    this.audio.setMusicVolume(s.audio.music)
+    this.audio.setSfxVolume(s.audio.sfx)
+    this.audio.setMuted(s.audio.muted)
+    setTooltipsEnabled(s.gameplay.tooltips)
+  }
+
+  /** HUD quick-mute + the `m` key — routed through the store so Settings stays in sync. */
+  private toggleMute(): void {
+    setMuted(!getSettings().audio.muted)
+  }
+
+  // ---- system menu / settings hub (docs/SYSTEM-MENU.md §3) ----
+  private openSystemMenu(): void {
+    if (this.demoActive || this.agentMode) return
+    if (this.state.phase !== 'build' && this.state.phase !== 'wave') return
+    this.audio.resume()
+    this.settingsOpen = false
+    this.settingsPanel.hide()
+    this.systemMenuOpen = true
+    this.systemMenu.show()
+  }
+  private closeSystemMenu(): void {
+    this.systemMenuOpen = false
+    this.settingsOpen = false
+    this.systemMenu.hide()
+    this.settingsPanel.hide()
+    this.activeBrowser?.hide()
+    this.activeBrowser = null
+  }
+  private openSettings(): void {
+    this.settingsOpen = true
+    this.systemMenu.hide()
+    this.settingsPanel.show()
+  }
+  private closeSettings(): void {
+    this.settingsOpen = false
+    this.settingsPanel.hide()
+    if (this.systemMenuOpen) this.systemMenu.show()
+  }
+  /** Open a content browser (How to Play / Codex / About) over the paused hub. */
+  private openContent(panel: HelpPanel | CodexBrowser | AboutPanel): void {
+    this.settingsOpen = false
+    this.settingsPanel.hide()
+    this.systemMenu.hide()
+    this.activeBrowser = panel
+    panel.show()
+  }
+  private closeContent(): void {
+    this.activeBrowser?.hide()
+    this.activeBrowser = null
+    if (this.systemMenuOpen) this.systemMenu.show()
+  }
+
+  /** Restart into a fresh run (toTitle → back to the title screen, else straight to build). */
+  private restartRun(toTitle: boolean): void {
+    this.closeSystemMenu()
+    this.state = createState((Math.floor(performance.now()) ^ 0xa5a5a5a5) >>> 0)
+    this.demoActive = false
+    this.demoPlannedWave = 0
+    this.demoBuildTimer = 0
+    this.selectedDefId = null
+    this.selectedTowerId = null
+    this.selectedRequestId = null
+    this.trainingOpen = false
+    this.modelsOpen = false
+    this.metricsOpen = false
+    this.speed = this.startSpeed()
+    this.paused = false
+    this.tutorial.reset()
+    if (toTitle) {
+      this.overlay.show('menu', this.state)
+    } else {
+      this.state.phase = 'build'
+      this.overlay.hide()
+    }
+  }
+
+  /** Default speed for a new run, clamped to a valid step. */
+  private startSpeed(): SpeedStep {
+    const n = getSettings().gameplay.defaultSpeed
+    return (SPEED_STEPS as readonly number[]).includes(n) ? (n as SpeedStep) : 1
+  }
   private cycleSpeed(): void {
     const i = SPEED_STEPS.indexOf(this.speed)
     this.speed = SPEED_STEPS[(i + 1) % SPEED_STEPS.length]
@@ -461,6 +623,7 @@ export class Game {
   private onOverlayAction(): void {
     this.audio.resume()
     if (this.state.phase === 'menu') {
+      this.speed = this.startSpeed()
       this.state.phase = 'build'
       this.overlay.hide()
     } else {
@@ -537,7 +700,8 @@ export class Game {
     const s = this.state
     this.updateDemo(dt)
 
-    const simRunning = s.phase === 'wave' && !this.paused && !this.trainingOpen && !this.modelsOpen
+    const simRunning =
+      s.phase === 'wave' && !this.paused && !this.trainingOpen && !this.modelsOpen && !this.systemMenuOpen
     if (simRunning) {
       this.acc += dt * this.speed
       let n = 0
@@ -584,8 +748,7 @@ export class Game {
     this.hud.update(s, {
       paused: this.paused,
       speed: this.speed,
-      muted: this.audio.isMuted,
-      musicOn: this.musicOn,
+      muted: getSettings().audio.muted,
       metricsOpen: this.metricsOpen,
     })
     // S2 telemetry: sample the rolling history every tick (gated on a live wave
