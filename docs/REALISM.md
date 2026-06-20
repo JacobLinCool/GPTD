@@ -1,6 +1,8 @@
 # GPTD Realism Ledger
 
-> **Single source of truth.** The realism redesign (P0–P5) has fully shipped: GPTD is a realistic data-center LLM-inference simulator delivered as tower defense — *"the board is the metaphor, the numbers are real."* The authoritative as-built design is [REDESIGN-BLUEPRINT.md](./REDESIGN-BLUEPRINT.md) (§0–§10), grounded by [REFERENCE-DOSSIER.md](./REFERENCE-DOSSIER.md) (the real-world citations). **This ledger is reconciled to the as-built code** — it is the "how the game stays true to reality" view of the blueprint, not a competing design. Where this file and the blueprint/code disagree, the code wins; report the drift.
+> **Single source of truth.** GPTD is a realistic data-center LLM-inference simulator delivered as tower defense — *"the board is the metaphor, the numbers are real."* The authoritative design spec is [BLUEPRINT.md](./BLUEPRINT.md) (§0–§7), grounded by [REFERENCE-DOSSIER.md](./REFERENCE-DOSSIER.md) (the real-world citations). **This ledger is reconciled to the shipped code** — it is the "how the game stays true to reality" view of the blueprint. Where this file and the blueprint/code disagree, the code wins.
+
+> New here? GPTD is a tower-defense game simulating an LLM-inference data center — start with the README.
 
 **Purpose.** GPTD's simulation is meant to be *defensible in front of domain professionals* — LLM inference engineers, SREs, datacenter operators, ML researchers. This document is the ledger of every realism-relevant decision: what the real-world mechanic is (with numbers), what the literature says (cited to REFERENCE-DOSSIER.md §refs), what GPTD ships today (with code pointers), and where we knowingly deviate. When you change a mechanic, update its entry here and in the blueprint.
 
@@ -14,7 +16,7 @@
 
 **Numbers may be tuned for gameplay; the sign structure of a tradeoff may not.** A technique that gives 10× in reality may give +35% in-game — that is balancing. But if a technique has real costs (more VRAM, more power, more compute, lower accuracy, higher latency), those costs **must exist in the game with the correct sign**; they may be softened, never deleted. Conversely, a benefit may not be invented that the real technique lacks.
 
-The as-built design pushes this further than the old "tuned coefficient" approach: most serving mechanics are now computed from a **real roofline on real hardware specs** rather than carrying a hand-tuned multiplier. The benefit and the cost both *emerge* from the physics (e.g. a small-active MoE serves fast **and** still pins all its experts in VRAM, because VRAM ∝ `paramsTotalB` while speed ∝ `paramsActiveB`). The remaining authored coefficients (recipe gains, two calibration constants) are honestly flagged as such (§7).
+Most serving mechanics are computed from a **real roofline on real hardware specs** rather than a hand-tuned multiplier. The benefit and the cost both *emerge* from the physics (e.g. a small-active MoE serves fast **and** still pins all its experts in VRAM, because VRAM ∝ `paramsTotalB` while speed ∝ `paramsActiveB`). The remaining authored coefficients (recipe gains, two calibration constants) are honestly flagged as such (§7).
 
 ---
 
@@ -32,7 +34,7 @@ The as-built design pushes this further than the old "tuned coefficient" approac
 - `computeRoofTokS = aggTflops / (2 × paramsActiveB)` (the compute roof decode hits at large batch);
 - `aggDecodeTokS = min(decodeTokS_b1 × batch, computeRoofTokS)` — decode is **linear in batch until it saturates the compute roof**; per-user rate = aggregate / batch.
 
-There is no abstract `flopsPerWork`/`bandwidthPerWork`/`work`-vs-`memory` coefficient any more — `FLOPs/token ≈ 2 × paramsActiveB` and the HBM bandwidth term are computed directly from the deployed model and the real GPU. TTFT emerges from prefill time (+ queue + input guardrail); TPOT emerges from the per-user decode rate.
+`FLOPs/token ≈ 2 × paramsActiveB` and the HBM bandwidth term are computed directly from the deployed model and the real GPU. TTFT emerges from prefill time (+ queue + input guardrail); TPOT emerges from the per-user decode rate.
 
 ### 1.2 ✅ Real hardware ladder (GPU specs, watts, capex)
 
@@ -52,13 +54,13 @@ Build cost = `capexUsd / CREDIT_USD`. Cooling is `air` vs `liquid`; a liquid-coo
 
 **Reality.** Per-token KV = `2 × layers × kv_heads × head_dim × bytes`, growing linearly with sequence length; GQA/MQA cut it via low `kv_heads`; MLA stores a compact latent (DeepSeek-V2: −93.3%). Pre-PagedAttention allocators wasted 60–80% of KV memory (20.4–38.2% useful); paged block allocation reaches ~96% (REFERENCE-DOSSIER §4.2, §4.6, §1.2#4).
 
-**GPTD.** `kvPerReqGb = 2 × layers × kvHeads × headDim × contextLen × kvQuantBytes / 1e9`, using the model's **real** `layers`/`kvHeads`/`headDim` (from model cards, `src/sim/content.ts` ROSTER). GQA/MQA emerge from low `kvHeads`; **MLA models apply ×0.067** (the −93.3% latent approximation, flagged in-tooltip as an equivalent scaling, not the true latent geometry). There is **no global `r_tech_gqa` ×0.4** any more — grouped/latent attention is a model attribute (blueprint R4). KV budget per rack = `(hbmGb − weights − FRAMEWORK_GB) × kvUtilization`; `kvUtilization` is **0.55** until PagedAttention research lifts it to **0.96**. Before Continuous Batching is researched, `serverTargets = 1` (the pre-Orca request-level era); after, batch is `hw.targets + multiStep`, capped at runtime by the real KV budget.
+**GPTD.** `kvPerReqGb = 2 × layers × kvHeads × headDim × contextLen × kvQuantBytes / 1e9`, using the model's **real** `layers`/`kvHeads`/`headDim` (from model cards, `src/sim/content.ts` ROSTER). GQA/MQA emerge from low `kvHeads`; **MLA models apply ×0.067** (the −93.3% latent approximation, flagged in-tooltip as an equivalent scaling, not the true latent geometry). Grouped/latent attention is a model attribute (via real `kvHeads` and the MLA ×0.067 scaling), not a global tech buff. KV budget per rack = `(hbmGb − weights − FRAMEWORK_GB) × kvUtilization`; `kvUtilization` is **0.55** until PagedAttention research lifts it to **0.96**. Before Continuous Batching is researched, `serverTargets = 1` (the pre-Orca request-level era); after, batch is `hw.targets + multiStep`, capped at runtime by the real KV budget.
 
 ### 1.5 ✅ Hard context window — beyond it, the request is unservable
 
 **Reality.** A prompt past the model's context window is rejected, not merely degraded (REFERENCE-DOSSIER §1.2#4).
 
-**GPTD.** `serverCtxWindowTokens = contextWindowK × 1000 × (1 + flashCtxBonus)` in **real tokens**; a request whose `contextLen` exceeds it resolves `unservable` (`src/sim/combat.ts`). With real 128K+ windows this rarely triggers — long context now bites mainly through the **KV budget** (§1.4), which is the more honest failure mode.
+**GPTD.** `serverCtxWindowTokens = contextWindowK × 1000 × (1 + flashCtxBonus)` in **real tokens**; a request whose `contextLen` exceeds it resolves `unservable` (`src/sim/combat.ts`). With real 128K+ windows this rarely triggers — long context bites mainly through the **KV budget** (§1.4), which is the more honest failure mode.
 
 ### 1.6 ✅ Prefill/decode interference, chunked prefill, disaggregation — infra research
 
@@ -94,11 +96,11 @@ Build cost = `capexUsd / CREDIT_USD`. Cooling is `air` vs `liquid`; a liquid-coo
 
 **Reality.** 2025–26 capability has compressed: a small thinking model clears reasoning lines that once needed a 671B frontier model — **except on the agentic / SWE-bench axis, where scale and post-training still open a real gap** (REFERENCE-DOSSIER §6.4, §0#14).
 
-**GPTD.** `agentic` is the anti-saturation axis: its curve is anchored on **SWE-bench Verified**, the unsaturated benchmark. Models without a real SWE score fall to a deliberately low per-tier `agentic` floor (`QUALITY_FLOOR`, e.g. small 20). The `agent` request type (`difficulty.agentic = 82`) is the late-game wall only a true frontier checkpoint — or one the player trains themselves — clears. This is the discriminative "bigger still matters" gate, grounded in the one benchmark family that has not converged. It is also how the formerly-OP small MoE (Qwen3 30B-A3B) is balanced: it serves fast and answers reasoning, but its calibrated agentic score genuinely lags (a calibration fact, not a hand-edit).
+**GPTD.** `agentic` is the anti-saturation axis: its curve is anchored on **SWE-bench Verified**, the unsaturated benchmark. Models without a real SWE score fall to a deliberately low per-tier `agentic` floor (`QUALITY_FLOOR`, e.g. small 20). The `agent` request type (`difficulty.agentic = 82`) is the late-game wall only a true frontier checkpoint — or one the player trains themselves — clears. This is the discriminative "bigger still matters" gate, grounded in the one benchmark family that has not converged. It is also how a fast small MoE (Qwen3 30B-A3B) is balanced: it serves fast and answers reasoning, but its calibrated agentic score genuinely lags (a calibration fact, not a hand-edit).
 
 ### 2.4 ✅ `paramsTotalB` vs `paramsActiveB`; real lineage edges
 
-**GPTD.** Each model splits `paramsTotalB` (VRAM basis) from `paramsActiveB` (compute/decode basis); for dense models they are equal. Real lineage is recorded where it exists — e.g. Nemotron-3-Super carries a `baseModelId: 'llama33_70b'` / `relation: 'finetune'` edge (NVIDIA's Llama-based line) shown on the S8 LineageGraph. The old dense 253B Nemotron-Ultra (a trap: vast, costly, not best on any axis) was replaced with the real hybrid-MoE Nemotron-3-Super-120B-A12B, which has a genuine active-param advantage.
+**GPTD.** Each model splits `paramsTotalB` (VRAM basis) from `paramsActiveB` (compute/decode basis); for dense models they are equal. Real lineage is recorded where it exists — e.g. Nemotron-3-Super carries a `baseModelId: 'llama33_70b'` / `relation: 'finetune'` edge (NVIDIA's Llama-based line) shown on the S8 LineageGraph. The roster includes the real hybrid-MoE Nemotron-3-Super-120B-A12B, which has a genuine active-param advantage.
 
 ---
 
@@ -110,7 +112,7 @@ Build cost = `capexUsd / CREDIT_USD`. Cooling is `air` vs `liquid`; a liquid-coo
 
 **Reality.** Each post-training step (CPT/SFT/DPO/RLHF/GRPO/CAI/distill/merge/QAT…) produces a **new weight artifact**; only multi-LoRA serving and PTQ deployment live at the serving layer (REFERENCE-DOSSIER §2.10).
 
-**GPTD.** The closed `ft_agent`/`pt_giga` cards are **gone**. Post-training is the **Post-Training Studio** (the centerpiece, `src/sim/models.ts` + `METHOD_RECIPES` in `content.ts`): pick a base (a roster model **or a previously-derived model** — unlimited iterative finetune-of-a-finetune) × **method** (`cpt`/`sft`/`lora`/`qlora`/`dora`/`dpo`/`rlhf`/`cai`/`grpo`/`distill`/`merge`/`qat`) × **target** (chat/coding/reasoning/general/agentic/safety/longctx/domain) × **effort** (5 notches 0.25–2.0). It spends Data + requisitioned compute (the posttrain research track) and mints a **new named derived `ModelDef`** (`drv_{seq}`, `{base}-{Target}-{Method}`) with a snapshot `qualityBy` plus a `Lineage` record. The player-built GRPO-agentic run on a frontier base is now the agentic specialist; a deep iterative chain is the endless-mode quality ceiling.
+**GPTD.** Post-training is the **Post-Training Studio** (the centerpiece, `src/sim/models.ts` + `METHOD_RECIPES` in `content.ts`): pick a base (a roster model **or a previously-derived model** — unlimited iterative finetune-of-a-finetune) × **method** (`cpt`/`sft`/`lora`/`qlora`/`dora`/`dpo`/`rlhf`/`cai`/`grpo`/`distill`/`merge`/`qat`) × **target** (chat/coding/reasoning/general/agentic/safety/longctx/domain) × **effort** (5 notches 0.25–2.0). It spends Data + requisitioned compute (the posttrain research track) and mints a **new named derived `ModelDef`** (`drv_{seq}`, `{base}-{Target}-{Method}`) with a snapshot `qualityBy` plus a `Lineage` record. The player-built GRPO-agentic run on a frontier base becomes the agentic specialist; a deep iterative chain is the endless-mode quality ceiling.
 
 ### 3.2 ✅ `deriveQuality` models the five real tradeoffs
 
@@ -149,7 +151,7 @@ Input-side latency loads TTFT; output-side loads E2EL (`src/sim/combat.ts`). Thr
 
 **Reality.** Red-teaming calibrates the system (judge by intent, XSTest) rather than weakening attackers (REFERENCE-DOSSIER §3.5–3.6).
 
-**GPTD.** The old `spawnRiskMult` "make enemies weaker" model is gone. Red-team is a one-time eval on the **eval research track** (`eval_redteam` v1/v2). Its main effect is the real calibration: it **lowers over-refusal convexity** (`OVERREF_K ×0.7`) and **unlocks the harder detection categories** (`injection` at v1, `pii` at v2 — until then a guardrail cannot catch them). A small `+0.02` recall bump is explicitly framed as "calibrating the threshold, not improving the model" (`src/sim/safety.ts`).
+**GPTD.** Red-team is a one-time eval on the **eval research track** (`eval_redteam` v1/v2). Its main effect is the real calibration: it **lowers over-refusal convexity** (`OVERREF_K ×0.7`) and **unlocks the harder detection categories** (`injection` at v1, `pii` at v2 — until then a guardrail cannot catch them). A small `+0.02` recall bump is explicitly framed as "calibrating the threshold, not improving the model" (`src/sim/safety.ts`).
 
 ### 4.4 ✅ Requests carry hazards; six-way verdict
 
@@ -187,14 +189,14 @@ Input-side latency loads TTFT; output-side loads E2EL (`src/sim/combat.ts`). Thr
 
 **GPTD.** All serving switches live on a typed `s.infra` (`InfraState`), separate from cash-bought `s.upgrades` (blueprint R6). The 22 `InfraNodeDef` (`src/sim/content.ts`) span nine categories — scheduling (continuous batching root, multi-step, chunked ⟂ disagg), kv-memory (PagedAttention root, prefix cache, FlashAttention, FP8/INT4 KV-quant, offload), decoding (speculative), weight-quant (FP8/INT4/NVFP4, the last needing Blackwell), parallelism (TP/PP/DP/EP), routing (KV-aware), multi-LoRA (2000 slots, S-LoRA), engine (vLLM/SGLang/TRT-LLM tiers). Research runs on **three concurrent tracks** — infra / posttrain / eval — that **share one requisitioned FLOPS pool** capped at `RESEARCH_MAX_SHARE = 0.45` of fleet FLOPS, requisitioning the strongest online racks first (`src/sim/research.ts`).
 
-### 6.2 ✅ What is NOT a tech node (the removals)
+### 6.2 ✅ What is modeled where (not as a tech node)
 
-The following were relocated to where they belong, per blueprint P3c / R4:
-- **MoE** is no longer the `tech_moe` flops/bandwidth/VRAM buff. It is a **model property** — VRAM ∝ total / speed ∝ active (§1.3) — plus the `inf_par_ep` (Expert Parallelism) node for sharding. There is no longer a global −flops MoE discount to research.
-- **GQA/MLA** are model attributes (real `kvHeads` / `attn:'MLA'` ×0.067), not the old `r_tech_gqa` global ×0.4 (§1.4).
+The following are modeled as model/Studio/eval properties rather than tech nodes:
+- **MoE** is a **model property** — VRAM ∝ total params, speed ∝ active params (§1.3) — with the `inf_par_ep` (Expert Parallelism) node for sharding.
+- **GQA/MLA** are model attributes (real `kvHeads` / `attn:'MLA'` ×0.067), not a global tech buff (§1.4).
 - **Reasoning** is a model property (`isReasoning`, cold-started by a GRPO Studio run), not a fleet `tech_reasoning` quality buff.
-- The `scale_pretrain` +quality buff is gone; model polish is the Post-Training Studio.
-- The `saf_rlhf` / `saf_redteam` serving buffs are gone; layer-1 alignment is per-model (the Studio) and red-team is a dev-time eval (§4.3).
+- Model polish is the Post-Training Studio (not a fleet quality buff).
+- Layer-1 alignment is per-model (the Studio) and red-team is a dev-time eval (§4.3) — not serving buffs.
 
 ### 6.3 ✅ Quantization — regime-split, both layers
 
@@ -227,4 +229,4 @@ Speculative-decoding acceptance rates; MoE expert-parallel serving overheads (ro
 
 ## References
 
-All real-world numbers and the literature backing each mechanic above are consolidated in [REFERENCE-DOSSIER.md](./REFERENCE-DOSSIER.md) — the single citations source for the redesign (request workloads §1, post-training §2, safety/guardrails §3, serving systems §4, hardware/economy §5, the open-weight roster §6). Cite §refs there rather than duplicating the bibliography here.
+All real-world numbers and the literature backing each mechanic above are consolidated in [REFERENCE-DOSSIER.md](./REFERENCE-DOSSIER.md) — the single citations source for the design (request workloads §1, post-training §2, safety/guardrails §3, serving systems §4, hardware/economy §5, the open-weight roster §6). Cite §refs there rather than duplicating the bibliography here.

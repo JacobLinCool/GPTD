@@ -8,13 +8,17 @@
 ![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178C6)
 ![PixiJS](https://img.shields.io/badge/PixiJS-v8-E91E63)
 
+### ▶ Play it now: **<https://jacoblincool.github.io/GPTD/>**
+
+No install — it runs entirely in your browser. (To run from source, see [Getting Started](#getting-started).)
+
 **GigaPrompt Tower Defense** (GPTD) is a **realistic data-center LLM-inference simulator delivered as a tower-defense game**. The four ingress lanes, racks, and the central Trust Core are the metaphor; underneath, the math is the real engineering an inference team actually does — prefill/decode roofline, MoE total-vs-active parameters, the KV-cache budget, Goodput against TTFT/E2EL SLOs, $/Mtoken on real GPUs, per-model post-training vs serving-layer infrastructure, and a two-layer safety stack. Waves of user requests arrive from global entrances and converge toward the core carrying real token counts, latency classes, and hazards; you do not kill them, you serve them fast, cheaply, correctly, and safely on real hardware before they leak.
 
 GPTD is built to be **defensible in front of LLM-infrastructure professionals**: every visible mechanic maps to a real serving decision, and Expert Mode exposes the genuine SRE telemetry behind it.
 
 ## What it models
 
-- **9 request archetypes by root property** — `embed`, `chat`, `comp`, `rag`, `summ`, `reason`, `agent`, `batch`, `jailbreak`. Each carries real input/output token counts (ISL/OSL), a latency class (interactive / near-real-time / throughput), a per-axis difficulty vector, a prefix-cacheability share, and (for `agent`/`jailbreak`) safety hazards. The old thematic labels are gone — a request is defined by its workload physics, not its costume.
+- **9 request archetypes by root property** — `embed`, `chat`, `comp`, `rag`, `summ`, `reason`, `agent`, `batch`, `jailbreak`. Each carries real input/output token counts (ISL/OSL), a latency class (interactive / near-real-time / throughput), a per-axis difficulty vector, a prefix-cacheability share, and (for `agent`/`jailbreak`) safety hazards. A request is defined by its workload physics, not its costume.
 - **A real GPU ladder** — `L4 → L40S → H100 → H200 → DGX H200 → DGX B200 → GB200 NVL72`. Each rack carries real per-GPU VRAM, HBM bandwidth, TDP, and capex, scaled by GPU count. Air-cooled racks light up anywhere; the liquid-cooled multi-GPU clusters (DGX H200, DGX B200, GB200 NVL72) are **hard-gated behind a Liquid Cooling Loop** and cannot run without one.
 - **Real open-weight models, free to deploy** — a curated 2025–2026 roster (Llama, Qwen3 dense + MoE, gpt-oss, Gemma 3, Phi-4, Mistral/Devstral, GLM-4.5-Air, DeepSeek-V3.1, Nemotron, Kimi K2). Weights are a download, so deployment is **free** — gated only by whether the model fits the rack's VRAM (`paramsTotalB` × bytes/param); there is no architecture deploy-unlock (MoE/reasoning are model attributes, not gates). `qualityBy` is calibrated from public benchmarks (Artificial Analysis / model cards), never hand-edited.
 - **A Post-Training Studio** — derive your own checkpoints with a real method menu (SFT, LoRA/QLoRA/DoRA, DPO, RLHF, CAI, GRPO, distill, merge, QAT) × a capability target × an effort slider. Each run produces a new derived `ModelDef` with a snapshotted lineage, unlimited and iterative (fine-tune a fine-tune). The MoE total/active split and the un-saturated **agentic** axis mean a tiny fast MoE answers quickly but loses the SWE-grade lanes — exactly the real differentiation.
@@ -24,17 +28,19 @@ GPTD is built to be **defensible in front of LLM-infrastructure professionals**:
 
 ## How it plays
 
-You watch four data-center ingress lanes converge on a central Trust Core and make assignment and provisioning calls in real time: build racks, deploy the right model onto each one, upgrade rack tiers in place, provision power and cooling (and a liquid loop before any high-density rack), place a Router / Cache / guardrails, and run research and post-training between waves. Keep three meters alive — **Trust**, **SLA**, and **Cash** — through a **100-wave campaign** that dramatizes real 2023→2026 history **from the provider's seat** — every wave is a **demand shift** (the chatbot boom, the code-completion surge, everyone building RAG bots, the reasoning-demand flood, the coding-agent majority…) or an **operating shock** (the H100 shortage, undersea-cable cuts, grid heatwaves & water limits, chip export bans, major cloud outages, token price wars, the EU AI Act…), never a model/tech announcement — as an escalating **elimination gauntlet**. Difficulty climbs monotonically; most runs end mid-campaign; reaching wave 100 — the **Age of Inference** boss — is the apex, after which endless mode generates ever-harder surges. Between waves, real-event **incidents** now bite: power-price spikes, cooling/grid failures, GPU/HBM shortages and export bans, regulatory audits, token price wars, data poisoning, viral demand surges, and undersea-cable cuts that funnel every request through one ingress. The title screen offers **Normal Mode** (friendly dashboards), **Expert Mode** (the full SRE console — rooflines, Goodput, $/Mtoken, KV budget, the model overview and lineage graph), and a small **Demo** button, which launches a fixed-seed Expert run driven by the same balance autoplayer that survives deep into the 100-wave gauntlet while exercising the major systems: build placement, rack upgrades through DGX H200, model deployment, infra/eval/post-training research, Studio-derived checkpoints, guardrails, power/cooling, liquid cooling, and P/D rack roles. Demo remains inspectable: viewers can click live racks, requests, model lists, and lab panels while the autoplayer owns state-changing actions.
+You watch four data-center ingress lanes converge on a central Trust Core and make assignment and provisioning calls in real time: build racks, deploy the right model onto each one, upgrade rack tiers in place, provision power and cooling (and a liquid loop before any high-density rack), place a Router / Cache / guardrails, and run research and post-training between waves. Keep three meters alive — **Trust**, **SLA**, and **Cash** — through a **100-wave campaign** that dramatizes real 2023→2026 history **from the provider's seat** — every wave is a **demand shift** (the chatbot boom, the code-completion surge, everyone building RAG bots, the reasoning-demand flood, the coding-agent majority…) or an **operating shock** (the H100 shortage, undersea-cable cuts, grid heatwaves & water limits, chip export bans, major cloud outages, token price wars, the EU AI Act…), never a model/tech announcement — as an escalating **elimination gauntlet**. Difficulty climbs monotonically; most runs end mid-campaign; reaching wave 100 — the **Age of Inference** boss — is the apex, after which endless mode generates ever-harder surges. Between waves, real-event **incidents** bite live through the build phase and the wave: power-price spikes, cooling/grid failures, GPU/HBM shortages and export bans, regulatory audits, token price wars, data poisoning, viral demand surges, and undersea-cable cuts that funnel every request through one ingress. The title screen offers **Normal Mode** (friendly dashboards), **Expert Mode** (the full SRE console — rooflines, Goodput, $/Mtoken, KV budget, the model overview and lineage graph), and a small **Demo** button, which launches a fixed-seed Expert run driven by the same balance autoplayer that survives deep into the 100-wave gauntlet while exercising the major systems: build placement, rack upgrades through DGX H200, model deployment, infra/eval/post-training research, Studio-derived checkpoints, guardrails, power/cooling, liquid cooling, and P/D rack roles. Demo remains inspectable: viewers can click live racks, requests, model lists, and lab panels while the autoplayer owns state-changing actions.
 
 ## Design & grounding docs
 
-- **[REDESIGN-BLUEPRINT.md](./REDESIGN-BLUEPRINT.md)** — the **authoritative as-built design** (the unified data model, the serving spine, the dual-clock/SLO physics, every subsystem). Start here.
-- **[REFERENCE-DOSSIER.md](./REFERENCE-DOSSIER.md)** — the **real-world grounding**: the GPU specs, model figures, benchmark numbers, and serving-systems literature the simulation is calibrated against.
-- **[DESIGN.md](./DESIGN.md)** — the **canonical Game Design Document** for the as-built game (the readable design of record; the blueprint above is the deeper implementation spec).
-- **[REALISM.md](./REALISM.md)** / **[REALISM-MODELS.md](./REALISM-MODELS.md)** — the realism ledgers (mechanic → real-world basis, citations, deviations).
-- **[manual/en.md](./manual/en.md)** · **[manual/zh-TW.md](./manual/zh-TW.md)** — the player manual (English primary, Traditional Chinese).
-- **[AGENT-BRIDGE.md](./AGENT-BRIDGE.md)** — let a terminal agent (Claude Code / Codex) play the game in your open tab; protocol, action vocabulary, snapshot shape.
-- **[AGENTS.md](./AGENTS.md)** — working rules for contributors: keep code, docs, and both locales in sync.
+All documentation lives in **[`docs/`](./docs/)** (see the **[docs index](./docs/README.md)**); the working rules for contributors are in **[AGENTS.md](./AGENTS.md)**.
+
+- **[docs/DESIGN.md](./docs/DESIGN.md)** — the **canonical Game Design Document** (the readable design of record). Start here.
+- **[docs/BLUEPRINT.md](./docs/BLUEPRINT.md)** — the **authoritative design spec** (the unified data model, the serving spine, the dual-clock/SLO physics, every subsystem) — the deeper implementation layer beneath the GDD.
+- **[docs/REFERENCE-DOSSIER.md](./docs/REFERENCE-DOSSIER.md)** — the **real-world grounding**: the GPU specs, model figures, benchmark numbers, and serving-systems literature the simulation is calibrated against.
+- **[docs/REALISM.md](./docs/REALISM.md)** / **[docs/REALISM-MODELS.md](./docs/REALISM-MODELS.md)** — the realism ledgers (mechanic → real-world basis, citations, deviations).
+- **[docs/MODEL-CATALOG.md](./docs/MODEL-CATALOG.md)** — the fact-checked model-roster reference (developer, license, benchmarks, lineage).
+- **[docs/manual/en.md](./docs/manual/en.md)** · **[docs/manual/zh-TW.md](./docs/manual/zh-TW.md)** — the player manual (English primary, Traditional Chinese).
+- **[docs/AGENT-BRIDGE.md](./docs/AGENT-BRIDGE.md)** — let a terminal agent (Claude Code / Codex) play the game in your open tab; protocol, action vocabulary, snapshot shape.
 
 ## Tech Stack
 
@@ -50,14 +56,14 @@ You watch four data-center ingress lanes converge on a central Trust Core and ma
 ## Getting Started
 
 ```bash
-npm install        # install dependencies (pnpm also supported)
-npm run dev        # start the Vite dev server (http://127.0.0.1:5173)
-npm run typecheck  # tsc --noEmit (must pass)
-npm run test       # Vitest: sim unit tests + balance autoplay
-npm run build      # tsc + vite production build
-npm run preview    # serve the built dist on :4173
-npm run e2e        # headless Playwright playtest (needs preview running)
-npm run bridge     # agent bridge relay on :8799 — let a terminal agent play your open tab
+pnpm install      # install dependencies (npm also works — swap pnpm for npm run)
+pnpm dev          # start the Vite dev server (http://127.0.0.1:5173)
+pnpm typecheck    # tsc --noEmit (must pass)
+pnpm test         # Vitest: sim unit tests + balance autoplay
+pnpm build        # tsc + vite production build
+pnpm preview      # serve the built dist on :4173
+pnpm e2e          # headless Playwright playtest (needs preview running)
+pnpm bridge       # agent bridge relay on :8799 — let a terminal agent play your open tab
 ```
 
 ## Let an AI agent play your open tab
@@ -75,11 +81,12 @@ pnpm bridge                                # start the relay (the agent can do t
 curl -s "http://127.0.0.1:8799/do?fn=startWave&reason=Open+the+first+wave"
 ```
 
-On a **hosted** build a player only needs the URL: opening `…/?agent=1` shows an
-in-game panel with a one-liner to paste to their agent (it downloads the relay —
-`bridge.mjs`, served from the same origin — and runs it). Open with `?agent=auto`
+On the **hosted** build a player only needs the URL: opening
+`https://jacoblincool.github.io/GPTD/?agent=1` shows an in-game panel with a
+one-liner to paste to their agent (it downloads the relay — `bridge.mjs`, served
+from the same origin — and runs it). Open with `?agent=auto`
 to get a random relay port so **several agents can play different games at once on
-one machine**. See **[AGENT-BRIDGE.md](./AGENT-BRIDGE.md)** for the player flow,
+one machine**. See **[docs/AGENT-BRIDGE.md](./docs/AGENT-BRIDGE.md)** for the player flow,
 full protocol, action vocabulary, and snapshot shape.
 
 ## Project Structure
@@ -118,7 +125,16 @@ GPTD/
 │  ├─ i18n/             # translation system (en + zh-TW)
 │  └─ audio/            # procedural Web Audio engine
 ├─ public/              # served verbatim: bridge.mjs (the zero-dep agent relay, downloadable on hosted builds)
-├─ manual/              # player manual: en.md, zh-TW.md, README.md (index)
+├─ docs/                # all documentation (see docs/README.md for the index)
+│  ├─ README.md         # docs index: every doc, its audience, and its purpose
+│  ├─ DESIGN.md         # canonical Game Design Document (readable design of record)
+│  ├─ BLUEPRINT.md      # authoritative design spec (data model, serving spine, SLO physics)
+│  ├─ REFERENCE-DOSSIER.md # real-world grounding: GPU specs, model figures, benchmark numbers
+│  ├─ REALISM.md · REALISM-MODELS.md # realism ledgers (mechanic → real-world basis)
+│  ├─ MODEL-CATALOG.md  # fact-checked model-roster reference
+│  ├─ AGENT-BRIDGE.md   # let a terminal agent play your open tab (protocol + snapshot shape)
+│  └─ manual/           # player manual: en.md, zh-TW.md, README.md (language index)
+├─ AGENTS.md            # contributor working rules (kept at repo root for agent discovery)
 ├─ tests/               # Vitest: sim.test.ts, metrics.test.ts, playthrough.test.ts (balance autoplay)
 └─ scripts/             # agent-smoke.mjs (bridge E2E) + headless Playwright playtest + screenshots
 ```
@@ -127,7 +143,7 @@ GPTD/
 
 ## Contributing
 
-GPTD's simulation is meant to stay defensible in front of inference engineers — challenge every change against [REALISM.md](./REALISM.md) §0 (directional fidelity) and propagate any mechanic/content/UI change to every doc and locale it touches (see [AGENTS.md](./AGENTS.md) §0). Ideas, balance questions, and mechanic critiques are all welcome.
+GPTD's simulation is meant to stay defensible in front of inference engineers — challenge every change against [docs/REALISM.md](./docs/REALISM.md) §0 (directional fidelity) and propagate any mechanic/content/UI change to every doc and locale it touches (see [AGENTS.md](./AGENTS.md) §0). Ideas, balance questions, and mechanic critiques are all welcome.
 
 ## License
 

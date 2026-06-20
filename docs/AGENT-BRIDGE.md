@@ -1,6 +1,7 @@
 # Agent Bridge — let a terminal agent play GPTD in your open tab
 
-GPTD is a pure front-end game with no backend. The **agent bridge** lets a local
+GPTD is a tower-defense game that simulates running an LLM-inference data center,
+and it is a pure front-end app with no backend. The **agent bridge** lets a local
 terminal agent (Claude Code, Codex, …) **drive the game in a browser tab you
 already have open** — a human keeps watching the live board, and every move the
 agent makes is narrated in the in-game **Codex bubble** so you see *why*.
@@ -24,13 +25,13 @@ and execution stay in the tab; the relay only forwards intents and results.
 
 This is the zero-setup path for someone with Claude Code / Codex installed:
 
-1. Open the game in your browser and add `?agent=1`, e.g. `https://the-game/?agent=1`.
+1. Open the game in your browser and add `?agent=1`, e.g. `https://jacoblincool.github.io/GPTD/?agent=1`.
    A small **Agent bridge** panel appears with a ready-to-paste command and a live
    connection status.
 2. Paste that command to your agent. It runs (in the background):
    ```bash
-   curl -sO https://the-game/bridge.mjs
-   node bridge.mjs --allow-origin https://the-game     # the relay
+   curl -sO https://jacoblincool.github.io/GPTD/bridge.mjs
+   node bridge.mjs --allow-origin https://jacoblincool.github.io     # the relay
    ```
    `bridge.mjs` is a single zero-dependency file served by the game itself, so no
    clone or install is needed (you only need Node, which Claude Code / Codex already
@@ -154,7 +155,7 @@ guessing. Unknown actions are rejected the same way, never a crash.
 }
 ```
 
-`stats` now carries all six request outcomes — `unsafe` and `overRefused` are
+`stats` carries all six request outcomes — `unsafe` and `overRefused` are
 what bleed **Trust**, `sloMiss` bleeds **SLA**. Watch them (and `incident` /
 `nextWave`) to pre-empt safety/latency waves instead of reacting after the fact.
 
@@ -200,7 +201,7 @@ explicitly trusted with `--allow-origin` (repeatable / comma-separated, also
 `BRIDGE_ALLOW_ORIGIN`); the in-game panel pre-fills the correct value:
 
 ```bash
-node bridge.mjs --allow-origin https://the-game
+node bridge.mjs --allow-origin https://jacoblincool.github.io
 ```
 
 Only that one origin is then trusted — every other site stays blocked. For a

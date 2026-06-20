@@ -1,19 +1,25 @@
 # GPTD Model Catalog — real open-weight LLMs
 
+> New here? GPTD is a tower-defense game simulating an LLM-inference data center — start with the README; this file is the model-roster reference.
+
 The fact-checked source-of-truth list behind the in-game roster. Every model is a REAL
 open-weight release; the in-game `ROSTER` (`src/sim/content.ts`) draws its picks from here
 and `qualityBy` is calibrated from these benchmarks (`calibrate.ts`) — never hand-written.
 
-**How to maintain:** when a notable open model ships, add it here first (developer · release ·
+<!-- Contributor reference (not player-facing):
+
+How to maintain: when a notable open model ships, add it here first (developer · release ·
 license · params · context · official link · lineage · the 5 benchmarks + the Artificial
 Analysis Intelligence Index · a 3–4 sentence description · a confidence flag), THEN decide
 whether it earns a roster slot. Put `—` for any benchmark you cannot verify; mark
 `confidence: low` rather than guessing. Re-run the `gptd-model-catalog` + `gptd-newest-models`
 research workflows to refresh from Artificial Analysis + Hugging Face model cards.
 
-- **130** models catalogued · **46** flagged as roster picks (★).
+Inventory:
+- 130 models catalogued · 46 flagged as roster picks (★).
 - Confidence: 93 high · 34 med · 3 low.
 - Includes the 2026 frontier wave (GLM-5.2, DeepSeek-V4, Kimi K2.6/K2.7, MiniMax M3, Xiaomi MiMo, Qwen3.5/3.6, Tencent Hunyuan Hy3, Nemotron 3).
+-->
 
 
 ## Edge (≤4B total) — 20 models
@@ -135,7 +141,7 @@ Microsoft's math-focused 3.8B reasoning model, fine-tuned from Phi-4-mini on ~15
 [model card](https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Nano-4B-BF16)  
 Benchmarks — MMLU-Pro — · GPQA-D 53.2 · AIME 78.5 · LiveCodeBench — · SWE-bench —  
 
-Nemotron 3 Nano 4B is the edge-class member of the family, a ~3.97B-parameter dense Mamba2-Transformer hybrid (primarily Mamba-2 and MLP layers with just four Attention layers, so not MoE) released March 2026 under the NVIDIA Nemotron Open Model License. Unlike the from-scratch Ultra/Super/30B tiers, this 4B is derived: it is compressed from NVIDIA-Nemotron-Nano-9B-v2 using NVIDIA's Nemotron Elastic framework. It is a unified reasoning/non-reasoning model with controllable reasoning via system prompts and a 262K-token context window. Reported model-card scores include AIME25 78.5 and GPQA 53.2; MMLU-Pro, LiveCodeBench, and SWE-bench Verified are not published on the card, so they are marked -1.
+Nemotron 3 Nano 4B is the edge-class member of the family, a ~3.97B-parameter dense Mamba2-Transformer hybrid (primarily Mamba-2 and MLP layers with just four Attention layers, so not MoE) released March 2026 under the NVIDIA Nemotron Open Model License. Unlike the from-scratch Ultra/Super/30B tiers, this 4B is derived: it is compressed from NVIDIA-Nemotron-Nano-9B-v2 using NVIDIA's Nemotron Elastic framework. It is a unified reasoning/non-reasoning model with controllable reasoning via system prompts and a 262K-token context window. Reported model-card scores include AIME25 78.5 and GPQA 53.2; MMLU-Pro, LiveCodeBench, and SWE-bench Verified are not published on the card, so they carry no published score.
 
 ### Qwen3-4B
 **Alibaba/Qwen** · 2025-04 · Apache 2.0 · 4B dense · reasoning · 32K ctx · spec: reasoning · lineage: from-scratch · confidence: low  

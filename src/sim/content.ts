@@ -563,7 +563,7 @@ const ROSTER: RosterEntry[] = [
     // Nemotron-3-Super-120B-A12B: a real NVIDIA open model (Mar 2026) trained FROM
     // SCRATCH (NVIDIA's own base, NOT Llama-derived) — a 120B/12B Latent-MoE (hybrid
     // Mamba-2 + MoE + attention). Benchmarks are the official model-card figures
-    // (MODEL-CATALOG.md). It is the player's GRPO-agentic base in the §1.5 [H2] lesson.
+    // (docs/MODEL-CATALOG.md). It is the player's GRPO-agentic base in the §1.5 [H2] lesson.
     id: 'nemotron_super', name: 'Nemotron-3-Super-120B-A12B', tier: 'frontier', variant: 'instruct', spec: 'reasoning',
     paramsTotalB: 120, paramsActiveB: 12, isMoE: true, isReasoning: true,
     layers: 80, kvHeads: 8, headDim: 128, attn: 'GQA',
@@ -582,7 +582,7 @@ const ROSTER: RosterEntry[] = [
   /* ------------------------------------------------------------------ *
    *  2026 CATALOG ADDITIONS (small → large). Real open-weight models    *
    *  pulled from Artificial Analysis + official model cards (see        *
-   *  MODEL-CATALOG.md). Some 2026 frontier MoEs use approximate KV arch  *
+   *  docs/MODEL-CATALOG.md). Some 2026 frontier MoEs use approximate KV  *
    *  where the lab did not publish layer/head internals (confidence on   *
    *  the entry's `real`). qualityBy still auto-calibrates from `bench`.   *
    * ------------------------------------------------------------------ */

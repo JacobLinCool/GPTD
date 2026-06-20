@@ -4,6 +4,8 @@ This document is for players opening the game for the first time. You do not nee
 
 The board is the metaphor; the numbers underneath are real. A request carries real token counts; a rack carries a real GPU's VRAM and bandwidth; the money is real $/Mtoken. The campaign is a **100-wave march through real 2023→2026 data-center history**, drawn as an escalating elimination gauntlet — hold the central Trust Core as deep as you can, then (if you reach the end) survive endless mode.
 
+**Where to play:** open <https://jacoblincool.github.io/GPTD/> in any browser — it runs entirely client-side, with nothing to install. (Running from source instead? See the repo [README](../../README.md).)
+
 ## Objective
 
 Survive the **100-wave campaign**. Each wave dramatizes a real event from the 2023→2026 inference era — GPT-4, the H100 shortage, Mixtral MoE, Gemini's million-token context, o1 reasoning, DeepSeek R1 and the Jan-2025 market crash, Stargate, the EU AI Act, agentic coding, the inference price war — and the difficulty climbs **every wave**. It is an elimination gauntlet: most runs end mid-campaign, and reaching wave 100 (the final **Age of Inference** boss) is the apex. Clear it and **endless mode** generates ever-harder "Surge" waves where the difficulty never stops climbing — your score is how deep you get.
@@ -57,7 +59,7 @@ You build during the Build phase and can emergency-build mid-wave with cash. Res
 
 ## Request Archetypes — the nine workloads
 
-The old thematic enemies are gone. A request is now defined by its **workload physics**, not its costume. Each archetype carries real input/output token counts (ISL/OSL), a **latency class** (IN interactive · NR near-real-time · TO throughput/offline), a **per-axis difficulty** vector judged against the loaded model's `qualityBy`, a **prefix share** (how cacheable it is), and possibly **hazards**.
+A request is defined by its **workload physics**, not its costume. Each archetype carries real input/output token counts (ISL/OSL), a **latency class** (IN interactive · NR near-real-time · TO throughput/offline), a **per-axis difficulty** vector judged against the loaded model's `qualityBy`, a **prefix share** (how cacheable it is), and possibly **hazards**.
 
 | Archetype | ISL → OSL (typical) | Latency class | Hard axis | Prefix | Hazard | The pressure it applies |
 | --------- | ------------------- | ------------- | --------- | -----: | ------ | ----------------------- |
@@ -104,7 +106,7 @@ The roster is real 2025–2026 open-weight models (Llama, Qwen3 dense + MoE, gpt
 
 ## The Post-Training Studio — train your own
 
-The old fixed finetune cards are gone. In the **Post-Training Studio** (in the Training Lab) you derive **your own checkpoints**, unlimited and iterative — you can even fine-tune a fine-tune. Pick three things:
+In the **Post-Training Studio** (in the Training Lab) you derive **your own checkpoints**, unlimited and iterative — you can even fine-tune a fine-tune. Pick three things:
 
 1. **A base** — any model you own (base or a derived one).
 2. **A method** — the real per-model menu:
@@ -192,7 +194,7 @@ Two common traps:
 
 ## Incidents
 
-After you clear a wave, the next wave's **Incident** appears in the banner — and unlike older builds, its effect is now **live** through the build phase and the wave. It is a build requirement, not backstory. The 21 incidents are drawn from real 2023→2026 events; the headline families:
+After you clear a wave, the next wave's **Incident** appears in the banner, and its effect is **live** through the build phase and the wave. It is a build requirement, not backstory. The 21 incidents are drawn from real 2023→2026 events; the headline families:
 
 - **Power spikes** — *Capacity Auction Shock* / *On-Site Fuel Spike*: the operating bill jumps ~1.6–1.9×. (And the rare *Firm Nuclear PPA* boon makes power cheap.)
 - **Cooling shortfalls** — *Liquid Loop Fault* / *Water-Use Restriction*: cooling capacity drops 35–45% (expect throttling).

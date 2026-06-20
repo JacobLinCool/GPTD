@@ -4,13 +4,15 @@
 >
 > **Slogan: "the board is the metaphor, the numbers are real."**
 
-> **This is the canonical design of record for the as-built game.** It is the readable design overview; two companion documents go deeper:
-> - **[REDESIGN-BLUEPRINT.md](./REDESIGN-BLUEPRINT.md)** — the detailed, implementation-ready specification (§0–§10): every formula, field name, conflict resolution, and open-question decision. When a number here is summarized, the blueprint is where the derivation lives.
+> **This is the canonical design document for GPTD.** It is the readable design overview; two companion documents go deeper:
+> - **[BLUEPRINT.md](./BLUEPRINT.md)** — the detailed, implementation-ready specification (§0–§7): every formula, field name, data-model type, and subsystem decision. When a number here is summarized, the blueprint is where the derivation lives.
 > - **[REFERENCE-DOSSIER.md](./REFERENCE-DOSSIER.md)** — the real-world grounding: the 2024–2026 facts about LLM inference, post-training, safety, serving systems, hardware, and the open-weight model landscape that the simulation is built on.
 >
 > The **code is the ultimate source of truth.** The authoritative specifics live in `src/sim/{content,models,effects,combat,safety,research}.ts`, `src/core/types.ts`, and `src/config.ts`. Everything below is verified against them.
 
 > **Status:** shipped, playable build. **Stack:** Vite + TypeScript + PixiJS v8 + Web Audio. Two display modes (Normal / Expert) over one identical deterministic simulation.
+
+> **How to run / play → see [README.md](../README.md).**
 
 ---
 
@@ -209,7 +211,7 @@ The "enemies" are 9 request archetypes (`REQUEST_TYPES`) defined by **workload p
 | **Batch / Offline** (`batch`) | decode-heavy, no SLO | 1000 / 4000 | TO | general | — | Pure throughput & $/token. |
 | **Adversarial Prompt** (`jailbreak`) | the hazard carrier | 600 / 400 | IN | general | jailbreak 0.9 | Self-handle or a guardrail catches, or Trust wrecks. |
 
-The taxonomy spans the real workload-physics space: pure-prefill, balanced, prefill-heavy, extreme-decode, agentic loop, decode-heavy no-SLO, and the adversarial hazard carrier. The old thematic enemies are gone — their defining traits (price, latency class, volume) were never request *kinds*, they were properties, now expressed as data.
+The taxonomy spans the real workload-physics space: pure-prefill, balanced, prefill-heavy, extreme-decode, agentic loop, decode-heavy no-SLO, and the adversarial hazard carrier. Each archetype's defining traits — price, latency class, volume — are expressed as data, not theme.
 
 ---
 
@@ -360,7 +362,7 @@ Beyond GPU racks (`srv_edge`, `srv_frontier` — both ship with the free Llama-8
 
 ## 13. UI Surfaces: Normal & Expert
 
-There are **two display modes** over **one identical deterministic simulation** — `src/sim/**` never imports `mode.ts`. **Normal** keeps the SRE telemetry tucked away; **Expert** reveals it. The title screen also offers a small **Demo** button: a fixed-seed Expert spectator run driven by the production demo autoplayer (`src/sim/demo.ts`), which plans builds, rack upgrades through DGX H200, model deployment, infra/eval/post-training research, guardrails, Studio-derived checkpoints, power/cooling, liquid cooling, and P/D rack roles, surviving deep into the 100-wave gauntlet (a sensible heuristic, like a real run, is eventually eliminated by the escalation — it does not "beat" the campaign). Demo viewers can inspect racks, requests, models, and lab panels, but state-changing actions stay under autoplayer control. Single-letter glyphs are gone; the 9 archetypes have vector icons.
+There are **two display modes** over **one identical deterministic simulation** — `src/sim/**` never imports `mode.ts`. **Normal** keeps the SRE telemetry tucked away; **Expert** reveals it. The title screen also offers a small **Demo** button: a fixed-seed Expert spectator run driven by the production demo autoplayer (`src/sim/demo.ts`), which plans builds, rack upgrades through DGX H200, model deployment, infra/eval/post-training research, guardrails, Studio-derived checkpoints, power/cooling, liquid cooling, and P/D rack roles, surviving deep into the 100-wave gauntlet (a sensible heuristic, like a real run, is eventually eliminated by the escalation — it does not "beat" the campaign). Demo viewers can inspect racks, requests, models, and lab panels, but state-changing actions stay under autoplayer control. The 9 archetypes are shown with vector icons.
 
 The Expert UI exposes 9 surfaces:
 

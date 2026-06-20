@@ -1,6 +1,9 @@
+> Deep background — the real-world facts GPTD is calibrated against. Not required to play; start with the README.
+> 深度背景資料——GPTD 真實感校準所依據的現實事實，玩遊戲不需要先讀；請從 README 開始。
+
 # 真實世界資料中心 LLM 推論：參考檔案 (Reference Dossier)
 
-> 本檔案由六個獨立研究章節合併、去重、重新組織而成，作為「真實感模擬器重新設計」的事實基礎。
+> 本檔案由六個獨立研究章節合併、去重、重新組織而成，作為本模擬器真實感校準的事實基礎。
 > 範圍：2024–2026 年資料中心 LLM 推論的請求工作負載、後訓練、安全防護、serving 系統技術、硬體現實、開放權重模型版圖。
 > 原則：**保留所有具體數字、表格與行內引用**；來源分歧處保留範圍並標示分歧；正體中文(台灣)敘述，技術名詞 / 產品名 / 數字一律 verbatim。
 > 可信度標註慣例：(confidence: high/med/low)；凡無法以 ≥2 個獨立來源交叉驗證者均已標明。
