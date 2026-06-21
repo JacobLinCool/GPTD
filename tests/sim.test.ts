@@ -1143,12 +1143,18 @@ describe('prefill vs decode (two-phase serving, real tokens)', () => {
     expect(run(true)).toBeGreaterThan(0.1)
   })
 
-  it('thermal throttling hits prefill hard and decode barely (phase asymmetry)', () => {
-    // decodeThrottle(0.5) = 1 − 0.5×0.25 = 0.875: a 50% cap costs decode 12.5%
+  it('thermal throttling bites decode meaningfully, keeping only a slight edge over prefill', () => {
+    // decodeThrottle(t) = 1 − (1−t)×0.85: decode keeps a SLIGHT memory-bound edge over
+    // prefill (which takes the full hit), but a thermal cap now REALLY costs throughput —
+    // the old ×0.25 left decode at ~84% even at the floor, so overheating was nearly free.
     void effectsModule
-    expect(decodeThrottle(0.5)).toBeCloseTo(0.875, 6)
+    // a 50% cap now costs decode ~42.5% (was only 12.5% under the old ×0.25).
+    expect(decodeThrottle(0.5)).toBeCloseTo(0.575, 6)
     expect(decodeThrottle(1)).toBe(1)
-    expect(decodeThrottle(0.35)).toBeCloseTo(1 - 0.65 * 0.25, 6)
+    // at the throttle floor (0.2) decode collapses to ~32% — under-cooling a hot fleet hurts.
+    expect(decodeThrottle(THROTTLE_FLOOR)).toBeCloseTo(1 - (1 - THROTTLE_FLOOR) * 0.85, 6)
+    // decode still keeps an edge over prefill, which runs at the bare throttle fraction.
+    expect(decodeThrottle(0.5)).toBeGreaterThan(0.5)
   })
 })
 

@@ -130,8 +130,12 @@ export const START = {
  */
 export const RACK_UTILIZATION = 0.8
 
-/** Throttle floor: even fully overheated GPUs keep this fraction of speed. */
-export const THROTTLE_FLOOR = 0.35
+/**
+ * Throttle floor: even fully overheated GPUs keep this fraction of speed. Set low
+ * (0.2) so running racks hot WITHOUT enough cooling collapses serving to ~20% — a
+ * real, painful penalty that forces buying Cooling rather than coasting on a soft dip.
+ */
+export const THROTTLE_FLOOR = 0.2
 /**
  * Global multiplier converting a request's per-type tile speed into lane speed.
  * The four-ingress central-core map has shorter individual lanes than the old

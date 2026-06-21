@@ -69,7 +69,7 @@ Extracted from the **code** (the source of truth: `src/sim/**` + `src/config.ts`
 | `scheduling.batch / .multiStep` | Continuous batching / extra slots | bool / slots |
 | `routing.kvAware` | KV-aware routing (Dynamo) | bool |
 | `batch` (`b`, `n`) | Concurrent in-flight requests | count |
-| `throttle` | Thermal throttle factor | 0.35..1 |
+| `throttle` | Thermal throttle factor | 0.2..1 |
 | `realDt` / `dt` | Real seconds this tick (=dt×10) / sim timestep | s |
 
 ### Safety
@@ -106,7 +106,7 @@ Extracted from the **code** (the source of truth: `src/sim/**` + `src/config.ts`
 | `SIM_DT` / `MAX_STEPS` | 1/60 / 5 | Fixed deterministic timestep (s) / max steps per frame |
 | `FRAMEWORK_GB` | 1.5 | Per-rack VRAM overhead before KV |
 | `RACK_UTILIZATION` | 0.8 | Utilization factor on nameplate TDP |
-| `THROTTLE_FLOOR` | 0.35 | Min speed an overheated GPU keeps |
+| `THROTTLE_FLOOR` | 0.2 | Min speed an overheated GPU keeps |
 | `Mtok divisor` / `sec/hr` | 1e6 / 3600 | tokens×$/Mtok→USD / board-sec→real-hours |
 
 ### Start / board
@@ -143,7 +143,7 @@ Extracted from the **code** (the source of truth: `src/sim/**` + `src/config.ts`
 | specMul | b≤1:2.0, b≤4:1.7, b≤16:1.66, b≥32:1.0 (16→32 lerp) | Spec-decode gain |
 | bwMul flash coeff | 0.1 | Decode BW ceiling ×(1+0.1·flash) |
 | int4ContextPenalty / int4Tax | −6 (int4 & ctx>8000) / −2 | INT4 long-ctx collapse / flat quality tax |
-| decodeThrottle coeff | 0.25 | decode keeps ≥75% under throttle |
+| decodeThrottle coeff | 0.85 | decode keeps only a slight edge under throttle |
 | serverPower fp8 / int4 | ×0.85 / ×0.95 | Quant power reduction |
 | serverPower throughput / spec | ×(1+0.05·thr) / ×(1+0.08·specLvl) (frontier only) | Power lift |
 | routeBonus kvAware lift / cap | ×(1+0.8) / decode +90% cap | KV-aware routing |
@@ -201,6 +201,7 @@ Extracted from the **code** (the source of truth: `src/sim/**` + `src/config.ts`
 | p95 quantile | 0.95 | `index = ceil(n·0.95)−1` |
 | answered set | served \| sloMiss \| bad | Goodput denominator |
 | utilization EMA | 0.9·prev + 0.1·inst | Rolling fleet utilization |
+| `MAX_TIER` / `LATE_LOAD_GAIN` | 12 / 7 | Authored campaign ceiling / late-game compute amplifier |
 
 ### Outcome settlement (`combat.ts` / `movement.ts`)
 | Outcome | Effect |
@@ -291,6 +292,22 @@ non-reasoning (deploys without a method gate). See docs/PARETO.md.
 Request difficulty `difficulty[axis] / primaryAxis`:
 `embed {general 10} · chat {chat 18} · comp {coding 56} · rag {general 50, reasoning 44} · summ {general 44} · reason {reasoning 82} · agent {agentic 82, reasoning 66} · batch {general 40} · jailbreak {general 38}`.
 
+### Campaign era scaling
+```
+tierWork(tier)    = 1 + ((tier−1)/11)^1.5 · 2
+tierContext(tier) = 1 + ((tier−1)/11)^1.5 · 1.9
+lateLoadMul(tier) = tier≤6 ? 1 : 1 + ((tier−6)/(MAX_TIER−6))² · LATE_LOAD_GAIN
+sens              = LENGTH_SENS[typeId]
+gWork             = 1 + (tierWork−1) · sens · lateLoadMul
+gContext          = 1 + (tierContext−1) · sens
+spawn input       = round(baseInput · gContext · max(1,√gWork))
+spawn output      = round(baseOutput · gWork)
+spawn context     = round(baseInput · gContext)
+spawn difficulty  = baseDifficulty · tierComplexity(tier)   # tierComplexity capped at +20%
+```
+`lateLoadMul` is exactly 1 through tier 6, then ramps quadratically; it amplifies
+serving work only (`gWork`), not the context-window quality gate (`gContext`).
+
 ### Post-training (Studio)
 ```
 depthDamp = 1/(1 + 0.15·depth)              # depth = base+1
@@ -328,7 +345,7 @@ prefillShare = prefillJob ? (chunked & decodeJobs>0 ? 0.35 : 1) : 0 ;  decodeSha
 roleMul      = prefill ? 1.5 : decode ? 1.25 : 1                          # DistServe P/D pools
 mul          = (primaryAxis==spec ? 1.6 : spec=='general' ? 1.0 : 0.65) · (routingMul if matched & routed)
 prefill −= prefillRate · roleMul · throttle · prefillShare · realDt       # full thermal hit
-work    −= perUserDecode · roleMul · dThr · decodeShare · mul · realDt    # dThr = 1−(1−throttle)·0.25
+work    −= perUserDecode · roleMul · dThr · decodeShare · mul · realDt    # dThr = 1−(1−throttle)·0.85
 generated = decremented work → contextLen += generated ; e2el += generated·tpotReal
 RESOLVE precedence: overRefused → (work|prefill>0 → wait) → unsafe (open hazard) → bad (margin<0) → slo_miss → served
 ```
@@ -355,7 +372,7 @@ serverPower = (tdpWatts/1000)·RACK_UTILIZATION(0.8) ·(fp8?.85:1)·(int4?.95:1)
               ·(frontier & spec ? 1+.08·specLevel : 1)        # serverHeat = serverPower
 liquidGated: server needs-liquid hw but no Liquid Loop → forced offline
 brownout: while Σdraw > powerCap → drop the highest-effDraw online server (support last)
-throttle = heat ≤ coolCap ? 1 : max(THROTTLE_FLOOR(0.35), coolCap/heat)
+throttle = heat ≤ coolCap ? 1 : max(THROTTLE_FLOOR(0.2), coolCap/heat)
 ```
 
 ### Economy ($/Mtoken, cost, outcomes)

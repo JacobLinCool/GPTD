@@ -16,7 +16,11 @@ No install — it runs entirely in your browser. (To run from source, see [Getti
 
 GPTD is built to be **defensible in front of LLM-infrastructure professionals**: every visible mechanic maps to a real serving decision, and Expert Mode exposes the genuine SRE telemetry behind it.
 
-## What it models
+## What We Built
+
+**GigaPrompt Tower Defense** is a playable browser tower defense about operating an LLM inference platform under pressure. Instead of destroying enemies, you serve waves of AI user requests before they leak into the central Trust Core. Winning means keeping **Trust**, **SLA**, and **Cash** alive while you choose rack hardware, deploy open-weight models, manage power and cooling, add routers/caches/guardrails, research serving infrastructure, and post-train new derived checkpoints.
+
+The campaign is a 100-wave elimination gauntlet based on real 2023→2026 AI-infrastructure history. Normal Mode keeps the interface approachable; Expert Mode exposes the serving telemetry an inference team would actually watch: Goodput, TTFT/E2EL SLO attainment, roofline bottlenecks, KV-cache pressure, model lineage, power/cooling headroom, and $/Mtoken.
 
 - **9 request archetypes by root property** — `embed`, `chat`, `comp`, `rag`, `summ`, `reason`, `agent`, `batch`, `jailbreak`. Each carries real input/output token counts (ISL/OSL), a latency class (interactive / near-real-time / throughput), a per-axis difficulty vector, a prefix-cacheability share, and (for `agent`/`jailbreak`) safety hazards. A request is defined by its workload physics, not its costume.
 - **A real GPU ladder** — `L4 → L40S → H100 → H200 → DGX H200 → DGX B200 → GB200 NVL72`. Each rack carries real per-GPU VRAM, HBM bandwidth, TDP, and capex, scaled by GPU count. Air-cooled racks light up anywhere; the liquid-cooled multi-GPU clusters (DGX H200, DGX B200, GB200 NVL72) are **hard-gated behind a Liquid Cooling Loop** and cannot run without one.
@@ -26,9 +30,38 @@ GPTD is built to be **defensible in front of LLM-infrastructure professionals**:
 - **Two-layer safety** — layer 1 is model-intrinsic alignment (baked in by RLHF/CAI/safety-SFT, zero serving latency, carrying a quality tax and an over-refusal risk); layer 2 is guardrail buildings (a millisecond BERT **encoder**, a full-inference 12B **generative** guardrail that runs on its own roofline, and a vendor-hosted **moderation** API). Threshold tuning trades recall against over-refusal — there is no free lunch.
 - **A real economy** — income is `$/Mtoken` (input + output prices per archetype); cost is real operating spend (capex amortization + $/GPU-hr + power + cooling) billed by wall-clock, so **idle and over-provisioned racks bleed** and low utilization blows up your unit cost. Six request outcomes settle the books: `served`, `slo_miss`, `bad`, `unservable`, `unsafe`, `over_refused`.
 
-## How it plays
+## How Codex helped
+
+GPTD was developed with Codex as an agentic engineering partner across code, content, and documentation:
+
+- **Implementation support** — translating the design into TypeScript systems for deterministic simulation, PixiJS rendering, UI panels, data-driven content tables, tests, and build scripts.
+- **Research-to-game synthesis** — helping turn real LLM-serving concepts into playable mechanics: roofline prefill/decode limits, KV-cache pressure, GPU power/cooling, latency SLOs, model quality axes, post-training tradeoffs, and guardrail failure modes.
+- **Content and documentation consistency** — keeping player-facing copy, manuals, i18n strings, design docs, and README text aligned when mechanics or terminology changed.
+- **Verification workflows** — using typecheck, lint, unit tests, build checks, autoplay balance tests, and the local agent bridge to exercise the game as a browser-playable system rather than only as isolated code.
+
+## How to play / controls
 
 You watch four data-center ingress lanes converge on a central Trust Core and make assignment and provisioning calls in real time: build racks, deploy the right model onto each one, upgrade rack tiers in place, provision power and cooling (and a liquid loop before any high-density rack), place a Router / Cache / guardrails, and run research and post-training between waves. Keep three meters alive — **Trust**, **SLA**, and **Cash** — through a **100-wave campaign** that dramatizes real 2023→2026 history **from the provider's seat** — every wave is a **demand shift** (the chatbot boom, the code-completion surge, everyone building RAG bots, the reasoning-demand flood, the coding-agent majority…) or an **operating shock** (the H100 shortage, undersea-cable cuts, grid heatwaves & water limits, chip export bans, major cloud outages, token price wars, the EU AI Act…), never a model/tech announcement — as an escalating **elimination gauntlet**. Difficulty climbs monotonically; most runs end mid-campaign; reaching wave 100 — the **Age of Inference** boss — is the apex, after which endless mode generates ever-harder surges. Between waves, real-event **incidents** bite live through the build phase and the wave: power-price spikes, cooling/grid failures, GPU/HBM shortages and export bans, regulatory audits, token price wars, data poisoning, viral demand surges, and undersea-cable cuts that funnel every request through one ingress. The title screen offers **Normal Mode** (friendly dashboards), **Expert Mode** (the full SRE console — rooflines, Goodput, $/Mtoken, KV budget, the model overview and lineage graph), and a small **Demo** button, which launches a fixed-seed Expert run driven by the same balance autoplayer that survives deep into the 100-wave gauntlet while exercising the major systems: build placement, rack upgrades through DGX H200, model deployment, infra/eval/post-training research, Studio-derived checkpoints, guardrails, power/cooling, liquid cooling, and P/D rack roles. Demo remains inspectable: viewers can click live racks, requests, model lists, and lab panels while the autoplayer owns state-changing actions.
+
+| Action                                    | Control                                                                                |
+| ----------------------------------------- | -------------------------------------------------------------------------------------- |
+| Start the game                            | Press **START** on the main menu                                                       |
+| Choose a display mode                     | Select **NORMAL** or **EXPERT** on the title screen                                    |
+| Place a building                          | Select a building button at the bottom, then select a map cell                         |
+| Place the same building again             | The tool stays selected after placement                                                |
+| Inspect a building                        | Select a placed building                                                               |
+| Deploy a model onto a rack                | Select a rack, then a checkpoint in the **DEPLOY** grid                                |
+| Upgrade rack hardware                     | Select a rack, then use **RACK →** to pay the tier price difference                    |
+| Open the Post-Training Studio / tech tree | Build a Training Lab, then press **TRAIN** during the Build phase                      |
+| Sell a building                           | Press **SELL** in the inspect panel                                                    |
+| Start the next wave                       | Press **START WAVE** or `Space`                                                        |
+| Pause a wave                              | Press `Space` mid-wave or use the pause button                                         |
+| Adjust speed                              | Press `1` / `2` / `3` / `6` / `0` for 1x / 2x / 3x / 6x / 12x, or use the speed button |
+| Toggle Expert telemetry panel             | Press `` ` `` or `Tab` in Expert Mode                                                  |
+| Close a panel / deselect                  | Press `Escape`                                                                         |
+| Mute                                      | Press `M` or use the sound button                                                      |
+
+You build primarily during the Build phase, but emergency builds are allowed mid-wave if you have cash. Research and post-training run only during the Build phase.
 
 ## Design & grounding docs
 

@@ -102,10 +102,10 @@ function waveBudget(tier: number, volume: WaveVolume): number {
 
 /**
  * Per-request generation load (decode tokens). Ramps CONVEXLY — gentle early,
- * steep late — toward ~3× by tier 12, so a late reasoning lane emits ~18K output
- * tokens (real long-CoT: o1 ≈ 5K avg, hard tasks tens of K; §ref). Early waves
- * stay near 1.0×. Throughput pressure scales, but a maxed fleet + long-context
- * tech keeps single requests servable (validated by the autoplay depth gate).
+ * steep late — toward ~3× by tier 12 before the late-load amplifier is applied
+ * in buildWave. Early waves stay near 1.0×. Throughput pressure scales, but a
+ * maxed fleet + long-context tech keeps single requests servable (validated by
+ * the autoplay depth gate).
  */
 function tierWork(tier: number): number {
   const r = (tier - 1) / 11
@@ -124,11 +124,11 @@ function tierComplexity(tier: number): number {
 
 /**
  * Prompt-length inflation — the real 8K→1M context-window arc (REALISM §1.8). Ramps
- * CONVEXLY to ~2.9× by tier 12; combined with √workMul the effective input grows
- * ~5×, so a late RAG/agent lane ingests ~40K and summarization ~60K tokens — real
- * long-context territory (Mooncake/Kimi conversation avg ≈ 12K input, long-doc QA
- * ≈ 100K; agentic coding steps push 100K-2M). This finally pressures the model
- * context window + the KV / prefill / prefix-cache tech tree (the late-game test).
+ * CONVEXLY to ~2.9× by tier 12. Combined with √workMul plus lateLoadMul, the
+ * effective prefill load reaches real long-context territory (RAG/agent ≈70-100K
+ * input tokens, summarization ≈140K). Mooncake/Kimi conversation avg ≈12K input,
+ * long-doc QA ≈100K; agentic coding steps push 100K-2M. This finally pressures
+ * the model context window + the KV / prefill / prefix-cache tech tree.
  */
 function tierContext(tier: number): number {
   const r = (tier - 1) / 11
@@ -164,6 +164,24 @@ const LENGTH_SENS: Record<string, number> = {
 export const MAX_TIER = 12
 
 /**
+ * Late-game per-request COMPUTE amplifier. tierWork/tierContext keep single requests
+ * comfortably servable through the teaching arc, but by the endgame a maxed fleet has
+ * so much headroom that a request is one-shot the instant it spawns — compute outruns
+ * demand and the late waves stop pressuring throughput. This multiplier is exactly 1
+ * through the mid-game (tier ≤ 6, ≈ waves 1-33, so the build-out arc is untouched) and
+ * ramps QUADRATICALLY from the late tiers — gentle at tier 7, steep across tiers 10-12
+ * (≈ waves 56-100) — so an endgame request demands materially more prefill ingest AND
+ * decode generation. It amplifies the tier-scaling DELTA (not the base), so the per-lane
+ * LENGTH_SENS damping still protects the tight-SLO interactive lanes.
+ */
+export const LATE_LOAD_GAIN = 7
+export function lateLoadMul(tier: number): number {
+  if (tier <= 6) return 1
+  const t = (tier - 6) / (MAX_TIER - 6) // 0 at tier 6 → 1 at tier 12
+  return 1 + t * t * LATE_LOAD_GAIN
+}
+
+/**
  * The late-game (max-tier) spawn token counts for an archetype — the SAME math
  * buildWave + spawnRequest apply at the end of the campaign (tier scaling ×
  * per-archetype LENGTH_SENS, then input = base × ctx × √work). The Codex shows
@@ -171,8 +189,9 @@ export const MAX_TIER = 12
  */
 export function eraTokenRange(def: RequestTypeDef, tier = MAX_TIER): { input: number; output: number } {
   const sens = LENGTH_SENS[def.id] ?? 0.7
+  const lateMul = lateLoadMul(tier)
   const ctx = 1 + (tierContext(tier) - 1) * sens
-  const wrk = 1 + (tierWork(tier) - 1) * sens
+  const wrk = 1 + (tierWork(tier) - 1) * sens * lateMul
   return {
     input: Math.round(def.inputTokens * ctx * Math.max(1, Math.sqrt(wrk))),
     output: Math.round(def.outputTokens * wrk),
@@ -205,6 +224,8 @@ export function buildWave(theme: WaveTheme): WaveDef {
   const workMul = tierWork(tier)
   const complexityMul = tierComplexity(tier)
   const contextMul = tierContext(tier)
+  // late-game per-request compute amplifier (1.0 through tier ≤ 6; steep over tiers 10-12)
+  const lateMul = lateLoadMul(tier)
 
   const mix = theme.mix.length ? theme.mix : [{ typeId: 'chat', weight: 1 }]
   const totalWeight = mix.reduce((n, m) => n + m.weight, 0) || 1
@@ -227,7 +248,12 @@ export function buildWave(theme: WaveTheme): WaveDef {
     // per-archetype length sensitivity: damp token inflation on the tight-SLO
     // interactive lanes, let long-context / offline lanes scale fully (REALISM §1.8).
     const sens = LENGTH_SENS[m.typeId] ?? 0.7
-    const gWork = 1 + (workMul - 1) * sens
+    // Amplify the late-game COMPUTE demand via gWork only: workMul drives decode output
+    // tokens AND (via √work) prefill input tokens, i.e. real prefill+decode SERVING TIME,
+    // WITHOUT touching `context` (the quality-window difficulty). Inflating contextMul too
+    // would blow up the contextGap quality penalty (bad answers → trust death) instead of
+    // creating the intended throughput pressure, so contextMul keeps its authored curve.
+    const gWork = 1 + (workMul - 1) * sens * lateMul
     const gContext = 1 + (contextMul - 1) * sens
     const g: SpawnGroup = {
       typeId: m.typeId,

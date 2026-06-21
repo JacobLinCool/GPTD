@@ -241,7 +241,7 @@ KV = 2 × layers × kvHeads × headDim × contextLen × bytesPerElem    (MLA × 
 ```
 GQA/MQA are reflected naturally by a model's low `kvHeads`; there is no global GQA discount. Continuous batching is limited by the KV budget = usable VRAM after weights, scaled by `kvUtilization` (0.55 → 0.96 after PagedAttention).
 
-**Thermal asymmetry.** Decode is so bandwidth-bound that power caps barely touch it; prefill takes the full throttle hit (`decodeThrottle` keeps 75% of decode under throttle).
+**Thermal asymmetry.** Decode is more memory-bound than prefill, so it keeps a slight edge under a cap, but overheating is intentionally painful: prefill takes the full throttle hit, while `decodeThrottle(t) = 1 − (1 − t) × 0.85` (≈58% decode speed at half-throttle, ≈32% at the `0.2` floor).
 
 ---
 

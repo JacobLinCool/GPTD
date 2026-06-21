@@ -321,11 +321,15 @@ export function int4ContextPenalty(s: GameState, contextLenTokens: number): numb
 }
 
 /**
- * Phase-asymmetric thermal throttling (Splitwise/ISCA'24): decode is so
- * memory-bound that power caps barely touch it; prefill takes the full hit.
+ * Phase-asymmetric thermal throttling (Splitwise/ISCA'24): decode is more
+ * memory-bound than prefill, so it keeps a SLIGHT edge under a thermal cap — but
+ * only slight. A previous ×0.25 left decode at ~84% even at the throttle floor, so
+ * overheating was nearly free; ×0.85 makes decode track the cap closely (≈32% at the
+ * 0.2 floor, ≈58% at a half-throttle), so under-cooling a hot fleet really bites and
+ * Cooling becomes a must-buy, while prefill still takes the full hit (combat.ts).
  */
 export function decodeThrottle(throttle: number): number {
-  return 1 - (1 - throttle) * 0.25
+  return 1 - (1 - throttle) * 0.85
 }
 
 /**

@@ -10,7 +10,15 @@ import {
   tryBuild,
   upgradeHardware,
 } from './actions'
-import { HARDWARE_DEFS, HARDWARE_TIERS, RESEARCH_DEFS, RESEARCH_TARGET_SECONDS, TOWER_DEFS, WAVES } from './content'
+import {
+  HARDWARE_DEFS,
+  HARDWARE_TIERS,
+  METHOD_RECIPES,
+  RESEARCH_DEFS,
+  RESEARCH_TARGET_SECONDS,
+  TOWER_DEFS,
+  WAVES,
+} from './content'
 import {
   loadout,
   loadoutOf,
@@ -20,7 +28,7 @@ import {
   serverPerUserDecodeTokS,
   serverPower,
 } from './effects'
-import { resolveModel } from './models'
+import { computeDerivedFields, resolveModel } from './models'
 import { CORE_TILE, isBuildable, isPathTile } from './pathing'
 import { updatePower } from './power'
 import {
@@ -83,20 +91,32 @@ const RESEARCH_PRIORITY = [
   'inf_wq_fp8',
   'r_pt_lora',
   'r_pt_pref',
+  // CAI (Constitutional AI) is the Pareto safety lever: a derived model that is
+  // BOTH high-safety AND low-over-refusal (safe-completion). Over-refusal SLA bleed
+  // is the dominant late-game killer, so unlock CAI early — right after preference
+  // optimization — so the Studio can ship the bulk safe-completion workhorse.
+  'r_pt_cai',
   'r_pt_rl',
   'r_eval_redteam_v1',
+  'inf_prefix', // prefix cache: lifts the cache-hit ceiling (prefixLevel) — the agent-wall lever
+  'inf_flash', // +context headroom (shrinks the context-stretch penalty) + KV ceiling
   'r_eval_redteam_v2',
-  'inf_prefix',
-  'inf_flash',
   'inf_kvquant_fp8',
-  'inf_spec',
-  'inf_multistep',
+  // P/D disaggregation chain (par_tp → par_pp → disagg): dedicated prefill/decode
+  // pools tune parallelism for the heavy reason/agent decode AND satisfy the showcase
+  // (prefill+decode roles). disagg requires par_pp requires par_tp — keep them in
+  // dependency order so planResearch can actually reach disagg.
   'inf_par_tp',
   'inf_par_pp',
   'inf_disagg',
+  'inf_spec',
+  'inf_multistep',
   'inf_routing',
-  'inf_wq_int4',
-  'inf_kvquant_int4',
+  // NOTE: inf_wq_int4 / inf_kvquant_int4 are deliberately OMITTED. INT4 weights add a
+  // flat −6 quality penalty on any context > 8000 tokens (int4ContextPenalty), which
+  // pushes the extreme-decode `reason` lane (6000+ output tokens, NOT cacheable) below
+  // its tier-scaled line → `bad` answers → trust death. We have ample VRAM at FP8 with
+  // small MoEs, so the memory win is not worth the reasoning-quality hit.
 ] as const
 
 function countKind(s: GameState, kind: string): number {
@@ -194,16 +214,61 @@ function minAxis(s: GameState, id: string): number {
   return Math.min(q.chat, q.coding, q.reasoning, q.general)
 }
 
-function modelScore(s: GameState, id: string): number {
+/**
+ * Total capability margin a model carries ABOVE the (tier-scaled) clear lines on the
+ * hard axes — what distinguishes a re120/ag109 specialist from a re103/ag86 bulk
+ * model that BOTH "clear" the base-82 line. Rewarding this margin gets the high-
+ * capability GRPO specialist deployed on the racks that catch reason/agent traffic,
+ * so the hardest late-tier lanes stop shipping `bad` answers (the trust drain).
+ */
+function capabilityMargin(m: NonNullable<ReturnType<typeof resolveModel>>): number {
+  const q = m.qualityBy
+  let n = 0
+  for (const l of CLEAR_LINES) n += Math.max(0, q[l.axis] - l.at)
+  return n
+}
+
+/**
+ * Rank a model for a rack. `capWeight` tilts the trade-off: a BIG rack (frontier/pod)
+ * that fronts the hard reason/agent lanes weights raw capability margin higher (it
+ * must clear the late-tier wall); a BULK rack weights low over-refusal higher (it
+ * soaks benign volume where every wrong refusal bleeds SLA). lanesCleared stays the
+ * dominant term, then a blend of capability-margin and an over-refusal penalty.
+ */
+function modelScore(s: GameState, id: string, capWeight = 0.5): number {
   const m = resolveModel(s, id)
   if (!m) return -1
-  return lanesCleared(s, id) * 1000 + minAxis(s, id) - m.paramsActiveB * 0.01
+  // OVER-REFUSAL is the dominant late-game SLA drain (one over-refused rag needs ~20
+  // clean serves to undo). Penalize it hard on bulk racks; a high-safety model also
+  // gets a small bonus (it self-handles hazards → no trust breach, lets us shed
+  // guardrails). On a big rack we lean toward capability margin so the specialist
+  // that clears the late-tier reason/agent wall wins.
+  return (
+    lanesCleared(s, id) * 1000 +
+    capabilityMargin(m) * (0.4 + 0.9 * capWeight) +
+    minAxis(s, id) * 0.15 -
+    m.alignment.overRefusal * (700 - 400 * capWeight) +
+    Math.min(m.alignment.safety, 90) * 0.3 -
+    m.paramsActiveB * 0.01
+  )
+}
+
+/** A frontier-or-bigger rack fronts the hard reason/agent lanes → weight capability. */
+function rackCapWeight(hwId: string | undefined): number {
+  if (hwId === 'hw_pod' || hwId === 'hw_superpod') return 1.0
+  if (hwId === 'hw_frontier') return 0.85
+  if (hwId === 'hw_perf') return 0.5
+  return 0.3
 }
 
 function modelScoreOn(s: GameState, hwId: string | undefined, id: string): number {
   const lo = loadout(s, hwId, id)
   const tpotMs = 1000 / Math.max(1e-6, serverPerUserDecodeTokS(s, lo, 1))
-  return modelScore(s, id) + (tpotMs <= LAT_CLASS_SLO.IN.tpotMs ? 100_000 : 0) - tpotMs * 0.5
+  return (
+    modelScore(s, id, rackCapWeight(hwId)) +
+    (tpotMs <= LAT_CLASS_SLO.IN.tpotMs ? 100_000 : 0) -
+    tpotMs * 0.5
+  )
 }
 
 function bestFit(s: GameState, hwId: string | undefined): string | null {
@@ -228,21 +293,128 @@ function deployBest(s: GameState, towerId: number, hwId: string | undefined, cur
   }
 }
 
-function maybeStudio(s: GameState): void {
-  if (s.research.posttrain) return
-  if ((s.upgrades['pt_rl'] ?? 0) === 0) return
-  if (s.data < 24) return
-  const targetsDone = new Set(Object.values(s.derivedModels).map((m) => m.lineage?.target))
-  const target: 'reasoning' | 'agentic' = !targetsDone.has('reasoning') ? 'reasoning' : 'agentic'
-  if (targetsDone.has(target)) return
+/** All base models that fit a given rack class at FP8 (the Studio's candidate pool). */
+function fp8Bases(s: GameState, hwId: string) {
   const fp8 = createState(0)
   fp8.infra.weightQuantBytes = 1
-  const base = Object.keys(s.models)
+  return Object.keys(s.models)
     .map((id) => resolveModel(s, id))
     .filter((m): m is NonNullable<typeof m> => !!m && m.origin === 'base')
-    .filter((m) => serverFitsMemory(fp8, loadout(fp8, 'hw_frontier', m.id)))
-    .sort((a, b) => b.qualityBy[target] - a.qualityBy[target] || b.quality - a.quality)[0]
-  if (base && canPostTrain(s, [base.id], 'grpo', target)) startPostTrain(s, [base.id], 'grpo', target, 1.5)
+    .filter((m) => serverFitsMemory(fp8, loadout(fp8, hwId, m.id)))
+}
+
+/** Lanes a base's qualityBy clears (the CLEAR_LINES count). */
+function baseLanesCleared(m: NonNullable<ReturnType<typeof resolveModel>>): number {
+  return CLEAR_LINES.reduce((n, l) => n + (m.qualityBy[l.axis] >= l.at ? 1 : 0), 0)
+}
+
+type DM = NonNullable<ReturnType<typeof resolveModel>>
+
+/** Dry-run a post-train run on a base: the projected derived snapshot. */
+function projTrain(
+  base: DM,
+  method: 'grpo' | 'cai',
+  target: 'reasoning' | 'agentic' | 'safety',
+  effort: number,
+): DM {
+  const f = computeDerivedFields(base, METHOD_RECIPES[method], target, effort, null)
+  // a synthetic ModelDef carrying the projected snapshot (for scoring only).
+  return { ...base, ...f, origin: 'derived' } as DM
+}
+
+/** Owned derived checkpoints matching a method (and optional target). */
+function derived(s: GameState, method: string, target?: string): DM[] {
+  return Object.values(s.derivedModels).filter(
+    (m) => m.lineage?.method === method && (target === undefined || m.lineage?.target === target),
+  )
+}
+
+/** Does this model clear a (tier-scaled) line on the named axis? */
+function clearsLine(m: DM, axis: 'reasoning' | 'agentic', line: number): boolean {
+  return m.qualityBy[axis] >= line
+}
+
+/**
+ * The Post-Training Studio queue. The posttrain track is shared (one run per build
+ * phase), so runs are committed in strict SURVIVAL priority. The endgame fleet wants
+ * EVERY deployed model to be BOTH low-over-refusal (no SLA bleed) AND high-capability
+ * enough to clear the late-tier reason/agent walls (no `bad`-answer trust drain). The
+ * §2.4 Pareto tool that delivers both is CAI (safe-completion) — applied on its own
+ * for the bulk model, and CHAINED on top of a GRPO specialist for the agent wall:
+ *
+ *   1. CAI bulk workhorse — strongest lane-clearing MoE that fits a Standard rack at
+ *      FP8, low active params (fast decode → meets the interactive SLO). Kills the
+ *      over-refusal SLA bleed AND self-handles hazards (no trust breach, fewer guards).
+ *   2. GRPO-AGENTIC specialist on a FAST pa≈3 MoE that projects clearly past the agent
+ *      wall (ag≈104). Satisfies the agentic showcase req and is the seed for step 3.
+ *   3. CAI on that agentic specialist → the SAFE-COMPLETION agent-wall workhorse
+ *      (ag≈104, or≈0.06, sf≈95). This is the model that finally stops the `agent`-lane
+ *      `bad` answers that were the dominant late trust drain — the Pareto endgame.
+ *   4. GRPO-REASONING specialist (re≈114) for the hardest reason lane + showcase req.
+ *   5. CAI it too → a safe high-reason workhorse; then keep refreshing as the roster
+ *      and FP8/headroom let stronger bases in.
+ */
+function maybeStudio(s: GameState): void {
+  if (s.research.posttrain) return
+  if (!hasTowerKind(s, 'lab')) return
+  if (s.data < 22) return
+  const caiUnlocked = (s.upgrades['pt_cai'] ?? 0) > 0
+  const grpoUnlocked = (s.upgrades['pt_rl'] ?? 0) > 0
+  const AG_LINE = 98 // agent 82 × tier-12 1.20
+  const RE_LINE = 100 // reason 82 × tier-12 1.20
+
+  const start = (baseId: string, method: 'grpo' | 'cai', target: 'reasoning' | 'agentic' | 'safety', effort: number): boolean => {
+    if (!canPostTrain(s, [baseId], method, target)) return false
+    return startPostTrain(s, [baseId], method, target, effort)
+  }
+
+  // --- 1. the bulk CAI safe-completion workhorse (top survival priority) ---
+  if (caiUnlocked && derived(s, 'cai').filter((m) => !m.lineage || m.lineage.depth <= 1).length < 1) {
+    const base = fp8Bases(s, 'hw_standard')
+      .filter((m) => baseLanesCleared(m) >= 5)
+      .sort(
+        (a, b) =>
+          baseLanesCleared(b) - baseLanesCleared(a) ||
+          a.paramsActiveB - b.paramsActiveB || // fast decode (fits the interactive SLO)
+          b.quality - a.quality,
+      )[0]
+    if (base && s.data >= 22 && start(base.id, 'cai', 'safety', 2.0)) return
+  }
+
+  // --- 2. a FAST GRPO-agentic specialist that clears the agent wall ---
+  const agSpec = derived(s, 'grpo', 'agentic')[0]
+  if (grpoUnlocked && !agSpec) {
+    // prefer a fast (low active-param) base whose GRPO projection clears the wall.
+    const cand = fp8Bases(s, 'hw_standard').map((m) => ({ m, p: projTrain(m, 'grpo', 'agentic', 2.0) }))
+    const clears = cand.filter((c) => clearsLine(c.p, 'agentic', AG_LINE))
+    const pool = clears.length ? clears : fp8Bases(s, 'hw_frontier').map((m) => ({ m, p: projTrain(m, 'grpo', 'agentic', 2.0) }))
+    const best = pool.sort(
+      (a, b) => a.m.paramsActiveB - b.m.paramsActiveB || b.p.qualityBy.agentic - a.p.qualityBy.agentic,
+    )[0]
+    if (best && s.data >= 24 && start(best.m.id, 'grpo', 'agentic', 2.0)) return
+  }
+
+  // --- 3. CAI on the agentic specialist → safe-completion agent-wall workhorse ---
+  if (caiUnlocked && agSpec && !derived(s, 'cai').some((m) => m.lineage?.baseModelIds?.[0] === agSpec.id)) {
+    if (s.data >= 24 && start(agSpec.id, 'cai', 'safety', 2.0)) return
+  }
+
+  // --- 4. a GRPO-reasoning specialist (hardest reason lane + showcase req) ---
+  const reSpec = derived(s, 'grpo', 'reasoning')[0]
+  if (grpoUnlocked && !reSpec) {
+    const cand = fp8Bases(s, 'hw_frontier').map((m) => ({ m, p: projTrain(m, 'grpo', 'reasoning', 2.0) }))
+    const clears = cand.filter((c) => clearsLine(c.p, 'reasoning', RE_LINE))
+    const pool = clears.length ? clears : cand
+    const best = pool.sort(
+      (a, b) => a.m.paramsActiveB - b.m.paramsActiveB || b.p.qualityBy.reasoning - a.p.qualityBy.reasoning,
+    )[0]
+    if (best && s.data >= 24 && start(best.m.id, 'grpo', 'reasoning', 2.0)) return
+  }
+
+  // --- 5. CAI on the reasoning specialist → safe high-reason workhorse ---
+  if (caiUnlocked && reSpec && !derived(s, 'cai').some((m) => m.lineage?.baseModelIds?.[0] === reSpec.id)) {
+    if (s.data >= 24 && start(reSpec.id, 'cai', 'safety', 2.0)) return
+  }
 }
 
 function fp8Ready(s: GameState): boolean {
@@ -353,13 +525,36 @@ function modernizeFleet(s: GameState): void {
   }
 }
 
-function ensureSupport(s: GameState, kind: string, want: number, slots: Slot[], floor?: number): void {
+function ensureSupport(s: GameState, kind: string, want: number, slots: Slot[], floor?: number, cap = 6): void {
   let guard = 0
   const minCash = floor ?? reserveOf(s) + 25
-  while (countDef(s, kind) < want && s.meters.cash > minCash && guard++ < 6) {
+  while (countDef(s, kind) < want && s.meters.cash > minCash && guard++ < cap) {
     ensureCapacity(s, 1, 1)
     if (!place(s, kind, freeSlot(s, slots))) break
   }
+}
+
+/**
+ * Cache SATURATION — the single most powerful lever against the late agent wall.
+ * A cache hit returns a STORED answer with ZERO model inference: it bypasses BOTH
+ * the layer-1 over-refusal roll AND the context-stretch quality gate (bestQuality
+ * 999), and it costs no throughput. The cacheable lanes (embed/chat/comp/rag/agent)
+ * are exactly the benign-heavy + agent-wall traffic, and agent has the highest
+ * prefixShare (0.7). With prefix-cache research (prefixLevel 2 → +0.4 per cache) two
+ * overlapping caches give ~99% hit on cacheable traffic. So we keep ~1 cache per 3
+ * servers — enough overlap that the agent/benign volume is mostly answered from cache
+ * and never reaches a model to be over-refused or to miss the context wall.
+ */
+function cacheTarget(s: GameState, waveAbout: number): number {
+  if (waveAbout < 4) return 0
+  if (waveAbout < 6) return 1
+  if (waveAbout < 8) return 2
+  const servers = countKind(s, 'server')
+  // ~1 cache per 2 servers so EVERY rack overlaps two cache auras (→ ~99% hit on
+  // cacheable traffic, including the agent wall). Denser past wave 60 where the
+  // agent/reason context-stretch makes the model path itself bleed `bad`.
+  const ratio = waveAbout >= 60 ? 1.8 : 2.5
+  return Math.min(40, Math.max(3, Math.ceil(servers / ratio)))
 }
 
 function ensureShowcaseResources(s: GameState, waveAbout: number): void {
@@ -400,6 +595,12 @@ function ensurePodShowcase(s: GameState, waveAbout: number): void {
 function assignDisaggRoles(s: GameState): void {
   if (!s.infra.disagg) return
   const servers = s.towers.filter((t) => t.def.kind === 'server')
+  // Disaggregation pins racks to a single phase, which can STARVE the heavy
+  // reason/agent lanes (a decode-pinned rack ignores prefill and vice-versa). We
+  // want it for the throughput showcase but it must not hollow out the serving
+  // pool — so pin the MINIMUM (one prefill + one decode) and only on a healthy,
+  // large fleet, leaving the overwhelming majority of racks general-purpose.
+  if (servers.length < 12) return
   if (!servers.some((t) => t.role === 'prefill')) {
     const t = servers.find((x) => x.role === undefined)
     if (t) cycleRackRole(s, t.id)
@@ -451,7 +652,7 @@ export function demoPlan(s: GameState, waveAbout: number): void {
   const guardSlots = SLOTS.core.length ? SLOTS.core : SLOTS.lane
   ensureSupport(s, 'guard_encoder', waveAbout >= 14 ? 3 : waveAbout >= 10 ? 2 : waveAbout >= 4 ? 1 : 0, guardSlots, 20)
   ensureSupport(s, 'guard_llm', waveAbout >= 14 ? 1 : 0, guardSlots, 30)
-  ensureSupport(s, 'cache', waveAbout >= 8 ? 3 : waveAbout >= 6 ? 2 : waveAbout >= 4 ? 1 : 0, SLOTS.lane)
+  ensureSupport(s, 'cache', cacheTarget(s, waveAbout), SLOTS.lane, reserveOf(s) + 8, 20)
   ensureBigRacks(s, waveAbout, waveAbout >= 12 ? 3 : waveAbout >= 9 ? 2 : 1)
   ensurePodShowcase(s, waveAbout)
   const serverTarget = serverTargetFor(waveAbout)
