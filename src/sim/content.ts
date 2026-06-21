@@ -1252,11 +1252,11 @@ export const TOWER_DEFS: Record<string, TowerDef> = {
     range: 3.0,
     color: 0x4fd6c4,
     accent: 0xc7fff5,
-    cacheChance: 0.5,
+    cacheChance: 0.35,
     powerDraw: 0.2,
     heat: 0.2,
-    tagline: 'Buffs servers · instant hits',
-    desc: 'Aura: gives Serving Towers in range a chance to instantly answer cacheable traffic (Embedding, Chat, Code Completion, RAG, Agentic). Overlap it with your servers.',
+    tagline: 'Buffs servers · skips prefill',
+    desc: 'Aura: gives Serving Towers in range a chance to serve a cached prompt prefix on cacheable traffic (Embedding, Chat, Code Completion, RAG, Agentic) — the first token is instant (no prefill), but the response still decodes on the model. Overlap it with your servers.',
   },
   // §3.3 the three external guardrail families — the key real contrast: a BERT
   // encoder is milliseconds; a generative 12B guardrail is a full (shorter) inference

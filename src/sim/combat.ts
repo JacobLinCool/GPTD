@@ -63,7 +63,8 @@ export function updateCombat(s: GameState, dt: number): void {
   }
 
   // --- cache aura: a Cache buffs Serving Towers in its range with a chance to
-  //     instantly answer a cacheable request (a cache hit returns a stored answer).
+  //     reuse a cached prefix. A hit skips prefill / TTFT, but non-embedding
+  //     traffic still decodes and passes normal quality + safety checks.
   //     The cache does nothing on its own — it must overlap a server. ---
   const caches = towers
     .filter((t) => t.def.kind === 'cache' && t.online)
@@ -179,30 +180,37 @@ export function updateCombat(s: GameState, dt: number): void {
     const decodeJobs: Request[] = []
     for (const r of cands) {
       if (servedSlots >= n) break
-      // cache hit: a stored answer needs no model — no window, no prefill.
-      // A miss does not burn the request's chances forever (another cache
-      // cluster may hold the answer), but lookups are rate-limited.
-      if (cacheBuff > 0 && r.def.cacheable && r.cacheCd <= 0) {
+      // PREFIX-CACHE HIT (real prefix caching): the shared prompt prefix is served
+      // from cache, so PREFILL is skipped — the first token is instant (TTFT = queue
+      // wait) and the rack spends no prefill compute on it. But the response still
+      // DECODES on the model: a hit falls through to the normal decode admission below,
+      // competing for a decode slot and scored by the usual quality / safety / KV path.
+      // So a cache now accelerates TTFT and relieves prefill contention — it is NOT a
+      // free, always-correct, always-safe serve. (A miss is rate-limited; another
+      // cluster may still hold the prefix.)
+      if (cacheBuff > 0 && r.def.cacheable && r.prefill > 0 && r.cacheCd <= 0) {
         if (s.rng.chance(cacheBuff)) {
-          r.work = 0
           r.prefill = 0
-          r.bestQuality = 999
-          // a cache hit returns a previously-vetted STORED answer (no fresh model
-          // inference) → its hazards are considered handled (§3.3 cache bypass).
-          r.hazardsOpen = {}
-          r.safetyRisk = 0
-          r.safetyCleared = true
-          r.cacheFlash = 0.45
-          // a prefix-cache hit answers instantly — that IS its first token
           r.prefillDoneAt = s.time
           r.ttftReal = r.queueSec
-          r.e2elReal = r.queueSec
+          r.e2elReal = r.ttftReal
+          r.cacheFlash = 0.45
           recordTtft(s, r)
           recordCacheHit(s)
           s.events.push({ type: 'cache', x: r.x, y: r.y })
-          continue
+          if (r.maxWork <= 0) {
+            // a pure-prefill request (an embedding) IS fully answered by the cached
+            // prefix — there is no decode pass, so it resolves as a clean stored hit.
+            r.bestQuality = 999
+            r.hazardsOpen = {}
+            r.safetyRisk = 0
+            r.safetyCleared = true
+            continue
+          }
+          // otherwise fall through: the response still decodes on the model below.
+        } else {
+          r.cacheCd = 6 // cache miss: next lookup after 6 s
         }
-        r.cacheCd = 6 // cache miss: next lookup after 6 s
       }
       // safety LAYER 1 (§3.3, 0 latency): the model's INTRINSIC alignment, rolled
       // once the first time a server hits this request. A high-safety model self-

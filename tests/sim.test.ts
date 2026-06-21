@@ -1382,7 +1382,7 @@ function buildPhi4(s: GameState, col: number, row: number): void {
   deployModel(s, t.id, 'g_qwen3_1_7b_instruct_reasonin')
 }
 
-describe('long context (real-token window, KV admission, cache rescue)', () => {
+describe('long context (real-token window, KV admission, prefix-cache behavior)', () => {
   it('a prompt beyond the model real context window is unservable, not just worse', () => {
     const s = createState(60)
     richBuild(s)
@@ -1403,7 +1403,7 @@ describe('long context (real-token window, KV admission, cache rescue)', () => {
     expect(s.stats.leaked).toBe(0)
   })
 
-  it('a Cache can still rescue traffic the local model window cannot fit', () => {
+  it('a Cache no longer rescues traffic beyond the model window — it only skips prefill', () => {
     const s = createState(61)
     richBuild(s)
     for (const col of [2, 5, 8]) buildPhi4(s, col, 2)
@@ -1412,12 +1412,14 @@ describe('long context (real-token window, KV admission, cache rescue)', () => {
     // rag is cacheable long-context: 8000 × contextMul 5 = ~40000 tokens, over the 32K window
     for (let i = 0; i < 6; i++) spawnRequest(s, 'rag', 1, 1, 1, 1, 5)
     runFor(s, 80)
-    // some cache-serve even though no 32K window could fit them (the rest are
-    // unservable — rejected on the window gate, §2.5; a benign rag may also be
-    // over-refused by the model's intrinsic over-refusal, §3.6).
-    expect(s.stats.served).toBeGreaterThan(0)
-    expect(s.stats.served + s.stats.leaked + s.stats.unservable + s.stats.overRefused).toBe(6)
+    // a cache hit now only skips PREFILL; the response still decodes within the model
+    // window, so an over-window prompt is unservable even under a cache aura (no free
+    // rescue). The rest are rejected on the window gate (§2.5) or over-refused (§3.6).
+    expect(s.stats.served).toBe(0)
     expect(s.stats.bad).toBe(0)
+    expect(s.stats.leaked).toBe(0)
+    expect(s.stats.unservable + s.stats.overRefused).toBe(6)
+    expect(s.stats.unservable).toBeGreaterThan(0)
   })
 
   it('long contexts crowd out batch concurrency (real KV admission)', () => {

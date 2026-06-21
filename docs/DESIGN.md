@@ -351,7 +351,7 @@ Outcome precedence is worst-first: `unsafe > bad > slo_miss > served`. **Goodput
 Beyond GPU racks (`srv_edge`, `srv_frontier` — both ship with the free Llama-8B and upgrade in place), the build bar offers:
 
 - **Router** — reads each request and steers it to the right server; boosts matched servers (KV-aware routing ~doubles it).
-- **Cache** — an aura giving in-range servers a chance to instantly answer *cacheable* traffic (embed/chat/comp/rag/agent). Prefix-cache research lifts the hit rate.
+- **Cache** — an aura giving in-range servers a chance to reuse a cached prompt prefix on *cacheable* traffic (embed/chat/comp/rag/agent). A hit skips prefill and makes TTFT instant, but non-embedding responses still decode on the model and still face the normal window, quality, and safety gates. Prefix-cache research lifts the hit rate.
 - **Guardrails** — the three layer-2 safety families (§9).
 - **Power Plant** (+8 kW), **Cooling Tower** (+8 kW air), **Liquid Cooling Loop** (+60 kW, **enables** liquid racks — the hard gate).
 - **Training Lab** — required to research; raises Data yield and opens the research tracks.

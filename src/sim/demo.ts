@@ -535,15 +535,12 @@ function ensureSupport(s: GameState, kind: string, want: number, slots: Slot[], 
 }
 
 /**
- * Cache SATURATION — the single most powerful lever against the late agent wall.
- * A cache hit returns a STORED answer with ZERO model inference: it bypasses BOTH
- * the layer-1 over-refusal roll AND the context-stretch quality gate (bestQuality
- * 999), and it costs no throughput. The cacheable lanes (embed/chat/comp/rag/agent)
- * are exactly the benign-heavy + agent-wall traffic, and agent has the highest
- * prefixShare (0.7). With prefix-cache research (prefixLevel 2 → +0.4 per cache) two
- * overlapping caches give ~99% hit on cacheable traffic. So we keep ~1 cache per 3
- * servers — enough overlap that the agent/benign volume is mostly answered from cache
- * and never reaches a model to be over-refused or to miss the context wall.
+ * Cache SATURATION — still a key lever against the late agent wall, but no longer a
+ * free stored-answer bypass. A prefix-cache hit skips PREFILL and gives instant TTFT,
+ * then the response still decodes on the model and still faces quality / safety /
+ * window gates. The cacheable lanes (embed/chat/comp/rag/agent) are benign-heavy and
+ * prefix-rich; with prefix-cache research (prefixLevel 2 → +0.4 per cache, capped at
+ * 70%) overlapping caches materially cut prefill contention and queue time.
  */
 function cacheTarget(s: GameState, waveAbout: number): number {
   if (waveAbout < 4) return 0

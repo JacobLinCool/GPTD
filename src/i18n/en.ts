@@ -113,7 +113,7 @@ export const en: Record<string, string> = {
   'inspect.router.l2': 'prioritizes the right model.',
   'inspect.cache.hit': 'Hit chance {v}%  per server',
   'inspect.cache.l1': 'Aura — buffs servers in range',
-  'inspect.cache.l2': 'with instant cacheable serves.',
+  'inspect.cache.l2': 'with instant prefill on cache hits.',
   'inspect.guardrail.lat': 'Check latency {v} ms',
   'inspect.guardrail.catches': 'Catches: {v}',
   'inspect.guardrail.side.input': 'Input-side (adds to TTFT).',

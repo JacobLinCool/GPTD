@@ -24,7 +24,7 @@ Extracted from the **code** (the source of truth: `src/sim/**` + `src/config.ts`
 | `r.context` | Required context demand for the quality gate | tokens |
 | `r.tokensIn / r.tokensOut` | Input / output token counts (revenue) | tokens |
 | `r.difficulty` / `primaryAxis` | Resolved difficulty line / axis judged on | 0..130 / enum |
-| `r.bestQuality` | Best margin latched (≥0 correct, <0 bad, 999 cache hit) | pts |
+| `r.bestQuality` | Best margin latched (≥0 correct, <0 bad, 999 pure-prefill cache hit) | pts |
 | `r.safetyRisk` / `r.hazardsOpen[h]` | Max open hazard / per-hazard open severity | 0..1 |
 | `r.safetyCleared` / `r.selfHandled` | All hazards cleared / layer-1 rolled | bool |
 | `r.overRefused` / `r.windowBlocked` | Benign wrongly blocked / only met too-small windows | bool |
@@ -137,7 +137,7 @@ Extracted from the **code** (the source of truth: `src/sim/**` + `src/config.ts`
 | KV flash shave / prefix shave | ×max(0.55,1−0.08·flash) / ×max(0.6,1−0.12·prefixLevel) | FlashAttn / prefix KV reduction |
 | kvUtilization default | 0.55 (→0.96 paged) | KV allocator quality |
 | ctx-bonus coeffs | flash 0.14 / prefix 0.06 | Effective-window expansion |
-| `serverContext` | min(100, 22·log2(K)) +14·flash +6·prefixLevel | Long-ctx UI score |
+| `serverContext` | min(150, 22·log2(K)) +14·flash +6·prefixLevel | Long-ctx quality score |
 | engineMul | TRT 1.25 / SGLang 1.1 / vLLM 1.0 | Engine tier |
 | speedMul coeff | 0.12 | (1+0.12·throughput)·engineMul |
 | specMul | b≤1:2.0, b≤4:1.7, b≤16:1.66, b≥32:1.0 (16→32 lerp) | Spec-decode gain |
@@ -147,9 +147,9 @@ Extracted from the **code** (the source of truth: `src/sim/**` + `src/config.ts`
 | serverPower fp8 / int4 | ×0.85 / ×0.95 | Quant power reduction |
 | serverPower throughput / spec | ×(1+0.05·thr) / ×(1+0.08·specLvl) (frontier only) | Power lift |
 | routeBonus kvAware lift / cap | ×(1+0.8) / decode +90% cap | KV-aware routing |
-| cacheChance prefix coeff / cap | 0.2·prefixLevel / 0.95 | Prefix-cache hit chance |
+| cacheChance prefix coeff / cap | 0.2·prefixLevel / 0.7 | Prefix-cache hit chance |
 | dataMult lab coeff | 0.25 | +0.25 data yield per Lab |
-| cache hit sentinel / retry cd | 999 / 6 s | Cache hit always correct / miss cooldown |
+| pure-prefill cache sentinel / retry cd | 999 / 6 s | Embedding-only cache hit / miss cooldown |
 | quality clamp | [8, 130] | All qualityBy bounds |
 
 ### Safety (`safety.ts`)
@@ -232,7 +232,7 @@ aggDecodeTokS   = min(decodeTokSb1·speedMul·(1+0.1·flash)·specMul·max(1,b),
                       computeRoofTokS·speedMul·specMul)                  # batch-linear until compute binds
 perUserDecode   = aggDecodeTokS(n) / n ;  tpotReal = 1/perUserDecode    # n = max(1,batch)
 ctxWindowTokens = contextWindowK·1000·(1 + 0.14·flash + 0.06·prefixLevel)   # hard window
-serverContext   = min(100, 22·log2(max(1,K))) + 14·flash + 6·prefixLevel    # UI long-ctx score
+serverContext   = min(150, 22·log2(max(1,K))) + 14·flash + 6·prefixLevel    # long-ctx quality score
 serverTargets   = !fits ? 0 : !batch ? 1 : hw.targets + multiStep        # concurrent slot cap
 ```
 
@@ -333,8 +333,11 @@ pickTier:   peak≥95 || totalB≥100 → frontier ; coding≥reasoning && codin
 ```
 in_range     = (t.x−r.x)² + (t.y−r.y)² ≤ (def.range·TILE)²
 routingMul   = 1 + min(0.9, Σ routeBonus)   routeBonus = def.routeBonus·(1 + (kvAware?0.8:0))
-cacheChance  = min(0.95, def.cacheChance + 0.2·prefixLevel)   cacheBuff = 1 − Π(1−chance)
-cache hit (cacheable & cd≤0 & roll cacheBuff): work=prefill=0, bestQuality=999, hazards cleared ; miss → cd = 6s
+cacheChance  = min(0.7, def.cacheChance + 0.2·prefixLevel)   cacheBuff = 1 − Π(1−chance)
+cache hit (cacheable & prefill>0 & cd≤0 & roll cacheBuff): prefill=0, ttftReal=queueSec, e2elReal=ttftReal
+  if maxWork≤0: bestQuality=999, hazards cleared                      # embeddings / pure-prefill
+  else: decode still runs through KV admission, quality, safety, and window gates
+cache miss: cacheCd = 6s
 serverQualityVs(axis) = qualityBy[axis] − int4Tax(2 if int4) − alignmentTax(model)
 effQ   = qualityBy[primaryAxis] − max(0, r.context − serverCtx)·0.45 − int4ContextPenalty(6 if int4 & ctx>8000)
 margin = effQ − difficulty[primaryAxis]      # correct ⟺ margin ≥ 0 ; bestQuality = max(bestQuality, margin)

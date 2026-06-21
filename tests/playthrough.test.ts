@@ -534,7 +534,7 @@ function _legacyPlan(s: GameState, waveAbout: number): void {
   )
   // a generative guardrail on the worst abuse nights (catches all four hazards both sides)
   ensureSupport(s, 'guard_llm', waveAbout >= 14 ? 1 : 0, guardSlots, 30)
-  // Cache earlier than before: it also rescues long-context traffic small windows reject
+  // Cache earlier than before: it skips repeated-prefix prefill and keeps TTFT/queues down.
   ensureSupport(s, 'cache', waveAbout >= 8 ? 3 : waveAbout >= 6 ? 2 : waveAbout >= 4 ? 1 : 0, SLOTS.lane)
   // P5: once a 120B-class specialist is trained + FP8 lets it fit, stand up the
   // Frontier racks that actually RUN it on the hard reasoning/agentic lanes.

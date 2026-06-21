@@ -153,11 +153,19 @@ export function serverCtxWindowTokens(s: GameState, lo: Loadout): number {
   return lo.model.contextWindowK * 1000 * (1 + flashCtxBonus(s))
 }
 
-/** Long-context capability score (0..~100) for UI: derived from the real window (K) + research. */
+/**
+ * Long-context capability score for the §6.4 contextGap quality penalty: derived from
+ * the real window (K) + research. The window term is capped at 150 (was 100) so a true
+ * long-window model (Gemini/GLM-class 1M) can actually absorb the era's inflated agent /
+ * RAG contexts — at the old 100 cap even a 1M-window model topped out at ~126 capability,
+ * leaving the tier-11+ `agent` lane (reqContext ≈ 185-203) un-clearable by ANY model
+ * (it needed ag≈133 > the Q_HI 130 ceiling). The lane is still HARD: it demands a strong
+ * agentic specialist on a big-window rack with FlashAttention + Prefix-cache research.
+ */
 export function serverContext(s: GameState, lo: Loadout): number {
   if (!lo.model) return 0
-  // map the real window (K tokens, log-ish) to the legacy 0..100 capability score
-  const fromWindow = Math.min(100, 22 * Math.log2(Math.max(1, lo.model.contextWindowK)))
+  // map the real window (K tokens, log-ish) to the 0..~150 capability score
+  const fromWindow = Math.min(150, 22 * Math.log2(Math.max(1, lo.model.contextWindowK)))
   return fromWindow + 14 * s.infra.kv.flash + 6 * prefixLevel(s)
 }
 
@@ -386,9 +394,14 @@ export function routeBonus(s: GameState, def: TowerDef): number {
   return (def.routeBonus ?? 0) * (1 + (s.infra.routing.kvAware ? 0.8 : 0))
 }
 
-/** Cache hit chance (§4.2): prefix-cache research lifts the per-server hit rate. */
+/**
+ * Cache hit chance (§4.2): prefix-cache research lifts the per-server hit rate.
+ * Capped at 0.7 (was 0.95) — even a fully-researched cache misses a real share of
+ * traffic, since unique prompts don't share a cached prefix. A hit only skips prefill
+ * now (combat.ts), so this is a TTFT-acceleration rate, not a free-serve rate.
+ */
 export function cacheChance(s: GameState, def: TowerDef): number {
-  return Math.min(0.95, (def.cacheChance ?? 0) + 0.2 * prefixLevel(s))
+  return Math.min(0.7, (def.cacheChance ?? 0) + 0.2 * prefixLevel(s))
 }
 
 /* ------------------------------------------------------------------ *
