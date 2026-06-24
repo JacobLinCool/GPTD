@@ -131,9 +131,10 @@ export function startPostTrain(
   const recipe = METHOD_RECIPES[method]
   const base = resolveModel(s, baseIds[0])
   if (!base) return false
-  const dataCost = postTrainDataCost(recipe, effort)
+  const baseDepth = base.lineage?.depth ?? 0
+  const dataCost = postTrainDataCost(recipe, effort, baseDepth, base.paramsTotalB)
   if (s.data < dataCost) return false
-  const computeCost = postTrainComputeCost(recipe, base.paramsActiveB, effort)
+  const computeCost = postTrainComputeCost(recipe, base.paramsActiveB, effort, baseDepth, base.paramsTotalB)
   s.data -= dataCost
   s.research.posttrain = {
     id: `pt_${method}_${target}`,

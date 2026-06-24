@@ -637,13 +637,13 @@ describe('Post-Training Studio (§1)', () => {
 
     expect(startPostTrain(s, [BIG], 'grpo', 'reasoning', 1.0)).toBe(true)
     // Data is paid up front; the posttrain track is occupied; other tracks free.
-    expect(s.data).toBe(data0 - postTrainDataCost(recipe, 1.0))
+    expect(s.data).toBe(data0 - postTrainDataCost(recipe, 1.0, 0, base.paramsTotalB))
     expect(s.research.posttrain?.kind).toBe('posttrain')
     expect(s.research.posttrain?.meta?.method).toBe('grpo')
     expect(s.research.infra).toBeNull()
-    // the slot's compute matches the §1.4 cost formula
+    // the slot's compute matches the §1.4 cost formula (incl. the total-params size terms)
     expect(s.research.posttrain!.compute).toBeCloseTo(
-      Math.max(1, postTrainComputeCost(recipe, base.paramsActiveB, 1.0)),
+      Math.max(1, postTrainComputeCost(recipe, base.paramsActiveB, 1.0, 0, base.paramsTotalB)),
       3,
     )
 
@@ -813,10 +813,15 @@ describe('Studio preview parity (§5.2 S9)', () => {
     const ids = method === 'merge' ? [baseId, otherId ?? baseId] : [baseId]
     const prev = studioPreview(s, baseId, method, target, effort, 1000, otherId)!
     expect(prev).not.toBeNull()
-    // the preview reports the real costs (parity with the cost helpers)
+    // the preview reports the real costs (parity with the cost helpers), incl. the
+    // lineage-depth surcharge on a fine-tune-of-a-fine-tune (baseDepth > 0).
     const recipe = METHOD_RECIPES[method]
-    expect(prev.dataCost).toBe(postTrainDataCost(recipe, effort))
-    expect(prev.computeCost).toBeCloseTo(Math.max(1, postTrainComputeCost(recipe, before.paramsActiveB, effort)), 3)
+    const baseDepth = before.lineage?.depth ?? 0
+    expect(prev.dataCost).toBe(postTrainDataCost(recipe, effort, baseDepth, before.paramsTotalB))
+    expect(prev.computeCost).toBeCloseTo(
+      Math.max(1, postTrainComputeCost(recipe, before.paramsActiveB, effort, baseDepth, before.paramsTotalB)),
+      3,
+    )
     expect(prev.before).toEqual(before.qualityBy)
 
     const seq = s.derivedSeq

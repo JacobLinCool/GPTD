@@ -70,9 +70,27 @@ export const CREDIT_USD = 1000
  * §4.5 research data investment. Every authored research `dataCost` (the 22 infra
  * nodes + post-training method unlocks + red-team evals) is scaled by this so
  * unlocking a technique is a meaningful Data sink — real R&D, not pocket change.
- * Tuned against the autoplay depth gate (raising it slows the tech tree).
+ * Tuned against the autoplay depth gate (raising it slows the tech tree). Raised from 1.5×
+ * so the tree is a real early-mid investment, not solved by ~wave 20
+ * (the autoplay used to earn ~18k Data and spend <500 — Data was a dead resource).
  */
-export const RESEARCH_DATA_SCALE = 1.5
+export const RESEARCH_DATA_SCALE = 4
+
+/**
+ * §4.5 research COMPUTE investment. Scales every research node's compute target so
+ * unlocking the tree requisitions real FLOPs over real waves (a chunk of the fleet
+ * goes offline to train, §C7) — research is paced by your compute, not free. Pairs
+ * with RESEARCH_DATA_SCALE: data is the gate, compute is the wall-clock.
+ */
+export const RESEARCH_COMPUTE_SCALE = 3
+
+/**
+ * §1.4 post-training compute investment. Scales every Studio run's FLOP bill so a
+ * training run requisitions a meaningful slice of the fleet for several waves —
+ * making a checkpoint (and especially a STACKED one) a real compute commitment that
+ * competes with serving, not a free action.
+ */
+export const POSTTRAIN_COMPUTE_SCALE = 2.0
 
 /**
  * §6.6 traffic multiplier. Each request SPRITE stands for this many real traffic

@@ -10,6 +10,7 @@ import type {
   PostTrainMethod,
   PostTrainTarget,
 } from '../core/types'
+import { POSTTRAIN_COMPUTE_SCALE } from '../config'
 import { DEFAULT_MODEL_ID, METHOD_RECIPES, MODEL_DEFS } from './content'
 
 /**
@@ -94,19 +95,69 @@ const FORGET_SPREAD = 1
 
 /**
  * §1.4 training cost. `sizeFactor = (activeB/8)^0.7` (8B-active baseline,
- * sub-linear); `computeCost = costCompute × sizeFactor × effort × 1000` (FLOPS·s);
- * `dataCost = costData × effort`. Reuses research.ts requisition for waves.
+ * sub-linear), then compute is scaled by POSTTRAIN_COMPUTE_SCALE, lineage depth,
+ * and a mild MoE sparsity surcharge. Data scales with effort, lineage depth, and
+ * total params. Reuses research.ts requisition for waves.
  */
 export function postTrainSizeFactor(activeB: number): number {
   return Math.pow(Math.max(0.1, activeB) / 8, 0.7)
 }
 
-export function postTrainComputeCost(recipe: MethodRecipe, activeB: number, effort: number): number {
-  return recipe.costCompute * postTrainSizeFactor(activeB) * effort * 1000
+/**
+ * §1.4 [fix] the lineage-DEPTH surcharge on a post-training run: stacking a run on an
+ * already-derived checkpoint costs progressively MORE (×(1 + 0.6·baseDepth)). `deriveQuality`
+ * already DAMPS the gain with depth (1/(1+0.15·depth)); pairing a rising cost with the
+ * falling gain makes a 2nd/3rd stacked GRPO a real diminishing-returns INVESTMENT (data +
+ * compute), not a free way to climb past a capability wall. baseDepth = the base's lineage
+ * depth (0 for an original base, 1 for a once-derived checkpoint, …).
+ */
+function depthSurcharge(baseDepth: number): number {
+  return 1 + 0.6 * Math.max(0, baseDepth)
 }
 
-export function postTrainDataCost(recipe: MethodRecipe, effort: number): number {
-  return Math.round(recipe.costData * effort)
+/**
+ * §1.4 data scales with the model's CAPACITY (real TOTAL params, not active): a bigger
+ * model needs more curated data to move meaningfully (Chinchilla-flavoured, sub-linear).
+ * Anchored at an 8B baseline and floored at 1× — size only ADDS data, never discounts a
+ * small model. Crucially uses TOTAL, so a sparse 35B-A3B MoE is no longer trained on the
+ * data budget of a 3B model (the cheap-MoE-stacking loophole).
+ */
+function dataSizeFactor(totalB: number): number {
+  return Math.max(1, Math.pow(Math.max(0.1, totalB) / 8, 0.45))
+}
+
+/**
+ * §1.4 the MoE memory/communication surcharge on COMPUTE: training FLOPs are ∝ ACTIVE
+ * params (correct — that is the point of MoE), but a sparse model must still HOLD all total
+ * params (+ optimizer states) and pay expert all-to-all, costs that scale with the
+ * total/active sparsity ratio. Dense models (total = active) pay nothing extra; a 35B-A3B
+ * pays ~1.4×, a very sparse 230B-A10B ~1.6×. Mild — active FLOPs stay the dominant term.
+ */
+function sparsityFactor(totalB: number, activeB: number): number {
+  const ratio = Math.max(1, totalB / Math.max(0.1, activeB))
+  return 1 + 0.12 * Math.pow(ratio - 1, 0.5)
+}
+
+export function postTrainComputeCost(
+  recipe: MethodRecipe,
+  activeB: number,
+  effort: number,
+  baseDepth = 0,
+  totalB = activeB,
+): number {
+  return (
+    recipe.costCompute *
+    postTrainSizeFactor(activeB) *
+    effort *
+    1000 *
+    POSTTRAIN_COMPUTE_SCALE *
+    depthSurcharge(baseDepth) *
+    sparsityFactor(totalB, activeB)
+  )
+}
+
+export function postTrainDataCost(recipe: MethodRecipe, effort: number, baseDepth = 0, totalB = 8): number {
+  return Math.round(recipe.costData * effort * depthSurcharge(baseDepth) * dataSizeFactor(totalB))
 }
 
 /** The 5 discrete effort notches (§1.4 [fix M9]); 1.0 is the default. */
@@ -343,7 +394,13 @@ export function deriveModel(s: GameState, meta: PostTrainMeta): ModelDef | null 
     method,
     target,
     effort,
-    spent: { data: meta.dataSpent, compute: Math.round(postTrainComputeCost(recipe, base.paramsActiveB, effort)), waves: 0 },
+    spent: {
+      data: meta.dataSpent,
+      compute: Math.round(
+        postTrainComputeCost(recipe, base.paramsActiveB, effort, base.lineage?.depth ?? 0, base.paramsTotalB),
+      ),
+      waves: 0,
+    },
     depth: f.depth,
     createdAtWave: meta.startWave,
   }
@@ -435,8 +492,9 @@ export function studioPreview(
   const delta = {} as Record<CapabilityAxis, number>
   for (const a of CAP_AXES) delta[a] = fields.qualityBy[a] - before[a]
 
-  const dataCost = postTrainDataCost(recipe, effort)
-  const computeCost = Math.max(1, postTrainComputeCost(recipe, base.paramsActiveB, effort))
+  const previewDepth = base.lineage?.depth ?? 0
+  const dataCost = postTrainDataCost(recipe, effort, previewDepth, base.paramsTotalB)
+  const computeCost = Math.max(1, postTrainComputeCost(recipe, base.paramsActiveB, effort, previewDepth, base.paramsTotalB))
   const estWaves = requisitionPerWave > 0 ? Math.max(1, Math.ceil(computeCost / requisitionPerWave)) : 0
 
   const okTarget = recipe.allowedTargets.includes(target)

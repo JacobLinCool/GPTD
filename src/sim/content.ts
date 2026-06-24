@@ -1,4 +1,4 @@
-import { COLORS, CREDIT_USD, RESEARCH_DATA_SCALE } from '../config'
+import { COLORS, CREDIT_USD, RESEARCH_COMPUTE_SCALE, RESEARCH_DATA_SCALE } from '../config'
 import type {
   AlignmentProfile,
   ServerSpec,
@@ -1190,8 +1190,12 @@ evalNode(
   'A deeper red-team campaign. Further cuts over-refusal, adds a touch more recall, and unlocks PII-leak detection.',
 )
 
-// §4.5 scale every research data cost into a meaningful investment (RESEARCH_DATA_SCALE).
-for (const d of Object.values(RESEARCH_DEFS)) d.dataCost = Math.round(d.dataCost * RESEARCH_DATA_SCALE)
+// §4.5 scale every research data cost into a meaningful investment (RESEARCH_DATA_SCALE)
+// and its compute target so the tree is paced by real FLOPs over waves (RESEARCH_COMPUTE_SCALE).
+for (const d of Object.values(RESEARCH_DEFS)) {
+  d.dataCost = Math.round(d.dataCost * RESEARCH_DATA_SCALE)
+  d.compute = Math.round(d.compute * RESEARCH_COMPUTE_SCALE)
+}
 
 export const RESEARCH_LIST = Object.values(RESEARCH_DEFS)
 

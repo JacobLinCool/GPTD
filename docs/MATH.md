@@ -101,7 +101,9 @@ Extracted from the **code** (the source of truth: `src/sim/**` + `src/config.ts`
 | `TRAFFIC_SCALE` | 100000 | Real streams per sprite; scales BOTH token revenue and op bill |
 | `OP_COST_SCALE` | 0.036 | Calibrates real $/GPU-hr bill to playable (depth lever) |
 | `CLEAR_BONUS_SCALE` | 0.08 | Rescales authored wave clear bonus into credits |
-| `RESEARCH_DATA_SCALE` | 1.5 | Multiplies authored infra / method-unlock / eval research `dataCost` |
+| `RESEARCH_DATA_SCALE` | 4 | Multiplies authored infra / method-unlock / eval research `dataCost` |
+| `RESEARCH_COMPUTE_SCALE` | 3 | Multiplies authored infra / method-unlock / eval research `compute` |
+| `POSTTRAIN_COMPUTE_SCALE` | 2 | Multiplies Studio post-training compute bills |
 | `SIM_TIME_SCALE` | 10 | Real datacenter sec per board sec (dual clock); SLO judged on real axis |
 | `SIM_DT` / `MAX_STEPS` | 1/60 / 5 | Fixed deterministic timestep (s) / max steps per frame |
 | `FRAMEWORK_GB` | 1.5 | Per-rack VRAM overhead before KV |
@@ -169,7 +171,10 @@ Extracted from the **code** (the source of truth: `src/sim/**` + `src/config.ts`
 | quality clamp `Q_LO/Q_HI` | 8 / 130 | Clamp; Q_HI also headroom ceiling |
 | depthDamp coeff | 0.15 | `1/(1+0.15·depth)` diminishing returns |
 | sizeFactor baseline / exp / floor | 8 / 0.7 / 0.1 | `(max(0.1,activeB)/8)^0.7` |
-| computeCost mult | 1000 | `costCompute·sizeFactor·effort·1000` |
+| dataSizeFactor baseline / exp / floor | 8 / 0.45 / 1 | `max(1,(totalB/8)^0.45)` |
+| depthSurcharge coeff | 0.6 | `1 + 0.6·baseDepth` |
+| sparsityFactor coeff / exp | 0.12 / 0.5 | `1 + 0.12·sqrt(totalB/activeB − 1)` |
+| computeCost mult | 1000 × `POSTTRAIN_COMPUTE_SCALE` | Studio compute bill scale |
 | `EFFORT_NOTCHES` | 0.25 / 0.5 / 1.0 / 1.5 / 2.0 | Effort multipliers |
 | alignmentTaxFactor | rlhf 1 / cai 0.6 / other 0.8 | Per-method tax weight |
 | safetyGain | rlhf 28 / cai 26 / other 18 (×√effort) | `alignment.safety` gain (cap 100) |
@@ -323,8 +328,12 @@ SFT instructFollow += 8·√effort (cap 100)
 isReasoning = method=='grpo' OR (target=='reasoning' && method!='merge')
 distill: cap = min(base[a], student[a]+18) ; qualityBy[a]=clamp(min(qualityBy[a],cap)) ; swap to student body
 QAT: weightBytes = 0.5 ; qualityBy[a] −= 2 (each)
-sizeFactor  = (max(0.1, activeB)/8)^0.7
-computeCost = costCompute · sizeFactor · effort · 1000 ;  dataCost = round(costData · effort)
+sizeFactor      = (max(0.1, activeB)/8)^0.7
+depthSurcharge  = 1 + 0.6·baseDepth        # baseDepth = lineage.depth of the selected base, 0 for roster bases
+dataSizeFactor  = max(1, (max(0.1,totalB)/8)^0.45)
+sparsityFactor  = 1 + 0.12·sqrt(max(1,totalB/max(0.1,activeB)) − 1)
+computeCost     = costCompute · sizeFactor · effort · 1000 · POSTTRAIN_COMPUTE_SCALE · depthSurcharge · sparsityFactor
+dataCost        = round(costData · effort · depthSurcharge · dataSizeFactor)
 estWaves    = ceil(computeCost / requisitionPerWave)
 pickTier:   peak≥95 || totalB≥100 → frontier ; coding≥reasoning && coding≥60 → coding ; totalB≤16 → small ; else general
 ```
@@ -407,7 +416,8 @@ fleetFlops  = Σ (server ? hw.bf16Tflops : 0)
 pool        = anyResearchActive ? fleetFlops · RESEARCH_MAX_SHARE(0.45) : 0
 selection   = servers by rackFlops desc, requisition until taken ≥ pool (browned-out excluded)
 perTrackRate= min(rate, pool) / activeTracks
-research dataCost = round(authored dataCost · RESEARCH_DATA_SCALE(1.5))  # infra / method unlock / eval defs
-slot.progress += perTrackRate · dt ;  complete ⟺ ≥ slot.compute  (= max(1, computeCost) post-train, else def.compute)
+research dataCost = round(authored dataCost · RESEARCH_DATA_SCALE(4))  # infra / method unlock / eval defs
+research compute  = round(authored compute · RESEARCH_COMPUTE_SCALE(3))
+slot.progress += perTrackRate · dt ;  complete ⟺ ≥ slot.compute  (= max(1, computeCost) post-train, else scaled def.compute)
 applyInfraEffects: max(utilization, prefixCeil, specLevel, loraSlots, engineTier) ; min(kvQuantBytes, weightQuantBytes) ; add(multiStep, throughput, flash)
 ```
