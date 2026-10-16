@@ -70,7 +70,8 @@ A checkpoint stays iff, **on at least one capability axis, its quality is within
 its size** (`ROSTER_FRONTIER_TOLERANCE = 0.06`). A model is dropped only when it trails the frontier by more than
 6% on every axis — strictly beaten by something no bigger, on all five lanes. The gate trims **135
 candidates → 58 active**, spanning 0.6B → 2.78T. The default starter
-(`DEFAULT_MODEL_ID`) is the smallest dense, non-thinking active model: **Qwen3.5 0.8B**.
+(`DEFAULT_MODEL_ID`) is the smallest dense active model that serves the opening waves on its own — it answers chat
+and code completion without thinking and, after its alignment tax, clears the opening quality lines: **MiniCPM5-2B**.
 The quality columns are thinking-mode capability; *thinking* names the support the chat template allows
 (`data/model-thinking.json`) with the hidden tokens per thinking-mode answer — a **hybrid** answers chat and code
 completion with thinking off, on its separate thinking-off vector (see MODEL-CATALOG.md).

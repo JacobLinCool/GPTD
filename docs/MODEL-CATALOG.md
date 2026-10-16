@@ -37,14 +37,15 @@ serving lines and the generated block at the end.
 How to maintain: when a notable open model ships, add it here first (developer · release ·
 license · params · context · official link · lineage · the Artificial Analysis Intelligence Index ·
 a 2–4 sentence description · a confidence flag), THEN give it an architecture record
-(`data/model-arch.json`) so it joins the candidate pool. Put `—` for any benchmark you cannot
+(`data/model-arch.json`) and its thinking-support evidence (`data/model-thinking.json`) so it
+joins the candidate pool (AGENTS.md §3 has the full pipeline). Put `—` for any benchmark you cannot
 verify; mark `confidence: low` rather than guessing. Re-run the `gptd-model-catalog` +
 `gptd-newest-models` research workflows to refresh from Artificial Analysis + Hugging Face model
 cards.
 
 Inventory:
 - 218 models catalogued (153 hand-written + 65 generated pool entries) · 58 in the active roster (★).
-- Confidence: 177 high · 38 med · 5 low.
+- Confidence: 177 high · 37 med · 4 low.
 - Includes the late-2026 open frontier (Kimi K3, GLM-5.3, DeepSeek-V4.1-Flash and the V4 0731/0813 re-releases, Qwen3.8, MiMo-V2.6, Step 5, Muse Spark Open, the Ling-3 hybrids, K2-Horizon) and Mistral Large 4, pending its open weights (2026-10-27).
 -->
 
@@ -116,7 +117,7 @@ IBM's 2B dense enterprise model with optional structured reasoning via think/res
 Benchmarks — GPQA-D 70.2 · IFBench ≈51.2 (bridged) · LCR 53.1 · SciCode 25.3 · TB-Hard ≈8.9 (bridged) · HLE 8.6  
 Serving — GQA · KV 42.0 KB/token on 42 of 42 layers · BF16 weights (2 B/param) · hybrid thinking (enable_thinking=False): instant on interactive traffic, judged 80 / 82 / 59 / 87 / 42 (from the thinking→instant pair fit); thinks ~1500 hidden tokens elsewhere  
 
-OpenBMB's 2.5B dense hybrid-thinking model (thinking is switched by `enable_thinking`), released September 2026. Only 2 KV heads over 42 layers keep its cache to ~42 KB per token, and it leads the ≤2.5B class on GPQA (70) and LCR (59) — the strongest model that fits the smallest edge rack. Artificial Analysis publishes no IFBench or Terminal-Bench Hard for it, so those cells are bridged.
+OpenBMB's 2.5B dense hybrid-thinking model (thinking is switched by `enable_thinking`), released September 2026. Only 2 KV heads over 42 layers keep its cache to ~42 KB per token, and it leads the ≤2.5B class on GPQA (70) and long-context reasoning (AA's re-scored LCR 59, 53 on the reference scale above) — the strongest model that fits the smallest edge rack. Artificial Analysis publishes no IFBench or Terminal-Bench Hard for it, so those cells are bridged.
 
 ### Gemma 2 2B
 **Google** · 2024-07 · Gemma · 2.6B dense · 8K ctx · spec: general · lineage: from-scratch · confidence: med
