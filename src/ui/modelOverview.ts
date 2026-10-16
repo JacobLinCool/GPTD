@@ -1,37 +1,48 @@
 /**
  * ui/modelOverview.ts — S7 ModelOverview + S8 LineageGraph (§5.2).
  *
- * S7: a scrollable, sortable, filterable table of EVERY checkpoint — the 16
- * roster base models (MODEL_DEFS) plus every player-derived checkpoint
- * (s.derivedModels). Columns: name, origin (base/derived + depth), params
- * total/active (dual-written) + MoE, context window, the 5-axis qualityBy
- * (mini sparkbars, agentic highlighted), alignment safety + refusal style,
- * serve speed / $-Mtoken (on a reference H100), VRAM at FP16/FP8, and license
- * (base) or lineage method (derived). Click a row → a detail card with full
- * stats + the real benchmark breakdown (base) or the Lineage (derived).
+ * S7: a scrollable, sortable, filterable table of EVERY checkpoint — the roster
+ * base models (MODEL_DEFS) plus every player-derived checkpoint (s.derivedModels).
+ * Columns: name, origin (base/derived + depth), params total/active + MoE,
+ * context window, the five-axis qualityBy (bars scaled to the strongest roster
+ * score; each axis header sorts by that axis), per-user decode speed on the
+ * smallest rack that holds the model (colored against the interactive /
+ * near-real-time TPOT bounds), alignment safety + refusal style, and VRAM at
+ * FP16/FP8. Filters: all / base / derived / fits-my-racks, plus type-to-filter
+ * by name. Click a row → a detail card with full stats, the real benchmark
+ * breakdown (base) or the Lineage (derived), and DEPLOY WHERE IT FITS.
  *
  * S8: a "Lineage" toggle renders a tidy DAG — base → instruct → reasoning /
  * distill → FT / merge → quantized — from (a) the roster's real lineage edges
  * (`real.baseModelId` + `real.relation`, [fix H6]) and (b) derived models'
- * `lineage.baseModelIds` + relation. Nodes colored by tier, edges labeled by
- * relation.
+ * `lineage.baseModelIds` + relation. Nodes colored by tier, edges labeled.
  *
- * Pure presentation: reads GameState + the metrics layer; never mutates the sim.
+ * Pure presentation: reads GameState + the metrics layer; it drives the sim only
+ * through the deploy callback (the same action the inspect panel uses). The
+ * table, detail card and lineage graph rebuild only when their inputs change.
  */
 import { Container, Graphics, Text } from 'pixi.js'
-import { COLORS, DESIGN_H, DESIGN_W, FRAMEWORK_GB } from '../config'
+import { COLORS, DESIGN_H, DESIGN_W, FRAMEWORK_GB, LAT_CLASS_SLO } from '../config'
 import type { CapabilityAxis, GameState, ModelDef } from '../core/types'
 import { MODEL_DEFS, sizeLabel } from '../sim/content'
 import { AA_BENCH } from '../sim/roster.bench.generated'
-import { loadout, resolveModel, serverFitsMemory } from '../sim/effects'
-import { fmtDollarsPerMtoken, fmtGb, fmtTokS, rackDollarsPerMtoken, rooflineOf } from './metrics'
-import { QualitySparks } from './charts'
-import { modelName, t } from '../i18n'
+import { loadout, resolveModel, serverDeployable, serverPerUserDecodeTokS } from '../sim/effects'
+import {
+  AXES,
+  fmtDollarsPerMtoken,
+  fmtGb,
+  fmtTokens,
+  fmtTokS,
+  modelThinkTokens,
+  rackDollarsPerMtoken,
+  rolloutTargets,
+  smallestRackFor,
+} from './metrics'
+import { QualitySparks, qualityScale } from './charts'
+import { getLang, modelName, t } from '../i18n'
 import { drawPanel, label, UIButton } from './theme'
+import { DragScroll, fitLabel, setButton, setUiPref, uiPref } from './panelKit'
 
-const AXES: CapabilityAxis[] = ['chat', 'coding', 'reasoning', 'general', 'agentic']
-/** A reference rack for relative serve-speed / $/Mtoken (an H100-class GPU, §5.7). */
-const REF_HW = 'hw_perf'
 const MODAL_PAD = 24
 const TABLE_W = 760
 const TABLE_X = MODAL_PAD
@@ -40,62 +51,54 @@ const DETAIL_X = 800
 const DETAIL_W = 356
 const DETAIL_Y = TABLE_Y
 const DETAIL_H_PAD = 142
+/** Column layout: name, origin, params, ctx, quality (5 axis bars), speed, safety, vram. */
 const COLS = [
-  { x: 0, w: 224 },
-  { x: 224, w: 70 },
-  { x: 294, w: 96 },
-  { x: 390, w: 62 },
-  { x: 452, w: 146 },
-  { x: 598, w: 72 },
-  { x: 670, w: 78 },
+  { x: 0, w: 196 },
+  { x: 196, w: 56 },
+  { x: 252, w: 90 },
+  { x: 342, w: 50 },
+  { x: 392, w: 146 },
+  { x: 538, w: 72 },
+  { x: 610, w: 58 },
+  { x: 668, w: 74 },
 ] as const
+const SPARK_W = 24
+const SPARK_GAP = 4
 
-type SortKey = 'name' | 'origin' | 'paramsTotalB' | 'paramsActiveB' | 'contextWindowK' | 'quality' | 'agentic' | 'safety' | 'vram'
-type OriginFilter = 'all' | 'base' | 'derived' | 'owned'
+type SortKey = 'name' | 'origin' | 'paramsTotalB' | 'contextWindowK' | CapabilityAxis | 'speed' | 'safety' | 'vram'
+const SORT_KEYS: readonly SortKey[] = [
+  'name',
+  'origin',
+  'paramsTotalB',
+  'contextWindowK',
+  'chat',
+  'coding',
+  'reasoning',
+  'general',
+  'agentic',
+  'speed',
+  'safety',
+  'vram',
+]
+type OriginFilter = 'all' | 'base' | 'derived' | 'fits'
+const FILTERS: readonly OriginFilter[] = ['all', 'base', 'derived', 'fits']
 
 /** A flattened row over a resolved checkpoint with the derived display metrics. */
 interface Row {
   m: ModelDef
-  owned: boolean
   vramFp16: number
   vramFp8: number
+  /** per-user decode tok/s at batch 1 on the smallest rack that holds it (0 = none does). */
+  speed: number
+  tpotMs: number
 }
 
 function tierColor(tier: ModelDef['tier']): number {
-  return tier === 'frontier'
-    ? COLORS.data
-    : tier === 'coding'
-      ? COLORS.good
-      : tier === 'small'
-        ? COLORS.sla
-        : COLORS.cooling
+  return tier === 'frontier' ? COLORS.data : tier === 'coding' ? COLORS.good : tier === 'small' ? COLORS.sla : COLORS.cooling
 }
 
-function fitText(t: Text, text: string, maxW: number, opts: { size?: number; minSize?: number; ellipsis?: boolean } = {}): void {
-  const currentSize = Number(t.style.fontSize)
-  const base = opts.size ?? (Number.isFinite(currentSize) ? currentSize : 11)
-  const minSize = opts.minSize ?? Math.max(8, base - 2)
-  t.style.fontSize = base
-  t.text = text
-  if (!text || t.width <= maxW) return
-  const scaled = Math.max(minSize, Math.floor((base * maxW) / Math.max(1, t.width)))
-  t.style.fontSize = scaled
-  if (!opts.ellipsis || t.width <= maxW) return
-  let lo = 0
-  let hi = text.length
-  let best = ''
-  while (lo <= hi) {
-    const mid = Math.floor((lo + hi) / 2)
-    const candidate = text.slice(0, mid).trimEnd() + '…'
-    t.text = candidate
-    if (t.width <= maxW) {
-      best = candidate
-      lo = mid + 1
-    } else {
-      hi = mid - 1
-    }
-  }
-  t.text = best || '…'
+function tpotColor(ms: number): number {
+  return ms <= LAT_CLASS_SLO.IN.tpotMs ? COLORS.good : ms <= LAT_CLASS_SLO.NR.tpotMs ? COLORS.warn : COLORS.danger
 }
 
 function fmtGbCompact(gb: number): string {
@@ -105,6 +108,14 @@ function fmtGbCompact(gb: number): string {
 
 function fmtVramPair(fp16: number, fp8: number): string {
   return `${fmtGbCompact(fp16)}/${fmtGbCompact(fp8)}`
+}
+
+/** Single-stream decode speed on the cheapest rack that holds the model — "how fast is it where it fits". */
+function homeSpeed(s: GameState, m: ModelDef): { speed: number; tpotMs: number; hwId: string | null } {
+  const hw = smallestRackFor(s, m)
+  if (!hw) return { speed: 0, tpotMs: Infinity, hwId: null }
+  const perUser = serverPerUserDecodeTokS(s, { hw, model: m }, 1)
+  return { speed: perUser, tpotMs: perUser > 0 ? 1000 / perUser : Infinity, hwId: hw.id }
 }
 
 /* ------------------------------------------------------------------ *
@@ -122,6 +133,7 @@ class LineageGraph extends Container {
   private nodeLayer = new Container()
   private W: number
   private H: number
+  private key = ''
 
   constructor(w: number, h: number) {
     super()
@@ -130,10 +142,18 @@ class LineageGraph extends Container {
     this.addChild(this.g, this.nodeLayer)
   }
 
-  /** Render the DAG over every resolvable checkpoint that has an edge or is a root with children. */
+  /** Forget the drawn graph (a new run). */
+  reset(): void {
+    this.key = ''
+  }
+
+  /** Render the DAG over every resolvable checkpoint with an edge — rebuilt only when the lineage changes. */
   draw(s: GameState): void {
+    const key = `${Object.keys(s.derivedModels).length}|${getLang()}`
+    if (key === this.key) return
+    this.key = key
     this.g.clear()
-    this.nodeLayer.removeChildren()
+    for (const c of this.nodeLayer.removeChildren()) c.destroy()
 
     // collect all nodes (roster + derived) and the edges between them.
     const all = new Map<string, ModelDef>()
@@ -156,11 +176,6 @@ class LineageGraph extends Container {
 
     // assign each node a depth (longest path from a root) for column layout.
     const depth = new Map<string, number>()
-    const childrenOf = new Map<string, string[]>()
-    for (const e of edges) {
-      if (!childrenOf.has(e.from)) childrenOf.set(e.from, [])
-      childrenOf.get(e.from)!.push(e.to)
-    }
     const parents = new Set(edges.map((e) => e.to))
     const compute = (id: string, seen: Set<string>): number => {
       if (depth.has(id)) return depth.get(id)!
@@ -221,7 +236,7 @@ class LineageGraph extends Container {
 
     // edges first (under nodes); their relation labels are collected and rendered
     // LAST (on top of the nodes) so a node box can never paint over them.
-    const edgeLabels: { chip: Graphics; lbl: ReturnType<typeof label> }[] = []
+    const edgeLabels: { chip: Graphics; lbl: Text }[] = []
     for (const e of edges) {
       const a = pos.get(e.from)
       const b = pos.get(e.to)
@@ -253,10 +268,9 @@ class LineageGraph extends Container {
       const col = tierColor(m.tier)
       const node = new Graphics()
       drawPanel(node, p.x, p.y, nodeW, nodeH, { alpha: 0.95, edge: col, radius: 6 })
-      node.roundRect(p.x, p.y, 4, nodeH, 2).fill({ color: col, alpha: 0.95 })
       this.nodeLayer.addChild(node)
       const nm = label('', 10, m.origin === 'derived' ? COLORS.data : COLORS.text, 'bold')
-      fitText(nm, modelName(m), nodeW - 18, { size: 10, minSize: 9, ellipsis: true })
+      fitLabel(nm, modelName(m), nodeW - 18, 10, 9)
       nm.x = p.x + 9
       nm.y = p.y + 7
       const sub = label(
@@ -281,12 +295,17 @@ class LineageGraph extends Container {
 const ROW_H = 28
 const VISIBLE_ROWS = 16
 
+/** Typed characters the name filter accepts (letters always; digits, space, dot, dash once a query exists). */
+const QUERY_START = /^\p{L}$/u
+const QUERY_CHAR = /^[\p{L}\p{N} .\-_]$/u
+
 export class ModelOverview {
   readonly view = new Container()
   private dim = new Graphics()
   private bg = new Graphics()
   private head = label('', 20, COLORS.textBright, 'bold')
   private sub = label('', 12, COLORS.textDim)
+  private queryLbl = label('', 12, COLORS.sla)
   private closeBtn: UIButton
   private lineageBtn: UIButton
   private filterBtns: { f: OriginFilter; btn: UIButton }[] = []
@@ -294,12 +313,13 @@ export class ModelOverview {
   // table
   private tableView = new Container()
   private headerRow = new Container()
-  private headerBtns: { key: SortKey; btn: UIButton }[] = []
+  private headerBtns: { key: SortKey; btn: UIButton; axis: boolean }[] = []
   private rowHost = new Container()
   private rowG = new Graphics()
   private rowCells: { bg: Graphics; texts: Text[]; modelId: string | null }[] = []
   private scrollUp: UIButton
   private scrollDn: UIButton
+  private drag: DragScroll
 
   // detail
   private detail = new Container()
@@ -307,24 +327,34 @@ export class ModelOverview {
   private detailTitle = label('', 16, COLORS.textBright, 'bold')
   private detailRows: Text[] = []
   private detailSparks = new QualitySparks(300)
+  private deployBtn: UIButton
 
   // lineage view
   private lineageView = new Container()
   private lineage: LineageGraph
 
-  private sortKey: SortKey = 'paramsTotalB'
+  private sortKey: SortKey = uiPref('models.sort', 'paramsTotalB', SORT_KEYS)
   private sortDir: 1 | -1 = -1
-  private filter: OriginFilter = 'all'
+  private filter: OriginFilter = uiPref('models.filter', 'all', FILTERS)
+  private query = ''
   private scroll = 0
   private selected: string | null = null
   private showLineage = false
+  private state: GameState | null = null
+  private tableKey = ''
+  private detailKey = ''
+  private rowCache: Row[] = []
+  private rowCacheKey = ''
 
   private PW = 1180
   private PH = 620
   private px: number
   private py: number
 
-  constructor(onClose: () => void) {
+  constructor(
+    onClose: () => void,
+    private onDeploy: (towerId: number, modelId: string) => void = () => {},
+  ) {
     this.px = (DESIGN_W - this.PW) / 2
     this.py = (DESIGN_H - this.PH) / 2
     const { px, py } = this
@@ -337,7 +367,9 @@ export class ModelOverview {
     this.head.y = py + 16
     this.sub.x = px + 24
     this.sub.y = py + 44
-    this.view.addChild(this.head, this.sub)
+    this.queryLbl.x = px + 24
+    this.queryLbl.y = py + 72
+    this.view.addChild(this.head, this.sub, this.queryLbl)
 
     this.closeBtn = new UIButton({ w: 150, h: 34, accent: COLORS.sla, onTap: onClose })
     this.closeBtn.x = px + this.PW - 174
@@ -349,10 +381,18 @@ export class ModelOverview {
     this.lineageBtn.y = py + 56
     this.view.addChild(this.lineageBtn)
 
-    // origin filters
-    const filters: OriginFilter[] = ['all', 'base', 'derived', 'owned']
-    filters.forEach((f, i) => {
-      const btn = new UIButton({ w: 92, h: 26, accent: COLORS.cooling, onTap: () => { this.filter = f; this.scroll = 0 } })
+    // origin filters (+ "fits my racks")
+    FILTERS.forEach((f, i) => {
+      const btn = new UIButton({
+        w: f === 'fits' ? 150 : 92,
+        h: 26,
+        accent: COLORS.cooling,
+        onTap: () => {
+          this.filter = f
+          this.scroll = 0
+          setUiPref('models.filter', f)
+        },
+      })
       btn.x = px + 300 + i * 98
       btn.y = py + 64
       this.view.addChild(btn)
@@ -361,48 +401,61 @@ export class ModelOverview {
 
     // --- table ---
     this.view.addChild(this.tableView)
-    this.tableView.addChild(this.headerRow, this.rowG, this.rowHost)
-    const tableX = px + TABLE_X
-    const tableY = py + TABLE_Y
-    this.tableView.x = tableX
-    this.tableView.y = tableY
+    // row backgrounds first, then the quality bars ON TOP of them, then the header
+    this.tableView.addChild(this.rowHost, this.rowG, this.headerRow)
+    this.tableView.x = px + TABLE_X
+    this.tableView.y = py + TABLE_Y
 
-    // sortable headers
+    // sortable headers; the quality column splits into one sort button per axis
     const headers: { key: SortKey; col: number }[] = [
       { key: 'name', col: 0 },
       { key: 'origin', col: 1 },
       { key: 'paramsTotalB', col: 2 },
       { key: 'contextWindowK', col: 3 },
-      { key: 'quality', col: 4 },
-      { key: 'safety', col: 5 },
-      { key: 'vram', col: 6 },
+      { key: 'speed', col: 5 },
+      { key: 'safety', col: 6 },
+      { key: 'vram', col: 7 },
     ]
     for (const h of headers) {
       const col = COLS[h.col]
       const btn = new UIButton({ w: col.w - 6, h: 24, accent: COLORS.power, onTap: () => this.setSort(h.key) })
       btn.x = col.x
-      btn.y = 0
       this.headerRow.addChild(btn)
-      this.headerBtns.push({ key: h.key, btn })
+      this.headerBtns.push({ key: h.key, btn, axis: false })
     }
+    AXES.forEach((axis, i) => {
+      const btn = new UIButton({ w: SPARK_W + 2, h: 24, accent: COLORS.power, radius: 4, onTap: () => this.setSort(axis) })
+      btn.x = COLS[4].x + 3 + i * (SPARK_W + SPARK_GAP)
+      this.headerRow.addChild(btn)
+      this.headerBtns.push({ key: axis, btn, axis: true })
+    })
 
-    // pooled rows: 7 text columns each (name, origin, params, ctx, safety, vram,
-    // + a spare); the 5-axis quality sparkbars are drawn directly into rowG.
+    // pooled rows: 8 text columns each; the 5-axis quality bars are drawn into rowG
     for (let i = 0; i < VISIBLE_ROWS; i++) {
       const bg = new Graphics()
       const texts: Text[] = []
       const cell: { bg: Graphics; texts: Text[]; modelId: string | null } = { bg, texts, modelId: null }
       bg.eventMode = 'static'
       bg.cursor = 'pointer'
-      bg.on('pointertap', () => { if (cell.modelId) this.selected = cell.modelId })
+      bg.on('pointertap', () => {
+        if (cell.modelId && !this.drag.swallowTap) this.selected = cell.modelId
+      })
       this.rowHost.addChild(bg)
-      for (let c = 0; c < 7; c++) {
+      for (let c = 0; c < COLS.length; c++) {
         const tx = label('', 11, COLORS.text)
+        tx.eventMode = 'none'
         texts.push(tx)
         this.rowHost.addChild(tx)
       }
       this.rowCells.push(cell)
     }
+    this.rowHost.eventMode = 'static'
+    this.rowHost.hitArea = { contains: (x: number, y: number) => x >= 0 && x <= TABLE_W && y >= 32 && y <= 32 + VISIBLE_ROWS * ROW_H }
+    this.drag = new DragScroll(this.rowHost, {
+      get: () => this.scroll * ROW_H,
+      set: (v) => (this.scroll = Math.max(0, Math.round(v / ROW_H))),
+      wheelScale: 0.3,
+    })
 
     this.scrollUp = new UIButton({ w: 24, h: 24, accent: COLORS.sla, onTap: () => this.nudge(-1) })
     this.scrollDn = new UIButton({ w: 24, h: 24, accent: COLORS.sla, onTap: () => this.nudge(1) })
@@ -432,6 +485,10 @@ export class ModelOverview {
     }
     this.detailSparks.x = 12
     this.detail.addChild(this.detailSparks)
+    this.deployBtn = new UIButton({ w: DETAIL_W - 24, h: 30, accent: COLORS.data, onTap: () => this.deployWhereFits() })
+    this.deployBtn.x = 12
+    this.deployBtn.y = this.PH - DETAIL_H_PAD - 40
+    this.detail.addChild(this.deployBtn)
     this.view.addChild(this.detail)
 
     // --- lineage view ---
@@ -441,7 +498,30 @@ export class ModelOverview {
     this.lineageView.addChild(this.lineage)
     this.view.addChild(this.lineageView)
 
+    // type-to-filter: a capture listener ahead of the game hotkeys, live only while open
+    window.addEventListener('keydown', (e) => this.onKey(e), { capture: true })
+
     this.view.visible = false
+  }
+
+  private onKey(e: KeyboardEvent): void {
+    if (!this.view.visible || this.showLineage) return
+    const tgt = e.target as HTMLElement | null
+    if (tgt && (tgt.tagName === 'INPUT' || tgt.tagName === 'TEXTAREA' || tgt.isContentEditable)) return
+    if (e.metaKey || e.ctrlKey || e.altKey) return
+    const consume = (): void => {
+      e.preventDefault()
+      e.stopImmediatePropagation()
+      this.scroll = 0
+    }
+    if (e.key === 'Escape' || e.key === 'Backspace') {
+      if (!this.query) return
+      this.query = e.key === 'Escape' ? '' : this.query.slice(0, -1)
+      consume()
+    } else if (e.key.length === 1 && (QUERY_START.test(e.key) || (this.query && QUERY_CHAR.test(e.key)))) {
+      this.query = (this.query + e.key.toLowerCase()).slice(0, 24)
+      consume()
+    }
   }
 
   private setSort(key: SortKey): void {
@@ -449,58 +529,106 @@ export class ModelOverview {
     else {
       this.sortKey = key
       this.sortDir = key === 'name' || key === 'origin' ? 1 : -1
+      setUiPref('models.sort', key)
     }
   }
   private nudge(d: number): void {
     this.scroll = Math.max(0, this.scroll + d)
   }
 
+  /** The distinct rack tiers on the board (for the "fits my racks" filter). */
+  private boardHw(s: GameState): string[] {
+    const ids = new Set<string>()
+    for (const tw of s.towers) if (tw.def.kind === 'server' && tw.hwId) ids.add(tw.hwId)
+    return [...ids]
+  }
+
   private rows(s: GameState): Row[] {
+    const hw = this.boardHw(s)
+    const key = [
+      Object.keys(s.derivedModels).length,
+      JSON.stringify(s.infra),
+      hw.join(','),
+      this.filter,
+      this.query,
+      this.sortKey,
+      this.sortDir,
+      getLang(),
+    ].join('|')
+    if (key === this.rowCacheKey) return this.rowCache
+    this.rowCacheKey = key
     const ids = new Set<string>([...Object.keys(MODEL_DEFS), ...Object.keys(s.derivedModels)])
     const out: Row[] = []
     for (const id of ids) {
       const m = resolveModel(s, id)
       if (!m) continue
-      const owned = !!s.models[id]
       if (this.filter === 'base' && m.origin !== 'base') continue
       if (this.filter === 'derived' && m.origin !== 'derived') continue
-      if (this.filter === 'owned' && !owned) continue
+      if (this.filter === 'fits' && !hw.some((h) => serverDeployable(s, loadout(s, h, id)))) continue
+      if (this.query && !modelName(m).toLowerCase().includes(this.query) && !m.id.toLowerCase().includes(this.query)) continue
+      const home = homeSpeed(s, m)
       out.push({
         m,
-        owned,
         vramFp16: m.paramsTotalB * 2 + FRAMEWORK_GB,
         vramFp8: m.paramsTotalB * 1 + FRAMEWORK_GB,
+        speed: home.speed,
+        tpotMs: home.tpotMs,
       })
     }
     const k = this.sortKey
-    out.sort((a, b) => {
-      let av: number | string
-      let bv: number | string
+    const val = (r: Row): number | string => {
       switch (k) {
-        case 'name': av = a.m.name; bv = b.m.name; break
-        case 'origin': av = a.m.origin + (a.m.lineage?.depth ?? 0); bv = b.m.origin + (b.m.lineage?.depth ?? 0); break
-        case 'agentic': av = a.m.qualityBy.agentic; bv = b.m.qualityBy.agentic; break
-        case 'safety': av = a.m.alignment.safety; bv = b.m.alignment.safety; break
-        case 'vram': av = a.vramFp16; bv = b.vramFp16; break
-        case 'quality': av = a.m.quality; bv = b.m.quality; break
-        default: av = a.m[k] as number; bv = b.m[k] as number; break
+        case 'name':
+          return modelName(r.m)
+        case 'origin':
+          return r.m.origin + (r.m.lineage?.depth ?? 0)
+        case 'safety':
+          return r.m.alignment.safety
+        case 'vram':
+          return r.vramFp16
+        case 'speed':
+          return r.speed
+        case 'paramsTotalB':
+          return r.m.paramsTotalB
+        case 'contextWindowK':
+          return r.m.contextWindowK
+        default:
+          return r.m.qualityBy[k]
       }
-      if (typeof av === 'string' && typeof bv === 'string') return av.localeCompare(bv) * this.sortDir
-      return ((av as number) - (bv as number)) * this.sortDir
+    }
+    out.sort((a, b) => {
+      const av = val(a)
+      const bv = val(b)
+      const c = typeof av === 'string' && typeof bv === 'string' ? av.localeCompare(bv) : (av as number) - (bv as number)
+      return c * this.sortDir || a.m.id.localeCompare(b.m.id)
     })
+    this.rowCache = out
     return out
   }
 
   update(s: GameState): void {
+    if (s !== this.state) {
+      // a new run: drop everything memoized against the previous state
+      this.rowCacheKey = ''
+      this.tableKey = ''
+      this.detailKey = ''
+      this.lineage.reset()
+    }
+    this.state = s
     this.head.text = t('models.title')
     const total = Object.keys(MODEL_DEFS).length + Object.keys(s.derivedModels).length
     this.sub.text = t('models.sub', { base: Object.keys(MODEL_DEFS).length, derived: Object.keys(s.derivedModels).length, total })
-    this.closeBtn.setTitle(t('models.close')).layout(0, 0, true)
-    this.lineageBtn.setTitle(this.showLineage ? t('models.viewTable') : t('models.viewLineage')).setActive(this.showLineage).layout(0, 0, true)
-
+    setButton(this.closeBtn, t('models.close'))
+    setButton(this.lineageBtn, this.showLineage ? t('models.viewTable') : t('models.viewLineage'))
+    this.lineageBtn.setActive(this.showLineage)
     for (const { f, btn } of this.filterBtns) {
-      btn.setTitle(t('models.filter.' + f)).setActive(this.filter === f).layout(0, 0, true)
+      setButton(btn, t('models.filter.' + f))
+      btn.setActive(this.filter === f)
+      btn.visible = !this.showLineage
     }
+    this.queryLbl.visible = !this.showLineage
+    this.queryLbl.text = this.query ? t('models.search', { q: this.query }) : t('models.searchHint')
+    this.queryLbl.style.fill = this.query ? COLORS.sla : COLORS.textDim
 
     // toggle table vs lineage view
     this.tableView.visible = !this.showLineage
@@ -511,18 +639,28 @@ export class ModelOverview {
       return
     }
 
-    // header labels with sort arrows
-    for (const { key, btn } of this.headerBtns) {
-      const arrow = this.sortKey === key ? (this.sortDir === 1 ? ' ▲' : ' ▼') : ''
-      btn.setTitle(t('models.col.' + key) + arrow).setActive(this.sortKey === key).layout(0, 0, true)
-    }
-
     const rows = this.rows(s)
     const maxScroll = Math.max(0, rows.length - VISIBLE_ROWS)
     if (this.scroll > maxScroll) this.scroll = maxScroll
     this.scrollUp.setEnabled(this.scroll > 0)
     this.scrollDn.setEnabled(this.scroll < maxScroll)
+    const tableKey = `${this.rowCacheKey}|${this.scroll}|${this.selected}|${rows.length}`
+    if (tableKey !== this.tableKey) {
+      this.tableKey = tableKey
+      this.drawTable(rows)
+    }
+    this.drawDetail(s)
+  }
 
+  private drawTable(rows: Row[]): void {
+    for (const { key, btn, axis } of this.headerBtns) {
+      const arrow = this.sortKey === key ? (this.sortDir === 1 ? '▲' : '▼') : ''
+      const name = axis ? t('axis.short.' + key) : t('models.col.' + key)
+      setButton(btn, axis ? (arrow ? arrow : name) : arrow ? `${name} ${arrow}` : name)
+      btn.setActive(this.sortKey === key)
+    }
+
+    const scale = qualityScale()
     this.rowG.clear()
     for (let i = 0; i < this.rowCells.length; i++) {
       const cell = this.rowCells[i]
@@ -540,94 +678,145 @@ export class ModelOverview {
       cell.bg.eventMode = 'static'
       const sel = this.selected === m.id
       cell.bg.clear()
-      cell.bg.roundRect(0, y, TABLE_W, ROW_H - 2, 4).fill({
-        color: sel ? 0x1a2c44 : i % 2 ? 0x0c1320 : 0x0e1622,
-        alpha: 0.9,
-      })
-      if (sel) cell.bg.roundRect(0, y, 3, ROW_H - 2, 2).fill({ color: COLORS.data })
+      cell.bg.roundRect(0, y, TABLE_W - 18, ROW_H - 2, 4).fill({ color: sel ? 0x1a2c44 : i % 2 ? 0x0c1320 : 0x0e1622, alpha: 0.9 })
+      // the selected row is marked by its border alone
+      if (sel) cell.bg.roundRect(0.5, y + 0.5, TABLE_W - 19, ROW_H - 3, 4).stroke({ width: 2, color: COLORS.data })
 
-      const setT = (c: number, slot: number, text: string, size = 11, fill: number = COLORS.text): void => {
-        const tx = cell.texts[slot]
+      const setT = (c: number, text: string, size = 11, fill: number = COLORS.text): void => {
+        const tx = cell.texts[c]
         tx.style.fill = fill
         tx.x = COLS[c].x + 6
         tx.y = y + 7
-        fitText(tx, text, COLS[c].w - 12, { size, minSize: 8, ellipsis: true })
+        fitLabel(tx, text, COLS[c].w - 12, size, 8)
       }
-      setT(0, 0, modelName(m), 11, m.origin === 'derived' ? COLORS.data : COLORS.text)
-      setT(1, 1, m.origin === 'derived' ? t('models.d', { d: m.lineage?.depth ?? 0 }) : t('models.base'), 10, m.origin === 'derived' ? COLORS.data : COLORS.textDim)
-      setT(2, 2, t('models.params', { total: sizeLabel(m.paramsTotalB), active: sizeLabel(m.paramsActiveB), moe: m.isMoE ? '◇' : '' }), 10)
-      setT(3, 3, m.contextWindowK + 'K', 10)
-      // 5-axis quality sparkbars at column 4 (drawn into rowG)
-      this.drawMiniSparks(this.rowG, COLS[4].x + 4, y + 6, m.qualityBy)
-      // safety + refusal at column 5
-      setT(5, 4, m.alignment.safety.toFixed(0), 11, m.alignment.refusalStyle === 'safe-completion' ? COLORS.good : COLORS.trust)
-      // VRAM FP16/FP8 at column 6
-      setT(6, 5, fmtVramPair(row.vramFp16, row.vramFp8), 10, COLORS.textDim)
-      cell.texts[6].text = ''
+      setT(0, modelName(m), 11, m.origin === 'derived' ? COLORS.data : COLORS.text)
+      setT(
+        1,
+        m.origin === 'derived' ? t('models.d', { d: m.lineage?.depth ?? 0 }) : t('models.base'),
+        10,
+        m.origin === 'derived' ? COLORS.data : COLORS.textDim,
+      )
+      setT(2, t('models.params', { total: sizeLabel(m.paramsTotalB), active: sizeLabel(m.paramsActiveB), moe: m.isMoE ? '◇' : '' }), 10)
+      setT(3, m.contextWindowK + 'K', 10)
+      cell.texts[4].text = ''
+      this.drawMiniSparks(this.rowG, COLS[4].x + 4, y + 9, m.qualityBy, scale)
+      setT(
+        5,
+        row.speed > 0 ? fmtTokS(row.speed) + (m.isReasoning || modelThinkTokens(m) > 0 ? ' ◷' : '') : '—',
+        10,
+        row.speed > 0 ? tpotColor(row.tpotMs) : COLORS.textDim,
+      )
+      setT(6, m.alignment.safety.toFixed(0), 11, m.alignment.refusalStyle === 'safe-completion' ? COLORS.good : COLORS.trust)
+      setT(7, fmtVramPair(row.vramFp16, row.vramFp8), 10, COLORS.textDim)
     }
 
     this.scrollUp.setTitle('▲').layout(0, 0, true)
     this.scrollDn.setTitle('▼').layout(0, 0, true)
-
-    this.drawDetail(s)
   }
 
-  /** Compact 5-axis quality bars (agentic highlighted) for a table row. */
-  private drawMiniSparks(g: Graphics, x: number, y: number, q: Record<CapabilityAxis, number>): void {
-    const barW = 24
-    const gap = 4
+  /** Compact 5-axis quality bars (agentic highlighted), scaled to the roster's strongest score. */
+  private drawMiniSparks(g: Graphics, x: number, y: number, q: Record<CapabilityAxis, number>, scale: number): void {
     AXES.forEach((axis, i) => {
-      const v = Math.max(0, Math.min(1, (q[axis] ?? 0) / 100))
-      const bx = x + i * (barW + gap)
+      const v = Math.max(0, Math.min(1, (q[axis] ?? 0) / scale))
+      const bx = x + i * (SPARK_W + SPARK_GAP)
       const hl = axis === 'agentic'
-      g.roundRect(bx, y, barW, 9, 2).fill({ color: 0x0a0e14, alpha: 0.85 })
-      g.roundRect(bx, y, Math.max(2, barW * v), 9, 2).fill({ color: hl ? COLORS.cash : COLORS.sla, alpha: hl ? 1 : 0.85 })
-      if (hl) g.roundRect(bx - 1, y - 1, barW + 2, 11, 3).stroke({ width: 1, color: COLORS.cash, alpha: 0.6 })
+      const sorted = this.sortKey === axis
+      g.roundRect(bx, y, SPARK_W, 9, 2).fill({ color: 0x0a0e14, alpha: 0.85 })
+      g.roundRect(bx, y, Math.max(2, SPARK_W * v), 9, 2).fill({ color: hl ? COLORS.cash : COLORS.sla, alpha: sorted || hl ? 1 : 0.8 })
+      // the 100 mark, so scores past it read as past it
+      g.rect(bx + Math.round((SPARK_W * 100) / scale), y - 1, 1, 11).fill({ color: COLORS.textBright, alpha: 0.35 })
+      if (hl) g.roundRect(bx - 1, y - 1, SPARK_W + 2, 11, 3).stroke({ width: 1, color: COLORS.cash, alpha: 0.6 })
     })
+  }
+
+  /** Detail-card DEPLOY WHERE IT FITS: the model onto every rack that holds it (build phase, id order). */
+  private deployWhereFits(): void {
+    const s = this.state
+    if (!s || !this.selected || s.phase !== 'build') return
+    for (const tw of rolloutTargets(s, this.selected)) this.onDeploy(tw.id, this.selected)
   }
 
   private drawDetail(s: GameState): void {
     const m = this.selected ? resolveModel(s, this.selected) : null
+    const targets = m ? rolloutTargets(s, m.id).length : 0
+    const running = m ? s.towers.filter((tw) => tw.def.kind === 'server' && tw.modelId === m.id).length : 0
+    const key = `${this.selected}|${JSON.stringify(s.infra)}|${targets}|${running}|${s.phase}|${getLang()}`
+    if (key === this.detailKey) return
+    this.detailKey = key
     this.detailG.clear()
     if (!m) {
       drawPanel(this.detailG, 0, 0, DETAIL_W, this.PH - DETAIL_H_PAD, { alpha: 0.5, edge: COLORS.panelEdge })
-      fitText(this.detailTitle, t('models.detail.pick'), DETAIL_W - 24, { size: 16, minSize: 12, ellipsis: true })
+      fitLabel(this.detailTitle, t('models.detail.pick'), DETAIL_W - 24, 16, 12)
       for (const r of this.detailRows) r.text = ''
       this.detailSparks.visible = false
+      this.deployBtn.visible = false
       return
     }
     drawPanel(this.detailG, 0, 0, DETAIL_W, this.PH - DETAIL_H_PAD, { alpha: 0.7, edge: tierColor(m.tier) })
-    fitText(this.detailTitle, modelName(m), DETAIL_W - 24, { size: 16, minSize: 12, ellipsis: true })
+    fitLabel(this.detailTitle, modelName(m), DETAIL_W - 24, 16, 12)
     this.detailTitle.style.fill = m.origin === 'derived' ? COLORS.data : COLORS.textBright
 
     const lines: { text: string; fill: number }[] = []
     lines.push({ text: t('models.detail.tier', { tier: t('tier.' + m.tier), spec: t('spec.' + m.spec) }), fill: COLORS.textDim })
-    lines.push({ text: t('models.detail.params', { total: sizeLabel(m.paramsTotalB), active: sizeLabel(m.paramsActiveB), moe: m.isMoE ? t('rack.model.moe') : t('rack.model.dense') }), fill: COLORS.text })
+    lines.push({
+      text: t('models.detail.params', {
+        total: sizeLabel(m.paramsTotalB),
+        active: sizeLabel(m.paramsActiveB),
+        moe: m.isMoE ? t('rack.model.moe') : t('rack.model.dense'),
+      }),
+      fill: COLORS.text,
+    })
     lines.push({ text: t('models.detail.arch', { layers: m.layers, kv: m.kvHeads, head: m.headDim, attn: m.attn }), fill: COLORS.text })
     lines.push({ text: t('models.detail.window', { win: m.contextWindowK, bytes: m.weightBytes }), fill: COLORS.text })
     lines.push({ text: t('models.detail.vram', { fp16: fmtGb(m.paramsTotalB * 2), fp8: fmtGb(m.paramsTotalB) }), fill: COLORS.cooling })
-    // serve speed / cost on the reference rack
-    const lo = loadout(s, REF_HW, m.id)
-    if (serverFitsMemory(s, lo)) {
-      const rf = rooflineOf(s, lo)
-      lines.push({ text: t('models.detail.serve', { tok: fmtTokS(rf.decodeTokSb1), dpm: fmtDollarsPerMtoken(rackDollarsPerMtoken(s, lo)) }), fill: COLORS.cash })
+    // serve speed / cost on the smallest rack that holds it
+    const home = homeSpeed(s, m)
+    const hw = home.hwId ? smallestRackFor(s, m) : null
+    if (hw) {
+      lines.push({
+        text: t('models.detail.serve', {
+          tok: fmtTokS(home.speed),
+          hw: t(`hw.${hw.id}.short`, undefined, hw.name.replace(' GPU Rack', '')),
+          dpm: fmtDollarsPerMtoken(rackDollarsPerMtoken(s, { hw, model: m })),
+        }),
+        fill: tpotColor(home.tpotMs),
+      })
     } else {
       lines.push({ text: t('models.detail.serveNoFit'), fill: COLORS.warn })
     }
-    lines.push({ text: t('models.detail.align', { safety: m.alignment.safety.toFixed(0), style: t('rack.refusal.' + m.alignment.refusalStyle), over: (m.alignment.overRefusal * 100).toFixed(0) }), fill: COLORS.trust })
+    const think = modelThinkTokens(m)
+    if (m.isReasoning || think > 0) {
+      lines.push({ text: t('models.detail.think', { n: think > 0 ? fmtTokens(think) : '?' }), fill: COLORS.data })
+    }
+    lines.push({
+      text: t('models.detail.align', {
+        safety: m.alignment.safety.toFixed(0),
+        style: t('rack.refusal.' + m.alignment.refusalStyle),
+        over: (m.alignment.overRefusal * 100).toFixed(0),
+      }),
+      fill: COLORS.trust,
+    })
     lines.push({ text: '', fill: COLORS.text })
 
     if (m.origin === 'derived' && m.lineage) {
       const lg = m.lineage
       lines.push({ text: t('models.detail.lineage'), fill: COLORS.textBright })
-      const bases = lg.baseModelIds.map((id) => modelName(resolveModel(s, id) ?? MODEL_DEFS[id]) ?? id).join(' + ')
+      const bases = lg.baseModelIds.map((id) => modelName(resolveModel(s, id) ?? MODEL_DEFS[id]) || id).join(' + ')
       lines.push({ text: t('models.detail.from', { base: bases }), fill: COLORS.data })
-      lines.push({ text: t('models.detail.method', { method: t('method.' + lg.method, undefined, lg.method), target: t('ptt.' + lg.target, undefined, lg.target), effort: lg.effort, depth: lg.depth }), fill: COLORS.text })
+      lines.push({
+        text: t('models.detail.method', {
+          method: t('method.' + lg.method, undefined, lg.method),
+          target: t('ptt.' + lg.target, undefined, lg.target),
+          effort: lg.effort,
+          depth: lg.depth,
+        }),
+        fill: COLORS.text,
+      })
       lines.push({ text: t('models.detail.spent', { data: lg.spent.data, compute: Math.round(lg.spent.compute / 1000) }), fill: COLORS.textDim })
     } else if (m.real) {
       lines.push({ text: t('models.detail.real'), fill: COLORS.textBright })
       lines.push({ text: t('models.detail.dev', { dev: m.real.developer, lic: m.real.license, rel: m.real.released }), fill: COLORS.text })
-      // The six real Artificial Analysis benchmarks that feed this checkpoint's
+      // The real Artificial Analysis benchmarks that feed this checkpoint's
       // qualityBy (src/sim/roster.bench.generated.ts). Wraps to two lines.
       const bench = AA_BENCH[m.id]
       const benchParts: string[] = []
@@ -655,9 +844,21 @@ export class ModelOverview {
       if (line && !line.text) y += 8
       else if (line?.text) y += Math.max(14, r.height) + 3
     }
-    // qualityBy sparkbars at the bottom of the detail
+    // qualityBy bars (scaled to the roster's strongest score), then the deploy action
     this.detailSparks.visible = true
-    this.detailSparks.y = Math.min(this.PH - DETAIL_H_PAD - 82, y + 8)
-    this.detailSparks.draw(m.qualityBy)
+    this.detailSparks.y = Math.min(this.PH - DETAIL_H_PAD - 124, y + 8)
+    this.detailSparks.draw(m.qualityBy, { max: qualityScale() })
+    this.deployBtn.visible = true
+    const building = s.phase === 'build'
+    setButton(
+      this.deployBtn,
+      targets
+        ? t('models.detail.deploy', { n: targets })
+        : running
+          ? t('models.detail.deployDone', { n: running })
+          : t('models.detail.deployNone'),
+      building ? '' : t('inspect.betweenWaves'),
+    )
+    this.deployBtn.setEnabled(building && targets > 0)
   }
 }

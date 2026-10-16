@@ -8,13 +8,15 @@
  *
  * Pure presentation over MetricsHistory; no GameState access (Game samples the
  * history and hands it in). Expert Mode only (the caller gates visibility).
+ * Hovering a series explains it (formula + §ref from the shared metric.* group).
  */
 import { Container, Graphics } from 'pixi.js'
 import { COLORS, DESIGN_H, DESIGN_W } from '../config'
 import { LineChart } from './charts'
-import { fmtDollarsPerMtoken } from './metrics'
+import { fmtDollarsPerMtoken, fmtLatencyMs } from './metrics'
 import type { MetricSample, MetricsHistory } from './metricsHistory'
 import { drawPanel, label } from './theme'
+import { addTooltip } from './tooltip'
 import { t } from '../i18n'
 
 interface Spec {
@@ -28,7 +30,7 @@ interface Spec {
 const SPECS: Spec[] = [
   { key: 'goodput', capKey: 'metric.goodput', color: COLORS.good, fmt: (v) => v.toFixed(0) + '%', opts: { max: 100, threshold: 90, thresholdDir: 'below' } },
   { key: 'rps', capKey: 'metric.rps', color: COLORS.sla, fmt: (v) => v.toFixed(1) + ' /s', opts: {} },
-  { key: 'p95', capKey: 'metric.p95', color: COLORS.warn, fmt: (v) => v.toFixed(1) + ' s', opts: { threshold: 6, thresholdDir: 'above' } },
+  { key: 'p95', capKey: 'metric.p95', color: COLORS.warn, fmt: (v) => fmtLatencyMs(v * 1000), opts: { threshold: 6, thresholdDir: 'above' } },
   { key: 'dpmt', capKey: 'metric.dpmt', color: COLORS.cash, fmt: (v) => fmtDollarsPerMtoken(v), opts: {} },
   { key: 'kvUtil', capKey: 'metric.kvutil', color: COLORS.cooling, fmt: (v) => v.toFixed(0) + '%', opts: { max: 100 } },
   { key: 'fleetUtil', capKey: 'metric.fleetutil', color: COLORS.power, fmt: (v) => v.toFixed(0) + '%', opts: { max: 100, threshold: 30, thresholdDir: 'below' } },
@@ -87,7 +89,12 @@ export class MetricsPanel {
       chart.x = cellX
       chart.y = cellY + CAP_H
       this.view.addChild(cap, val, chart)
-      this.cells.push({ chart, cap, val, spec })
+      const cell = { chart, cap, val, spec }
+      this.cells.push(cell)
+      // what the series means and how it is computed (the shared metric.* group)
+      for (const el of [cap, chart]) {
+        addTooltip(el, () => ({ title: t(spec.capKey + '.full'), value: cell.val.text, body: t(spec.capKey + '.ref') }))
+      }
     }
     this.view.visible = false
   }
