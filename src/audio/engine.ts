@@ -183,8 +183,22 @@ export class AudioEngine implements AudioSink {
 
   /** An interface sound (also reachable from any widget via `uiSound`). */
   ui(id: UiSoundId, opts?: UiSoundOpts): void {
-    const cue: CueId = `ui.${id}`
-    this.cue(cue, opts)
+    switch (id) {
+      case 'speed':
+      case 'pause':
+      case 'unpause':
+        return // sounded from the view-state edges in update(), never twice
+      case 'arm':
+        this.cue('ui.toggle', { on: true })
+        return
+      case 'countdown':
+        this.cue('ui.tick', { value: 1 })
+        return
+      default: {
+        const cue: CueId = `ui.${id}`
+        this.cue(cue, opts)
+      }
+    }
   }
 
   /** Settings ▸ Audio: make a bus (or one outcome's cue) audible after a change. */

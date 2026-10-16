@@ -4,9 +4,11 @@ import type { GameState } from '../core/types'
 import type { TextureFactory } from '../render/textures'
 import { BUILD_ORDER, TOWER_DEFS } from '../sim/content'
 import { buildCost } from '../sim/actions'
-import { hasLab } from '../sim/effects'
+import { defLoadout, guardPower, hasLab, serverPower } from '../sim/effects'
+import { getSettings } from '../settings'
 import { t, towerDesc, towerName } from '../i18n'
-import { addTooltip } from './tooltip'
+import { explainDenied } from './denied'
+import { BUILD_CODES, KEY, keyCap } from './help'
 import { drawPanel, UIButton } from './theme'
 
 /** §5.6 clear, full building labels — no cryptic abbreviations. */
@@ -28,6 +30,14 @@ export interface BuildBarCallbacks {
   onSelect: (defId: string) => void
   onStartWave: () => void
   onTrain: () => void
+  /** a tap on a disabled control: float `reason` near the control's center. */
+  onDenied: (reason: string, x: number, y: number) => void
+}
+
+/** What the START control shows beyond its phase label. */
+export interface StartState {
+  /** seconds left on the auto-start countdown (null = no countdown). */
+  countdown: number | null
 }
 
 export class BuildBar {
@@ -36,6 +46,7 @@ export class BuildBar {
   private buttons = new Map<string, UIButton>()
   private startBtn: UIButton
   private trainBtn: UIButton
+  private state: GameState | null = null
 
   constructor(factory: TextureFactory, cb: BuildBarCallbacks) {
     const y0 = DESIGN_H - BUILDBAR_H
@@ -52,9 +63,19 @@ export class BuildBar {
     const w = Math.floor((trayW - gap * (BUILD_ORDER.length - 1)) / BUILD_ORDER.length)
     const h = 76
     let x = padX
+    const deny = (b: UIButton, why: () => string): void => cb.onDenied(why(), b.x + b.width / 2, b.y)
     for (const id of BUILD_ORDER) {
       const def = TOWER_DEFS[id]
-      const b = new UIButton({ w, h, accent: def.color, onTap: () => cb.onSelect(id) })
+      const b: UIButton = new UIButton({
+        w,
+        h,
+        accent: def.color,
+        onTap: () => cb.onSelect(id),
+        onDenied: () => deny(b, () => this.cardReason(id)),
+        // hover tooltip: full building name, cost + real kW draw, description
+        tooltip: () => ({ title: towerName(def), value: this.cardValue(id), body: towerDesc(def) }),
+        disabledReason: () => this.cardReason(id),
+      })
       b.x = x
       b.y = y0 + 10
       const icon = new Sprite(factory.tower(def))
@@ -66,23 +87,71 @@ export class BuildBar {
       b.layoutIconCard()
       this.view.addChild(b)
       this.buttons.set(id, b)
-      // hover tooltip: full building name + description
-      addTooltip(b, () => ({ title: towerName(def), body: towerDesc(def) }))
       x += w + gap
     }
 
-    this.startBtn = new UIButton({ w: controlW, h: 34, accent: COLORS.trust, onTap: cb.onStartWave })
+    this.startBtn = new UIButton({
+      w: controlW,
+      h: 34,
+      accent: COLORS.trust,
+      onTap: cb.onStartWave,
+      silent: true,
+      onDenied: () => deny(this.startBtn, () => this.startReason()),
+      tooltip: () => ({ title: t('build.tip.start'), value: `[${keyCap(KEY.start)}]`, body: t('build.tip.start.body') }),
+      disabledReason: () => this.startReason(),
+    })
     this.startBtn.x = controlX
     this.startBtn.y = y0 + 10
     this.view.addChild(this.startBtn)
 
-    this.trainBtn = new UIButton({ w: controlW, h: 34, accent: COLORS.data, onTap: cb.onTrain })
+    this.trainBtn = new UIButton({
+      w: controlW,
+      h: 34,
+      accent: COLORS.data,
+      onTap: cb.onTrain,
+      onDenied: () => deny(this.trainBtn, () => this.trainReason()),
+      tooltip: () => ({ title: t('build.tip.train'), value: `[${keyCap(KEY.train)}]`, body: t('build.tip.train.body') }),
+      disabledReason: () => this.trainReason(),
+    })
     this.trainBtn.x = controlX
     this.trainBtn.y = y0 + 52
     this.view.addChild(this.trainBtn)
   }
 
-  update(s: GameState, selectedDefId: string | null): void {
+  /** "$cost · draws X kW" for a build card. */
+  private cardValue(id: string): string {
+    const def = TOWER_DEFS[id]
+    const s = this.state
+    const cost = s ? buildCost(s, def) : def.cost
+    const kw =
+      def.kind === 'server' && s
+        ? serverPower(s, defLoadout(def))
+        : def.guardrail?.runsOnRoofline && s
+          ? guardPower(s, def.guardrail)
+          : (def.powerDraw ?? 0)
+    const parts = [`$${cost}`]
+    if (kw > 0) parts.push(t('build.tip.draw', { kw: kw >= 10 ? kw.toFixed(0) : kw.toFixed(1) }))
+    if (def.power) parts.push(t('build.tip.addPower', { kw: def.power }))
+    if (def.cooling) parts.push(t('build.tip.addCooling', { kw: def.cooling }))
+    return parts.join(' · ')
+  }
+
+  private cardReason(id: string): string {
+    return this.state ? explainDenied(this.state, { fn: 'pick', defId: id }) : ''
+  }
+
+  private startReason(): string {
+    return this.state ? explainDenied(this.state, { fn: 'startWave' }) : ''
+  }
+
+  private trainReason(): string {
+    return this.state ? explainDenied(this.state, { fn: 'train' }) : ''
+  }
+
+  update(s: GameState, selectedDefId: string | null, start: StartState): void {
+    this.state = s
+    const badges = getSettings().gameplay.showHotkeys
+    let i = 0
     for (const [id, b] of this.buttons) {
       const def = TOWER_DEFS[id]
       const cost = buildCost(s, def)
@@ -92,10 +161,19 @@ export class BuildBar {
       b.setEnabled(affordable)
       b.setActive(selectedDefId === id)
       b.layoutIconCard()
+      b.setHotkey(badges && BUILD_CODES[i] ? keyCap(BUILD_CODES[i]) : null)
+      i++
     }
     const canStart = s.phase === 'build'
     this.startBtn.setEnabled(canStart)
-    this.startBtn.setTitle(s.phase === 'wave' ? t('build.waveLive') : t('build.start')).layout(0, 0, true)
+    const startTitle =
+      s.phase === 'wave'
+        ? t('build.waveLive')
+        : start.countdown !== null
+          ? t('build.startIn', { n: Math.max(1, Math.ceil(start.countdown)) })
+          : t('build.start')
+    this.startBtn.setTitle(startTitle).layout(0, 0, true)
+    this.startBtn.setHotkey(badges && canStart ? keyCap(KEY.start) : null)
 
     const canTrain = s.phase === 'build' && hasLab(s)
     this.trainBtn.setEnabled(canTrain)
@@ -109,5 +187,24 @@ export class BuildBar {
             : t('build.trainNeedLab'),
       )
       .layout(0, 0, true)
+    this.trainBtn.setHotkey(badges && canTrain ? keyCap(KEY.train) : null)
+  }
+
+  /** Arm the START button's two-step "start anyway" confirm. */
+  armStart(prompt: string): void {
+    this.startBtn.arm(prompt, 3000)
+  }
+
+  get startArmed(): boolean {
+    return this.startBtn.isArmed
+  }
+
+  disarmStart(): void {
+    this.startBtn.disarm()
+  }
+
+  /** Design-space center of the START button (anchor for its prompts). */
+  get startAnchor(): { x: number; y: number } {
+    return { x: this.startBtn.x + this.startBtn.width / 2, y: this.startBtn.y }
   }
 }

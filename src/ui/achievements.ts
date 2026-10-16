@@ -1,16 +1,17 @@
 /**
- * Achievements UI: a grid panel (over the ContentPanel scroll base) + a small
- * unlock toast. Every achievement gets a hand-drawn vector glyph in the house
- * pixel-neon style (drawAchIcon), the same approach as the HUD speaker/gear/note
- * glyphs and the request/tower textures — no asset files.
+ * Achievements UI: a grid panel (over the ContentPanel scroll base) + the unlock
+ * card for the shared notification stack. Every achievement gets a hand-drawn
+ * vector glyph in the house pixel-neon style (drawAchIcon), the same approach as
+ * the HUD speaker/gear/note glyphs and the request/tower textures — no asset files.
  */
-import { Container, Graphics } from 'pixi.js'
-import { COLORS, DESIGN_W } from '../config'
+import { Graphics } from 'pixi.js'
+import { COLORS } from '../config'
 import type { GameState } from '../core/types'
 import { t } from '../i18n'
 import { ACH_CATEGORIES, ACHIEVEMENTS, type AchCategory, type AchievementDef, type AchievementTracker } from '../achievements'
 import { ContentPanel } from './browsers'
-import { drawPanel, label } from './theme'
+import type { Notice } from './notifications'
+import { drawPanel } from './theme'
 
 const CAT_COLOR: Record<AchCategory, number> = {
   progress: COLORS.trust,
@@ -325,53 +326,17 @@ export class AchievementsPanel extends ContentPanel {
   }
 }
 
-// ----------------------------------------------------------------- toast -------
+// ------------------------------------------------------------ notification ------
 
-/** A small transient banner shown when an achievement unlocks. */
-export class AchievementToast {
-  readonly view = new Container()
-  private bg = new Graphics()
-  private icon = new Graphics()
-  private head = label('', 11, COLORS.textDim, 'bold')
-  private name = label('', 14, COLORS.textBright, 'bold')
-  private queue: AchievementDef[] = []
-  private timer = 0
-  private readonly W = 320
-  private readonly H = 52
-
-  constructor() {
-    drawPanel(this.bg, 0, 0, this.W, this.H, { alpha: 0.96, edge: COLORS.trust, radius: 10 })
-    this.icon.x = 20
-    this.icon.y = 12
-    this.head.x = 64
-    this.head.y = 9
-    this.name.x = 64
-    this.name.y = 24
-    this.view.addChild(this.bg, this.icon, this.head, this.name)
-    this.view.x = (DESIGN_W - this.W) / 2
-    this.view.y = 104
-    this.view.visible = false
-  }
-
-  push(defs: AchievementDef[]): void {
-    this.queue.push(...defs)
-  }
-
-  update(dt: number): void {
-    if (this.timer > 0) {
-      this.timer -= dt
-      // fade out the last ~0.4s
-      this.view.alpha = Math.min(1, this.timer / 0.4)
-      if (this.timer <= 0) this.view.visible = false
-      return
-    }
-    const next = this.queue.shift()
-    if (!next) return
-    this.head.text = t('ach.unlocked', undefined, 'Achievement unlocked')
-    this.name.text = t(`ach.${next.id}.name`, undefined, next.name)
-    drawAchIcon(this.icon, next.id, CAT_COLOR[next.category])
-    this.view.alpha = 1
-    this.view.visible = true
-    this.timer = 3.4
+/** An unlock as a card for the shared notification stack (ui/notifications.ts). */
+export function achievementNotice(def: AchievementDef, onClick?: () => void): Notice {
+  return {
+    kind: 'achievement',
+    head: t('ach.unlocked', undefined, 'Achievement unlocked'),
+    title: t(`ach.${def.id}.name`, undefined, def.name),
+    accent: CAT_COLOR[def.category],
+    icon: (g, col) => drawAchIcon(g, def.id, col),
+    onClick,
+    ttl: 3.4,
   }
 }

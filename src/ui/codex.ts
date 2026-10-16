@@ -2,6 +2,7 @@ import { Container, Graphics, Sprite, Text } from 'pixi.js'
 import { COLORS } from '../config'
 import type { TextureFactory } from '../render/textures'
 import { t } from '../i18n'
+import { prefersReducedMotion } from '../settings'
 import { drawPanel, UIButton } from './theme'
 
 export interface Rect {
@@ -57,7 +58,9 @@ export class Codex {
         fontSize: 14,
         fill: COLORS.text,
         wordWrap: true,
-        wordWrapWidth: BUBBLE_W - 28,
+        breakWords: true,
+        // a little slack: fallback glyphs (→, CJK) can render wider than they measure
+        wordWrapWidth: BUBBLE_W - 40,
         lineHeight: 19,
       },
     })
@@ -128,14 +131,28 @@ export class Codex {
     this.targetRect = null
   }
 
+  /** The bubble is waiting on its Next button (Enter can press it). */
+  get awaitingNext(): boolean {
+    return this.view.visible && this.nextBtn.visible
+  }
+
+  /** Enter on the keyboard = the Next button. Returns true when it was pressed. */
+  pressNext(): boolean {
+    if (!this.awaitingNext) return false
+    this.nextBtn.activate()
+    return true
+  }
+
   update(dt: number): void {
     if (!this.view.visible) return
     this.t += dt
-    this.avatar.y = AVATAR_Y + Math.sin(this.t * 3) * 2.5
+    // reduced motion holds the avatar bob and the highlight pulse steady
+    const steady = prefersReducedMotion()
+    this.avatar.y = steady ? AVATAR_Y : AVATAR_Y + Math.sin(this.t * 3) * 2.5
     this.highlight.clear()
     if (this.targetRect) {
       const r = this.targetRect
-      const pulse = 0.5 + 0.5 * Math.sin(this.t * 6)
+      const pulse = steady ? 1 : 0.5 + 0.5 * Math.sin(this.t * 6)
       const pad = 2 + pulse * 2
       this.highlight
         .roundRect(r.x - pad, r.y - pad, r.w + pad * 2, r.h + pad * 2, 8)

@@ -3,9 +3,10 @@ import globals from 'globals'
 import tseslint from 'typescript-eslint'
 
 export default tseslint.config(
+  // .claude/ holds local agent worktrees (full repo copies), never project source.
   // demo-video/ is a standalone studio-demo-video recorder tool (browser code run via
   // page.evaluate mixed with Node) — not game source; excluded from the project lint.
-  { ignores: ['dist', 'dist-tsc', 'node_modules', 'coverage', 'demo-video'] },
+  { ignores: ['dist', 'dist-tsc', 'node_modules', 'coverage', 'demo-video', '.claude'] },
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {
