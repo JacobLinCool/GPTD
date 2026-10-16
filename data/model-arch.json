@@ -1,0 +1,5094 @@
+{
+  "_comment": "Per-checkpoint architecture facts, keyed by the Hugging Face repo of the open weights. Config-derived fields are written by `node scripts/arch-sync.mjs extract`; fields listed in an entry's `manual` are hand-verified from the model card (sources) and never overwritten. `node scripts/arch-sync.mjs build` derives the serving fields into src/sim/roster.arch.generated.ts. `aa` lists the Artificial Analysis rows (slug → UUID) that measure this checkpoint — the open-weight evidence gen-roster joins on.",
+  "models": {
+    "ai21labs/AI21-Jamba-Reasoning-3B": {
+      "aa": {
+        "jamba-reasoning-3b": "f78138d6-2e04-4a84-919a-20d177cb6ff1"
+      },
+      "paramsTotalB": 3,
+      "paramsActiveB": 3,
+      "isMoE": false,
+      "layers": 28,
+      "heads": 20,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 2,
+          "kvHeads": 1,
+          "headDim": 128
+        },
+        {
+          "kind": "linear",
+          "mixer": "mamba",
+          "layers": 26,
+          "state": 81920,
+          "stateBytes": 2,
+          "conv": 15360
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 3.2,
+      "contextK": 262,
+      "license": "Apache-2.0",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/ai21labs/AI21-Jamba-Reasoning-3B",
+        "https://huggingface.co/ai21labs/AI21-Jamba-Reasoning-3B/blob/main/config.json"
+      ],
+      "confidence": "high"
+    },
+    "ai9stars/G9v3-39A5B": {
+      "aa": {
+        "g9v3-39a5b": "c1c5db7c-968f-445a-a274-7b5689348bf8"
+      },
+      "paramsTotalB": 39,
+      "paramsActiveB": 5,
+      "isMoE": true,
+      "layers": 38,
+      "heads": 32,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 38,
+          "kvHeads": 2,
+          "headDim": 128
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 38.97,
+      "contextK": 131,
+      "license": "Apache-2.0",
+      "thinking": true,
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/ai9stars/G9v3-39A5B",
+        "https://huggingface.co/ai9stars/G9v3-39A5B/blob/main/config.json"
+      ],
+      "notes": "Thinking: card: reasoning model.",
+      "confidence": "high"
+    },
+    "baidu/ERNIE-4.5-300B-A47B-PT": {
+      "aa": {
+        "ernie-4-5-300b-a47b": "ae4fe623-80ab-4ea3-8921-70a18ea0fc7e"
+      },
+      "paramsTotalB": 300,
+      "paramsActiveB": 47,
+      "isMoE": true,
+      "layers": 54,
+      "heads": 64,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 54,
+          "kvHeads": 8,
+          "headDim": 128
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 300.47,
+      "contextK": 131,
+      "license": "Apache-2.0",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/baidu/ERNIE-4.5-300B-A47B-PT",
+        "https://huggingface.co/baidu/ERNIE-4.5-300B-A47B-PT/blob/main/config.json"
+      ],
+      "confidence": "high"
+    },
+    "deepseek-ai/DeepSeek-R1-0528": {
+      "aa": {
+        "deepseek-r1": "a83f84b3-473a-4276-9ae1-8909da723159"
+      },
+      "paramsTotalB": 671,
+      "paramsActiveB": 37,
+      "isMoE": true,
+      "layers": 61,
+      "heads": 128,
+      "kv": [
+        {
+          "kind": "mla",
+          "layers": 61,
+          "latent": 512,
+          "rope": 64
+        }
+      ],
+      "nativeWeightBytes": 1.01,
+      "precision": "FP8",
+      "hfParamsB": 684.53,
+      "contextK": 164,
+      "license": "MIT",
+      "thinking": true,
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/deepseek-ai/DeepSeek-R1-0528",
+        "https://huggingface.co/deepseek-ai/DeepSeek-R1-0528/blob/main/config.json"
+      ],
+      "confidence": "high"
+    },
+    "deepseek-ai/DeepSeek-R1-0528-Qwen3-8B": {
+      "aa": {
+        "deepseek-r1-qwen3-8b": "6000145b-0e3d-4fef-a55f-bcaac84803b2"
+      },
+      "base": "Qwen/Qwen3-8B",
+      "paramsTotalB": 8.19,
+      "paramsActiveB": 8.19,
+      "isMoE": false,
+      "layers": 36,
+      "heads": 32,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 36,
+          "kvHeads": 8,
+          "headDim": 128
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 8.19,
+      "contextK": 131,
+      "license": "MIT",
+      "thinking": true,
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/deepseek-ai/DeepSeek-R1-0528-Qwen3-8B",
+        "https://huggingface.co/deepseek-ai/DeepSeek-R1-0528-Qwen3-8B/blob/main/config.json"
+      ],
+      "notes": "A Qwen3-8B (dense GQA) distilled from DeepSeek-R1-0528 — not a DeepSeek MLA architecture.",
+      "confidence": "high"
+    },
+    "deepseek-ai/DeepSeek-R1-Distill-Llama-70B": {
+      "aa": {
+        "deepseek-r1-distill-llama-70b": "4a845d7b-a52d-43bb-80b7-b58c7a0c155e"
+      },
+      "base": "meta-llama/Llama-3.3-70B-Instruct",
+      "paramsTotalB": 70,
+      "paramsActiveB": 70,
+      "isMoE": false,
+      "layers": 80,
+      "heads": 64,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 80,
+          "kvHeads": 8,
+          "headDim": 128
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 70.55,
+      "contextK": 131,
+      "license": "MIT",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/deepseek-ai/DeepSeek-R1-Distill-Llama-70B",
+        "https://huggingface.co/deepseek-ai/DeepSeek-R1-Distill-Llama-70B/blob/main/config.json"
+      ],
+      "confidence": "high"
+    },
+    "deepseek-ai/DeepSeek-V3": {
+      "aa": {
+        "deepseek-v3": "43fc5506-c5ed-4dee-9b85-962bf7ae3986"
+      },
+      "paramsTotalB": 671,
+      "paramsActiveB": 37,
+      "isMoE": true,
+      "layers": 61,
+      "heads": 128,
+      "kv": [
+        {
+          "kind": "mla",
+          "layers": 61,
+          "latent": 512,
+          "rope": 64
+        }
+      ],
+      "nativeWeightBytes": 1.01,
+      "precision": "FP8",
+      "hfParamsB": 684.53,
+      "contextK": 164,
+      "license": "DeepSeek Model License",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB",
+        "license"
+      ],
+      "sources": [
+        "https://huggingface.co/deepseek-ai/DeepSeek-V3",
+        "https://huggingface.co/deepseek-ai/DeepSeek-V3/blob/main/config.json",
+        "https://github.com/deepseek-ai/DeepSeek-V3/blob/main/LICENSE-MODEL"
+      ],
+      "confidence": "high"
+    },
+    "deepseek-ai/DeepSeek-V3.1": {
+      "aa": {
+        "deepseek-v3-1-reasoning": "198b717f-42c8-4ab7-a699-ae9373d669d3"
+      },
+      "paramsTotalB": 671,
+      "paramsActiveB": 37,
+      "isMoE": true,
+      "layers": 61,
+      "heads": 128,
+      "kv": [
+        {
+          "kind": "mla",
+          "layers": 61,
+          "latent": 512,
+          "rope": 64
+        }
+      ],
+      "nativeWeightBytes": 1.01,
+      "precision": "FP8",
+      "hfParamsB": 684.53,
+      "contextK": 164,
+      "license": "MIT",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/deepseek-ai/DeepSeek-V3.1",
+        "https://huggingface.co/deepseek-ai/DeepSeek-V3.1/blob/main/config.json"
+      ],
+      "confidence": "high"
+    },
+    "deepseek-ai/DeepSeek-V3.2-Exp": {
+      "aa": {
+        "deepseek-v3-2-reasoning-0925": "af134350-8ba3-4629-b56b-00bd6dcf60c4"
+      },
+      "paramsTotalB": 685,
+      "paramsActiveB": 37,
+      "isMoE": true,
+      "layers": 61,
+      "heads": 128,
+      "kv": [
+        {
+          "kind": "mla",
+          "layers": 61,
+          "latent": 512,
+          "rope": 64
+        },
+        {
+          "kind": "indexer",
+          "layers": 61,
+          "dim": 128
+        }
+      ],
+      "nativeWeightBytes": 1.01,
+      "precision": "FP8",
+      "hfParamsB": 685.4,
+      "contextK": 164,
+      "license": "MIT",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/deepseek-ai/DeepSeek-V3.2-Exp",
+        "https://huggingface.co/deepseek-ai/DeepSeek-V3.2-Exp/blob/main/config.json"
+      ],
+      "confidence": "high"
+    },
+    "deepseek-ai/DeepSeek-V4-Flash-0731": {
+      "aa": {
+        "deepseek-v4-flash": "fe4c0848-e284-4e52-a79d-cdc28392f1a9"
+      },
+      "paramsTotalB": 284,
+      "paramsActiveB": 13,
+      "isMoE": true,
+      "layers": 43,
+      "heads": 64,
+      "kv": [
+        {
+          "kind": "compressed",
+          "layers": 21,
+          "dim": 512,
+          "ratio": 4
+        },
+        {
+          "kind": "compressed",
+          "layers": 20,
+          "dim": 512,
+          "ratio": 128
+        },
+        {
+          "kind": "indexer",
+          "layers": 21,
+          "dim": 128,
+          "ratio": 4
+        },
+        {
+          "kind": "swa",
+          "layers": 43,
+          "kvHeads": 1,
+          "headDim": 512,
+          "window": 128,
+          "vHeadDim": 0
+        }
+      ],
+      "nativeWeightBytes": 0.55,
+      "precision": "FP4",
+      "hfParamsB": 304.18,
+      "contextK": 1049,
+      "license": "MIT",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash-0731",
+        "https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash-0731/blob/main/config.json"
+      ],
+      "notes": "Same V4 compressed-attention layout as V4-Pro: 2 SWA-only + 21 CSA + 20 HCA layers.",
+      "confidence": "high"
+    },
+    "deepseek-ai/DeepSeek-V4-Pro-0813": {
+      "aa": {
+        "deepseek-v4-pro": "83173329-c09a-41f1-a028-a282a5f908d7"
+      },
+      "paramsTotalB": 1600,
+      "paramsActiveB": 49,
+      "isMoE": true,
+      "layers": 61,
+      "heads": 128,
+      "kv": [
+        {
+          "kind": "compressed",
+          "layers": 30,
+          "dim": 512,
+          "ratio": 4
+        },
+        {
+          "kind": "compressed",
+          "layers": 31,
+          "dim": 512,
+          "ratio": 128
+        },
+        {
+          "kind": "indexer",
+          "layers": 30,
+          "dim": 128,
+          "ratio": 4
+        },
+        {
+          "kind": "swa",
+          "layers": 61,
+          "kvHeads": 1,
+          "headDim": 512,
+          "window": 128,
+          "vHeadDim": 0
+        }
+      ],
+      "nativeWeightBytes": 0.54,
+      "precision": "FP4",
+      "hfParamsB": 1650.5,
+      "contextK": 1049,
+      "license": "MIT",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/deepseek-ai/DeepSeek-V4-Pro-0813",
+        "https://huggingface.co/deepseek-ai/DeepSeek-V4-Pro-0813/blob/main/config.json"
+      ],
+      "notes": "CSA (ratio 4) + HCA (ratio 128) compressed attention with one shared 512-d KV head and a 128-token window; FP4 experts + FP8.",
+      "confidence": "high"
+    },
+    "deepseek-ai/DeepSeek-V4.1-Flash": {
+      "aa": {
+        "deepseek-v4-1-flash": "dbe7c625-3100-4463-b479-a228c41f75dd"
+      },
+      "paramsTotalB": 763,
+      "paramsActiveB": 16,
+      "isMoE": true,
+      "layers": 40,
+      "heads": 64,
+      "kv": [
+        {
+          "kind": "measured",
+          "layers": 40,
+          "elems": 1680,
+          "dim": 512,
+          "scheme": "csa"
+        },
+        {
+          "kind": "swa",
+          "layers": 40,
+          "kvHeads": 1,
+          "headDim": 512,
+          "window": 128,
+          "vHeadDim": 0
+        }
+      ],
+      "nativeWeightBytes": 0.66,
+      "precision": "FP4",
+      "hfParamsB": 763.21,
+      "contextK": 1049,
+      "license": "MIT",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB",
+        "layers",
+        "heads",
+        "kv"
+      ],
+      "sources": [
+        "https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash",
+        "https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash/blob/main/config.json",
+        "https://api-docs.deepseek.com/news/news260910/"
+      ],
+      "notes": "Causal encoder–decoder with Compressed Sparse Attention 2: the card publishes 890 bytes/token with FP4 KV (≈1.7K elements), used directly; 128-token window on every layer. 763B total includes 196B Engram memory.",
+      "confidence": "medium"
+    },
+    "google/gemma-3-12b-it": {
+      "aa": {
+        "gemma-3-12b": "2e6400f5-85ca-4ebc-ba8f-c2811a631138"
+      },
+      "config": "unsloth/gemma-3-12b-it",
+      "paramsTotalB": 12,
+      "paramsActiveB": 12,
+      "isMoE": false,
+      "layers": 48,
+      "heads": 16,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 8,
+          "kvHeads": 8,
+          "headDim": 256
+        },
+        {
+          "kind": "swa",
+          "layers": 40,
+          "kvHeads": 8,
+          "headDim": 256,
+          "window": 1024
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 12.19,
+      "contextK": 131,
+      "license": "Gemma",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/google/gemma-3-12b-it",
+        "https://huggingface.co/unsloth/gemma-3-12b-it/blob/main/config.json"
+      ],
+      "confidence": "high"
+    },
+    "google/gemma-3-1b-it": {
+      "aa": {
+        "gemma-3-1b": "d1720545-d0a8-4c15-a53e-ef5ca99ac7ea"
+      },
+      "config": "unsloth/gemma-3-1b-it",
+      "paramsTotalB": 1,
+      "paramsActiveB": 1,
+      "isMoE": false,
+      "layers": 26,
+      "heads": 4,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 4,
+          "kvHeads": 1,
+          "headDim": 256
+        },
+        {
+          "kind": "swa",
+          "layers": 22,
+          "kvHeads": 1,
+          "headDim": 256,
+          "window": 512
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 1,
+      "contextK": 33,
+      "license": "Gemma",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/google/gemma-3-1b-it",
+        "https://huggingface.co/unsloth/gemma-3-1b-it/blob/main/config.json"
+      ],
+      "confidence": "high"
+    },
+    "google/gemma-3-27b-it": {
+      "aa": {
+        "gemma-3-27b": "2bfdd17a-e027-4068-a54e-b0e90a6df118"
+      },
+      "config": "unsloth/gemma-3-27b-it",
+      "paramsTotalB": 27,
+      "paramsActiveB": 27,
+      "isMoE": false,
+      "layers": 62,
+      "heads": 32,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 10,
+          "kvHeads": 16,
+          "headDim": 128
+        },
+        {
+          "kind": "swa",
+          "layers": 52,
+          "kvHeads": 16,
+          "headDim": 128,
+          "window": 1024
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 27.43,
+      "contextK": 131,
+      "license": "Gemma",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/google/gemma-3-27b-it",
+        "https://huggingface.co/unsloth/gemma-3-27b-it/blob/main/config.json"
+      ],
+      "confidence": "high"
+    },
+    "google/gemma-3-4b-it": {
+      "aa": {
+        "gemma-3-4b": "222fb320-6e55-4672-846a-b6d5a24a45f4"
+      },
+      "config": "unsloth/gemma-3-4b-it",
+      "paramsTotalB": 4.3,
+      "paramsActiveB": 4.3,
+      "isMoE": false,
+      "layers": 34,
+      "heads": 8,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 5,
+          "kvHeads": 4,
+          "headDim": 256
+        },
+        {
+          "kind": "swa",
+          "layers": 29,
+          "kvHeads": 4,
+          "headDim": 256,
+          "window": 1024
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 4.3,
+      "contextK": 131,
+      "license": "Gemma",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/google/gemma-3-4b-it",
+        "https://huggingface.co/unsloth/gemma-3-4b-it/blob/main/config.json"
+      ],
+      "confidence": "high"
+    },
+    "google/gemma-3n-E2B-it": {
+      "aa": {
+        "gemma-3n-e2b": "a8c67863-9d66-44dd-8d27-f58654ecde03"
+      },
+      "config": "unsloth/gemma-3n-E2B-it",
+      "paramsTotalB": 5.4,
+      "paramsActiveB": 2,
+      "isMoE": false,
+      "layers": 30,
+      "heads": 8,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 4,
+          "kvHeads": 2,
+          "headDim": 256
+        },
+        {
+          "kind": "swa",
+          "layers": 16,
+          "kvHeads": 2,
+          "headDim": 256,
+          "window": 512
+        },
+        {
+          "kind": "shared",
+          "layers": 10
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 5.44,
+      "contextK": 33,
+      "license": "Gemma",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/google/gemma-3n-E2B-it",
+        "https://huggingface.co/unsloth/gemma-3n-E2B-it/blob/main/config.json"
+      ],
+      "notes": "Card: 5B raw parameters, 2B effective.",
+      "confidence": "high"
+    },
+    "google/gemma-3n-E4B-it": {
+      "aa": {
+        "gemma-3n-e4b": "a797eaf3-6d75-4f29-86a8-e1243ce52d43"
+      },
+      "config": "unsloth/gemma-3n-E4B-it",
+      "paramsTotalB": 7.9,
+      "paramsActiveB": 4,
+      "isMoE": false,
+      "layers": 35,
+      "heads": 8,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 4,
+          "kvHeads": 2,
+          "headDim": 256
+        },
+        {
+          "kind": "swa",
+          "layers": 16,
+          "kvHeads": 2,
+          "headDim": 256,
+          "window": 512
+        },
+        {
+          "kind": "shared",
+          "layers": 15
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 7.85,
+      "contextK": 33,
+      "license": "Gemma",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/google/gemma-3n-E4B-it",
+        "https://huggingface.co/unsloth/gemma-3n-E4B-it/blob/main/config.json"
+      ],
+      "notes": "Card: 8B raw parameters, 4B effective.",
+      "confidence": "high"
+    },
+    "google/gemma-4-12B-it": {
+      "aa": {
+        "gemma-4-12b": "feb02d3b-ff8d-4ed4-b165-13f8d4a7192c"
+      },
+      "paramsTotalB": 12,
+      "paramsActiveB": 12,
+      "isMoE": false,
+      "layers": 48,
+      "heads": 16,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 8,
+          "kvHeads": 1,
+          "headDim": 512
+        },
+        {
+          "kind": "swa",
+          "layers": 40,
+          "kvHeads": 8,
+          "headDim": 256,
+          "window": 1024
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 11.96,
+      "contextK": 262,
+      "license": "Apache-2.0",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/google/gemma-4-12B-it",
+        "https://huggingface.co/google/gemma-4-12B-it/blob/main/config.json"
+      ],
+      "confidence": "high"
+    },
+    "google/gemma-4-26B-A4B-it": {
+      "aa": {
+        "gemma-4-26b-a4b": "6e1b44ff-c227-496b-aef4-19b70cd18c76"
+      },
+      "paramsTotalB": 25.2,
+      "paramsActiveB": 3.8,
+      "isMoE": true,
+      "layers": 30,
+      "heads": 16,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 5,
+          "kvHeads": 2,
+          "headDim": 512
+        },
+        {
+          "kind": "swa",
+          "layers": 25,
+          "kvHeads": 8,
+          "headDim": 256,
+          "window": 1024
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 25.81,
+      "contextK": 262,
+      "license": "Apache-2.0",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/google/gemma-4-26B-A4B-it",
+        "https://huggingface.co/google/gemma-4-26B-A4B-it/blob/main/config.json"
+      ],
+      "notes": "Card: 25.2B total / 3.8B active.",
+      "confidence": "high"
+    },
+    "google/gemma-4-31B-it": {
+      "aa": {
+        "gemma-4-31b": "cd26a386-4873-46ff-b853-d239050025a2"
+      },
+      "paramsTotalB": 30.7,
+      "paramsActiveB": 30.7,
+      "isMoE": false,
+      "layers": 60,
+      "heads": 32,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 10,
+          "kvHeads": 4,
+          "headDim": 512
+        },
+        {
+          "kind": "swa",
+          "layers": 50,
+          "kvHeads": 16,
+          "headDim": 256,
+          "window": 1024
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 31.27,
+      "contextK": 262,
+      "license": "Apache-2.0",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/google/gemma-4-31B-it",
+        "https://huggingface.co/google/gemma-4-31B-it/blob/main/config.json"
+      ],
+      "confidence": "high"
+    },
+    "google/gemma-4-E2B-it": {
+      "aa": {
+        "gemma-4-e2b": "b07aef0a-b192-46a1-b1c9-40b06d1b9061"
+      },
+      "paramsTotalB": 5.1,
+      "paramsActiveB": 2.3,
+      "isMoE": false,
+      "layers": 35,
+      "heads": 8,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 3,
+          "kvHeads": 1,
+          "headDim": 512
+        },
+        {
+          "kind": "swa",
+          "layers": 12,
+          "kvHeads": 1,
+          "headDim": 256,
+          "window": 512
+        },
+        {
+          "kind": "shared",
+          "layers": 20
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 5.12,
+      "contextK": 131,
+      "license": "Apache-2.0",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/google/gemma-4-E2B-it",
+        "https://huggingface.co/google/gemma-4-E2B-it/blob/main/config.json"
+      ],
+      "notes": "Card: 2.3B effective (5.1B with per-layer embeddings); the last 20 layers reuse KV.",
+      "confidence": "high"
+    },
+    "google/gemma-4-E4B-it": {
+      "aa": {
+        "gemma-4-e4b": "d80eb0f1-f62e-4d31-99d2-7a925eb126b0"
+      },
+      "paramsTotalB": 8,
+      "paramsActiveB": 4.5,
+      "isMoE": false,
+      "layers": 42,
+      "heads": 8,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 4,
+          "kvHeads": 2,
+          "headDim": 512
+        },
+        {
+          "kind": "swa",
+          "layers": 20,
+          "kvHeads": 2,
+          "headDim": 256,
+          "window": 512
+        },
+        {
+          "kind": "shared",
+          "layers": 18
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 8,
+      "contextK": 131,
+      "license": "Apache-2.0",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/google/gemma-4-E4B-it",
+        "https://huggingface.co/google/gemma-4-E4B-it/blob/main/config.json"
+      ],
+      "notes": "Card: 4.5B effective (8B with per-layer embeddings); the last 18 layers reuse KV.",
+      "confidence": "high"
+    },
+    "ibm-granite/granite-3.3-8b-instruct": {
+      "aa": {
+        "granite-3-3-8b-instruct": "2cff73da-4855-403c-afc9-5540feadcc15"
+      },
+      "paramsTotalB": 8.17,
+      "paramsActiveB": 8.17,
+      "isMoE": false,
+      "layers": 40,
+      "heads": 32,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 40,
+          "kvHeads": 8,
+          "headDim": 128
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 8.17,
+      "contextK": 131,
+      "license": "Apache-2.0",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/ibm-granite/granite-3.3-8b-instruct",
+        "https://huggingface.co/ibm-granite/granite-3.3-8b-instruct/blob/main/config.json"
+      ],
+      "confidence": "high"
+    },
+    "ibm-granite/granite-4.0-1b": {
+      "aa": {
+        "granite-4-0-nano-1b": "a2c8e7b2-57bf-4d1e-96ea-7944d786d94d"
+      },
+      "paramsTotalB": 1.6,
+      "paramsActiveB": 1.6,
+      "isMoE": false,
+      "layers": 40,
+      "heads": 16,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 40,
+          "kvHeads": 4,
+          "headDim": 128
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 1.63,
+      "contextK": 131,
+      "license": "Apache-2.0",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/ibm-granite/granite-4.0-1b",
+        "https://huggingface.co/ibm-granite/granite-4.0-1b/blob/main/config.json"
+      ],
+      "notes": "Card: 1.6B parameters.",
+      "confidence": "high"
+    },
+    "ibm-granite/granite-4.0-h-1b": {
+      "aa": {
+        "granite-4-0-h-nano-1b": "dafbb6d2-4825-43d1-a927-feedcfd2e998"
+      },
+      "paramsTotalB": 1.5,
+      "paramsActiveB": 1.5,
+      "isMoE": false,
+      "layers": 40,
+      "heads": 12,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 4,
+          "kvHeads": 4,
+          "headDim": 128
+        },
+        {
+          "kind": "linear",
+          "mixer": "mamba2",
+          "layers": 36,
+          "state": 393216,
+          "stateBytes": 2,
+          "conv": 9984
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 1.46,
+      "contextK": 131,
+      "license": "Apache-2.0",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/ibm-granite/granite-4.0-h-1b",
+        "https://huggingface.co/ibm-granite/granite-4.0-h-1b/blob/main/config.json"
+      ],
+      "notes": "Card: 1.5B parameters; 4 attention + 36 Mamba-2 layers.",
+      "confidence": "high"
+    },
+    "ibm-granite/granite-4.0-h-small": {
+      "aa": {
+        "granite-4-0-h-small": "5dba8d07-9992-483c-81db-dac97cb15ba8"
+      },
+      "paramsTotalB": 32,
+      "paramsActiveB": 9,
+      "isMoE": true,
+      "layers": 40,
+      "heads": 32,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 4,
+          "kvHeads": 8,
+          "headDim": 128
+        },
+        {
+          "kind": "linear",
+          "mixer": "mamba2",
+          "layers": 36,
+          "state": 1048576,
+          "stateBytes": 2,
+          "conv": 25344
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 32.21,
+      "contextK": 131,
+      "license": "Apache-2.0",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/ibm-granite/granite-4.0-h-small",
+        "https://huggingface.co/ibm-granite/granite-4.0-h-small/blob/main/config.json"
+      ],
+      "confidence": "high"
+    },
+    "ibm-granite/granite-4.0-micro": {
+      "aa": {
+        "granite-4-0-micro": "1fc32894-1060-493b-af94-62bb1068555e"
+      },
+      "paramsTotalB": 3.4,
+      "paramsActiveB": 3.4,
+      "isMoE": false,
+      "layers": 40,
+      "heads": 40,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 40,
+          "kvHeads": 8,
+          "headDim": 64
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 3.4,
+      "contextK": 131,
+      "license": "Apache-2.0",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/ibm-granite/granite-4.0-micro",
+        "https://huggingface.co/ibm-granite/granite-4.0-micro/blob/main/config.json"
+      ],
+      "confidence": "high"
+    },
+    "ibm-granite/granite-4.1-30b": {
+      "aa": {
+        "granite-4-1-30b": "d4be6393-8915-436c-a3a8-4e59bd5c89a9"
+      },
+      "paramsTotalB": 28.9,
+      "paramsActiveB": 28.9,
+      "isMoE": false,
+      "layers": 64,
+      "heads": 32,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 64,
+          "kvHeads": 8,
+          "headDim": 128
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 28.87,
+      "contextK": 131,
+      "license": "Apache-2.0",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/ibm-granite/granite-4.1-30b",
+        "https://huggingface.co/ibm-granite/granite-4.1-30b/blob/main/config.json"
+      ],
+      "confidence": "high"
+    },
+    "ibm-granite/granite-4.1-3b": {
+      "aa": {
+        "granite-4-1-3b": "91e3b45f-3f52-4511-8c15-8948854bebc5"
+      },
+      "paramsTotalB": 3.4,
+      "paramsActiveB": 3.4,
+      "isMoE": false,
+      "layers": 40,
+      "heads": 40,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 40,
+          "kvHeads": 8,
+          "headDim": 64
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 3.4,
+      "contextK": 131,
+      "license": "Apache-2.0",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/ibm-granite/granite-4.1-3b",
+        "https://huggingface.co/ibm-granite/granite-4.1-3b/blob/main/config.json"
+      ],
+      "confidence": "high"
+    },
+    "ibm-granite/granite-4.1-8b": {
+      "aa": {
+        "granite-4-1-8b": "82ed9bd2-c97b-4c35-9312-94bb72001e36"
+      },
+      "paramsTotalB": 8.8,
+      "paramsActiveB": 8.8,
+      "isMoE": false,
+      "layers": 40,
+      "heads": 32,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 40,
+          "kvHeads": 8,
+          "headDim": 128
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 8.79,
+      "contextK": 131,
+      "license": "Apache-2.0",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/ibm-granite/granite-4.1-8b",
+        "https://huggingface.co/ibm-granite/granite-4.1-8b/blob/main/config.json"
+      ],
+      "confidence": "high"
+    },
+    "ibm-granite/granite-4.2-30b": {
+      "aa": {
+        "granite-4-2-30b": "1071dea1-43e7-4fe9-b936-3034bb622b2e"
+      },
+      "paramsTotalB": 29.3,
+      "paramsActiveB": 29.3,
+      "isMoE": false,
+      "layers": 64,
+      "heads": 32,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 64,
+          "kvHeads": 8,
+          "headDim": 128
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 29.28,
+      "contextK": 131,
+      "license": "Apache-2.0",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/ibm-granite/granite-4.2-30b",
+        "https://huggingface.co/ibm-granite/granite-4.2-30b/blob/main/config.json"
+      ],
+      "confidence": "high"
+    },
+    "ibm-granite/granite-4.2-3b": {
+      "aa": {
+        "granite-4-2-3b": "0c64b008-20c3-408d-bd68-15136df8cd2c"
+      },
+      "paramsTotalB": 3.66,
+      "paramsActiveB": 3.66,
+      "isMoE": false,
+      "layers": 40,
+      "heads": 40,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 40,
+          "kvHeads": 8,
+          "headDim": 64
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 3.66,
+      "contextK": 131,
+      "license": "Apache-2.0",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/ibm-granite/granite-4.2-3b",
+        "https://huggingface.co/ibm-granite/granite-4.2-3b/blob/main/config.json"
+      ],
+      "confidence": "high"
+    },
+    "ibm-granite/granite-4.2-8b": {
+      "aa": {
+        "granite-4-2-8b": "adfae555-f489-4f3e-9064-c6b7fcdd0783"
+      },
+      "paramsTotalB": 8.8,
+      "paramsActiveB": 8.8,
+      "isMoE": false,
+      "layers": 40,
+      "heads": 32,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 40,
+          "kvHeads": 8,
+          "headDim": 128
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 8.79,
+      "contextK": 131,
+      "license": "Apache-2.0",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/ibm-granite/granite-4.2-8b",
+        "https://huggingface.co/ibm-granite/granite-4.2-8b/blob/main/config.json"
+      ],
+      "confidence": "high"
+    },
+    "IFM/K2-Horizon-0.9B": {
+      "aa": {
+        "k2-horizon-0-9b": "9e9fb958-87f5-4835-a761-26102ef25898"
+      },
+      "paramsTotalB": 1.08,
+      "paramsActiveB": 1.08,
+      "isMoE": false,
+      "layers": 28,
+      "heads": 32,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 28,
+          "kvHeads": 8,
+          "headDim": 64
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 1.08,
+      "contextK": 131,
+      "license": "Apache-2.0",
+      "thinking": true,
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/IFM/K2-Horizon-0.9B",
+        "https://huggingface.co/IFM/K2-Horizon-0.9B/blob/main/config.json"
+      ],
+      "notes": "Thinking: card: reasoning effort set per request.",
+      "confidence": "high"
+    },
+    "IFM/K2-Horizon-3.7B": {
+      "aa": {
+        "k2-horizon-3-7b": "31da3a71-0773-47d9-8560-9f19f069926b"
+      },
+      "paramsTotalB": 5.06,
+      "paramsActiveB": 5.06,
+      "isMoE": false,
+      "layers": 36,
+      "heads": 32,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 36,
+          "kvHeads": 8,
+          "headDim": 128
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 5.06,
+      "contextK": 524,
+      "license": "Apache-2.0",
+      "thinking": true,
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/IFM/K2-Horizon-3.7B",
+        "https://huggingface.co/IFM/K2-Horizon-3.7B/blob/main/config.json"
+      ],
+      "notes": "Fully open; 5.06B including the untied embedding. Thinking: card: reasoning effort set per request.",
+      "confidence": "high"
+    },
+    "IFM/K2-Horizon-375B-A23B": {
+      "aa": {
+        "k2-horizon-375b-a23b": "bb3d7e75-8e22-4082-b9d6-1db0803e042f"
+      },
+      "paramsTotalB": 379.2,
+      "paramsActiveB": 23,
+      "isMoE": true,
+      "layers": 61,
+      "heads": 48,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 61,
+          "kvHeads": 8,
+          "headDim": 128
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 379.17,
+      "contextK": 524,
+      "license": "Apache-2.0",
+      "thinking": true,
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/IFM/K2-Horizon-375B-A23B",
+        "https://huggingface.co/IFM/K2-Horizon-375B-A23B/blob/main/config.json"
+      ],
+      "notes": "Plain full-attention GQA at 375B (244 KB/token). Thinking: card: reasoning effort set per request.",
+      "confidence": "high"
+    },
+    "IFM/K2-Horizon-7B": {
+      "aa": {
+        "k2-horizon-7b": "122a1fa1-976a-4089-87a2-5a0a13e2a52c"
+      },
+      "paramsTotalB": 9,
+      "paramsActiveB": 9,
+      "isMoE": false,
+      "layers": 36,
+      "heads": 32,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 36,
+          "kvHeads": 8,
+          "headDim": 128
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 9,
+      "contextK": 524,
+      "license": "Apache-2.0",
+      "thinking": true,
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/IFM/K2-Horizon-7B",
+        "https://huggingface.co/IFM/K2-Horizon-7B/blob/main/config.json"
+      ],
+      "notes": "Fully open (weights, data, code); 9.0B including the untied 250K-vocab embedding. Thinking: card: reasoning effort set per request (high recommended).",
+      "confidence": "high"
+    },
+    "IFM/K2-Horizon-MoVA-36B-A4B": {
+      "aa": {
+        "k2-horizon-mova-36b-a4b": "53b9e276-e360-4a39-9076-1a19d72c25fe"
+      },
+      "paramsTotalB": 37.4,
+      "paramsActiveB": 4,
+      "isMoE": true,
+      "layers": 48,
+      "heads": 32,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 48,
+          "kvHeads": 8,
+          "headDim": 128
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 37.44,
+      "contextK": 524,
+      "license": "Apache-2.0",
+      "thinking": true,
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/IFM/K2-Horizon-MoVA-36B-A4B",
+        "https://huggingface.co/IFM/K2-Horizon-MoVA-36B-A4B/blob/main/config.json"
+      ],
+      "notes": "Mixture-of-Values attention: routed V experts, but the cache stores standard 8×128 K/V. Thinking: card: reasoning effort set per request.",
+      "confidence": "high"
+    },
+    "inclusionAI/Ling-3.0-flash": {
+      "aa": {
+        "ling-3-0-flash": "e33dc369-ae81-40e0-8c4e-28b002d02197"
+      },
+      "paramsTotalB": 124,
+      "paramsActiveB": 5.1,
+      "isMoE": true,
+      "layers": 42,
+      "heads": 32,
+      "kv": [
+        {
+          "kind": "mla",
+          "layers": 7,
+          "latent": 512,
+          "rope": 64
+        },
+        {
+          "kind": "linear",
+          "mixer": "kda",
+          "layers": 35,
+          "state": 524288,
+          "stateBytes": 4,
+          "conv": 36864
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 127.49,
+      "contextK": 262,
+      "license": "MIT",
+      "thinking": true,
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/inclusionAI/Ling-3.0-flash",
+        "https://huggingface.co/inclusionAI/Ling-3.0-flash/blob/main/config.json"
+      ],
+      "notes": "35 KDA + 7 gated MLA layers (5:1). Thinking: card: thinking model.",
+      "confidence": "high"
+    },
+    "inclusionAI/Ling-3.0-tiny": {
+      "aa": {
+        "ling-3-0-tiny": "7eaf926c-5f39-4e58-ae50-c38b5fc630fc"
+      },
+      "paramsTotalB": 7.9,
+      "paramsActiveB": 1.3,
+      "isMoE": true,
+      "layers": 24,
+      "heads": 16,
+      "kv": [
+        {
+          "kind": "mla",
+          "layers": 6,
+          "latent": 512,
+          "rope": 64
+        },
+        {
+          "kind": "linear",
+          "mixer": "kda",
+          "layers": 18,
+          "state": 262144,
+          "stateBytes": 4,
+          "conv": 18432
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 7.89,
+      "contextK": 131,
+      "license": "MIT",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/inclusionAI/Ling-3.0-tiny",
+        "https://huggingface.co/inclusionAI/Ling-3.0-tiny/blob/main/config.json"
+      ],
+      "notes": "18 KDA + 6 MLA layers (3:1).",
+      "confidence": "high"
+    },
+    "inclusionAI/Ling-3.1-flash": {
+      "aa": {
+        "ling-3-1-flash": "a6043b9b-628a-4a76-a021-2834e0627d05"
+      },
+      "paramsTotalB": 560,
+      "paramsActiveB": 25,
+      "isMoE": true,
+      "layers": 72,
+      "heads": 64,
+      "kv": [
+        {
+          "kind": "mla",
+          "layers": 9,
+          "latent": 512,
+          "rope": 64
+        },
+        {
+          "kind": "linear",
+          "mixer": "kda",
+          "layers": 63,
+          "state": 1048576,
+          "stateBytes": 4,
+          "conv": 73728
+        }
+      ],
+      "nativeWeightBytes": 1,
+      "precision": "FP8",
+      "hfParamsB": 572.12,
+      "contextK": 262,
+      "license": "MIT",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/inclusionAI/Ling-3.1-flash",
+        "https://huggingface.co/inclusionAI/Ling-3.1-flash/blob/main/config.json"
+      ],
+      "notes": "63 KDA + 9 gated MLA layers (7:1); FP8 release. README advertises 1M context; config serves 262K.",
+      "confidence": "high"
+    },
+    "LGAI-EXAONE/EXAONE-4.0-1.2B": {
+      "aa": {
+        "exaone-4-0-1-2b-reasoning": "d734e2ce-5cf8-467f-8148-586d02671333"
+      },
+      "paramsTotalB": 1.28,
+      "paramsActiveB": 1.28,
+      "isMoE": false,
+      "layers": 30,
+      "heads": 32,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 30,
+          "kvHeads": 8,
+          "headDim": 64
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 1.28,
+      "contextK": 66,
+      "license": "EXAONE AI Model License",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/LGAI-EXAONE/EXAONE-4.0-1.2B",
+        "https://huggingface.co/LGAI-EXAONE/EXAONE-4.0-1.2B/blob/main/config.json"
+      ],
+      "confidence": "high"
+    },
+    "LGAI-EXAONE/EXAONE-4.0-32B": {
+      "aa": {
+        "exaone-4-0-32b-reasoning": "44b19b51-5367-4ef9-a2ff-2f90b89a0867"
+      },
+      "paramsTotalB": 32,
+      "paramsActiveB": 32,
+      "isMoE": false,
+      "layers": 64,
+      "heads": 40,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 16,
+          "kvHeads": 8,
+          "headDim": 128
+        },
+        {
+          "kind": "swa",
+          "layers": 48,
+          "kvHeads": 8,
+          "headDim": 128,
+          "window": 4096
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 32,
+      "contextK": 131,
+      "license": "EXAONE AI Model License",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/LGAI-EXAONE/EXAONE-4.0-32B",
+        "https://huggingface.co/LGAI-EXAONE/EXAONE-4.0-32B/blob/main/config.json"
+      ],
+      "confidence": "high"
+    },
+    "LGAI-EXAONE/EXAONE-4.5-33B": {
+      "aa": {
+        "exaone-4-5-33b": "508943e4-e9e1-4d10-9c0e-a7650e9d7315"
+      },
+      "paramsTotalB": 33,
+      "paramsActiveB": 33,
+      "isMoE": false,
+      "layers": 64,
+      "heads": 40,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 16,
+          "kvHeads": 8,
+          "headDim": 128
+        },
+        {
+          "kind": "swa",
+          "layers": 48,
+          "kvHeads": 8,
+          "headDim": 128,
+          "window": 4096
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 34.35,
+      "contextK": 262,
+      "license": "EXAONE AI Model License",
+      "thinking": true,
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/LGAI-EXAONE/EXAONE-4.5-33B",
+        "https://huggingface.co/LGAI-EXAONE/EXAONE-4.5-33B/blob/main/config.json"
+      ],
+      "notes": "Card: enable_thinking=True by default.",
+      "confidence": "high"
+    },
+    "LGAI-EXAONE/K-EXAONE-2.0-750B-A37B": {
+      "aa": {
+        "k-exaone-2-0-0803": "18721247-4e56-4cf7-9a9d-c71cc60c0961"
+      },
+      "paramsTotalB": 750,
+      "paramsActiveB": 37,
+      "isMoE": true,
+      "layers": 78,
+      "heads": 64,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 20,
+          "kvHeads": 8,
+          "headDim": 128
+        },
+        {
+          "kind": "swa",
+          "layers": 1,
+          "kvHeads": 8,
+          "headDim": 128,
+          "window": 4096
+        },
+        {
+          "kind": "swa",
+          "layers": 57,
+          "kvHeads": 8,
+          "headDim": 128,
+          "window": 128
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 749.36,
+      "contextK": 262,
+      "license": "Apache-2.0",
+      "thinking": true,
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/LGAI-EXAONE/K-EXAONE-2.0-750B-A37B",
+        "https://huggingface.co/LGAI-EXAONE/K-EXAONE-2.0-750B-A37B/blob/main/config.json"
+      ],
+      "notes": "Thinking: card: reasoning model.",
+      "confidence": "high"
+    },
+    "LiquidAI/LFM2-1.2B": {
+      "aa": {
+        "lfm2-1-2b": "0faadeeb-320c-45cf-9c76-5f8768f342e6"
+      },
+      "paramsTotalB": 1.17,
+      "paramsActiveB": 1.17,
+      "isMoE": false,
+      "layers": 16,
+      "heads": 32,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 6,
+          "kvHeads": 8,
+          "headDim": 64
+        },
+        {
+          "kind": "linear",
+          "mixer": "short-conv",
+          "layers": 10,
+          "state": 0,
+          "stateBytes": 2,
+          "conv": 4096
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 1.17,
+      "contextK": 33,
+      "license": "LFM Open License v1.0",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB",
+        "contextK"
+      ],
+      "sources": [
+        "https://huggingface.co/LiquidAI/LFM2-1.2B",
+        "https://huggingface.co/LiquidAI/LFM2-1.2B/blob/main/config.json"
+      ],
+      "notes": "Card: context length 32,768 tokens.",
+      "confidence": "high"
+    },
+    "LiquidAI/LFM2-2.6B": {
+      "aa": {
+        "lfm2-2-6b": "739e531a-eb0a-478f-bb67-5845b79ce65d"
+      },
+      "paramsTotalB": 2.57,
+      "paramsActiveB": 2.57,
+      "isMoE": false,
+      "layers": 30,
+      "heads": 32,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 8,
+          "kvHeads": 8,
+          "headDim": 64
+        },
+        {
+          "kind": "linear",
+          "mixer": "short-conv",
+          "layers": 22,
+          "state": 0,
+          "stateBytes": 2,
+          "conv": 4096
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 2.57,
+      "contextK": 33,
+      "license": "LFM Open License v1.0",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB",
+        "contextK"
+      ],
+      "sources": [
+        "https://huggingface.co/LiquidAI/LFM2-2.6B",
+        "https://huggingface.co/LiquidAI/LFM2-2.6B/blob/main/config.json"
+      ],
+      "notes": "Card: context length 32,768 tokens.",
+      "confidence": "high"
+    },
+    "LiquidAI/LFM2-24B-A2B": {
+      "aa": {
+        "lfm2-24b-a2b": "fbc58677-e324-4b45-a979-7fd8eec555cd"
+      },
+      "paramsTotalB": 24,
+      "paramsActiveB": 2.3,
+      "isMoE": true,
+      "layers": 40,
+      "heads": 32,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 10,
+          "kvHeads": 8,
+          "headDim": 64
+        },
+        {
+          "kind": "linear",
+          "mixer": "short-conv",
+          "layers": 30,
+          "state": 0,
+          "stateBytes": 2,
+          "conv": 4096
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 23.84,
+      "contextK": 33,
+      "license": "LFM Open License v1.0",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB",
+        "contextK"
+      ],
+      "sources": [
+        "https://huggingface.co/LiquidAI/LFM2-24B-A2B",
+        "https://huggingface.co/LiquidAI/LFM2-24B-A2B/blob/main/config.json"
+      ],
+      "notes": "Card: 24B total / 2.3B active; context length 32,768 tokens.",
+      "confidence": "high"
+    },
+    "LiquidAI/LFM2-8B-A1B": {
+      "aa": {
+        "lfm2-8b-a1b": "686ab020-ee58-4a70-a9ac-24d675a73506"
+      },
+      "paramsTotalB": 8.3,
+      "paramsActiveB": 1.5,
+      "isMoE": true,
+      "layers": 24,
+      "heads": 32,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 6,
+          "kvHeads": 8,
+          "headDim": 64
+        },
+        {
+          "kind": "linear",
+          "mixer": "short-conv",
+          "layers": 18,
+          "state": 0,
+          "stateBytes": 2,
+          "conv": 4096
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 8.34,
+      "contextK": 33,
+      "license": "LFM Open License v1.0",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB",
+        "contextK"
+      ],
+      "sources": [
+        "https://huggingface.co/LiquidAI/LFM2-8B-A1B",
+        "https://huggingface.co/LiquidAI/LFM2-8B-A1B/blob/main/config.json"
+      ],
+      "notes": "Card: 8.3B total / 1.5B active; context length 32,768 tokens.",
+      "confidence": "high"
+    },
+    "LiquidAI/LFM2.5-1.2B-Thinking": {
+      "aa": {
+        "lfm2-5-1-2b-thinking": "5a088cde-18e2-4dfa-98dd-d283e1c19654"
+      },
+      "paramsTotalB": 1.17,
+      "paramsActiveB": 1.17,
+      "isMoE": false,
+      "layers": 16,
+      "heads": 32,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 6,
+          "kvHeads": 8,
+          "headDim": 64
+        },
+        {
+          "kind": "linear",
+          "mixer": "short-conv",
+          "layers": 10,
+          "state": 0,
+          "stateBytes": 2,
+          "conv": 4096
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 1.17,
+      "contextK": 33,
+      "license": "LFM Open License v1.0",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB",
+        "contextK"
+      ],
+      "sources": [
+        "https://huggingface.co/LiquidAI/LFM2.5-1.2B-Thinking",
+        "https://huggingface.co/LiquidAI/LFM2.5-1.2B-Thinking/blob/main/config.json"
+      ],
+      "notes": "Card: context length 32,768 tokens (config max_position_embeddings 128,000 is the architectural cap).",
+      "confidence": "high"
+    },
+    "LiquidAI/LFM2.5-2.6B": {
+      "aa": {
+        "lfm2-5-2-6b": "e1bfc488-5f48-4d42-abf6-7f3c53d79f9c"
+      },
+      "paramsTotalB": 2.69,
+      "paramsActiveB": 2.69,
+      "isMoE": false,
+      "layers": 30,
+      "heads": 32,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 8,
+          "kvHeads": 8,
+          "headDim": 64
+        },
+        {
+          "kind": "linear",
+          "mixer": "short-conv",
+          "layers": 22,
+          "state": 0,
+          "stateBytes": 2,
+          "conv": 4096
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 2.7,
+      "contextK": 131,
+      "license": "LFM Open License v1.0",
+      "thinking": true,
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/LiquidAI/LFM2.5-2.6B",
+        "https://huggingface.co/LiquidAI/LFM2.5-2.6B/blob/main/config.json"
+      ],
+      "notes": "Thinking: card: reasoning model.",
+      "confidence": "high"
+    },
+    "LiquidAI/LFM2.5-8B-A1B": {
+      "aa": {
+        "lfm2-5-8b-a1b": "e2b664ca-7992-4de6-8839-4867f035c892"
+      },
+      "paramsTotalB": 8.3,
+      "paramsActiveB": 1.5,
+      "isMoE": true,
+      "layers": 24,
+      "heads": 32,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 6,
+          "kvHeads": 8,
+          "headDim": 64
+        },
+        {
+          "kind": "linear",
+          "mixer": "short-conv",
+          "layers": 18,
+          "state": 0,
+          "stateBytes": 2,
+          "conv": 4096
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 8.47,
+      "contextK": 128,
+      "license": "LFM Open License v1.0",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/LiquidAI/LFM2.5-8B-A1B",
+        "https://huggingface.co/LiquidAI/LFM2.5-8B-A1B/blob/main/config.json"
+      ],
+      "notes": "Card: 8.3B total / 1.5B active; context length 128,000.",
+      "confidence": "high"
+    },
+    "meituan-longcat/LongCat-2.0": {
+      "aa": {
+        "longcat-2-0": "5c3bdc0d-abab-4526-8079-34de4089bb4a"
+      },
+      "paramsTotalB": 1600,
+      "paramsActiveB": 48,
+      "isMoE": true,
+      "layers": 76,
+      "heads": 64,
+      "kv": [
+        {
+          "kind": "mla",
+          "layers": 76,
+          "latent": 512,
+          "rope": 64
+        },
+        {
+          "kind": "indexer",
+          "layers": 38,
+          "dim": 128
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 1775.56,
+      "contextK": 262,
+      "license": "MIT",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/meituan-longcat/LongCat-2.0",
+        "https://huggingface.co/meituan-longcat/LongCat-2.0/blob/main/config.json"
+      ],
+      "notes": "Two MLA sublayers per shortcut-connected block + LongCat sparse-attention indexer keys; zero-compute experts.",
+      "confidence": "medium"
+    },
+    "meta-llama/Llama-3.1-405B-Instruct": {
+      "aa": {
+        "llama-3-1-instruct-405b": "45c87531-2d57-48e0-8012-202cd636189e"
+      },
+      "config": "NousResearch/Hermes-4-405B",
+      "paramsTotalB": 405,
+      "paramsActiveB": 405,
+      "isMoE": false,
+      "layers": 126,
+      "heads": 128,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 126,
+          "kvHeads": 8,
+          "headDim": 128
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 405.85,
+      "contextK": 131,
+      "license": "Llama 3.1 Community",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/meta-llama/Llama-3.1-405B-Instruct",
+        "https://huggingface.co/NousResearch/Hermes-4-405B/blob/main/config.json"
+      ],
+      "confidence": "high"
+    },
+    "meta-llama/Llama-3.1-70B-Instruct": {
+      "aa": {
+        "llama-3-1-instruct-70b": "466aecdb-3d96-4191-bc52-b3366db38851"
+      },
+      "config": "unsloth/Meta-Llama-3.1-70B-Instruct",
+      "paramsTotalB": 70,
+      "paramsActiveB": 70,
+      "isMoE": false,
+      "layers": 80,
+      "heads": 64,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 80,
+          "kvHeads": 8,
+          "headDim": 128
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 70.55,
+      "contextK": 131,
+      "license": "Llama 3.1 Community",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/meta-llama/Llama-3.1-70B-Instruct",
+        "https://huggingface.co/unsloth/Meta-Llama-3.1-70B-Instruct/blob/main/config.json"
+      ],
+      "confidence": "high"
+    },
+    "meta-llama/Llama-3.1-8B-Instruct": {
+      "aa": {
+        "llama-3-1-instruct-8b": "739684ba-0f63-4e2a-b4ee-30741c9e9320"
+      },
+      "config": "unsloth/Llama-3.1-8B-Instruct",
+      "paramsTotalB": 8,
+      "paramsActiveB": 8,
+      "isMoE": false,
+      "layers": 32,
+      "heads": 32,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 32,
+          "kvHeads": 8,
+          "headDim": 128
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 8.03,
+      "contextK": 131,
+      "license": "Llama 3.1 Community",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/meta-llama/Llama-3.1-8B-Instruct",
+        "https://huggingface.co/unsloth/Llama-3.1-8B-Instruct/blob/main/config.json"
+      ],
+      "confidence": "high"
+    },
+    "meta-llama/Llama-3.2-1B-Instruct": {
+      "aa": {
+        "llama-3-2-instruct-1b": "80f7860a-7665-4658-9f05-15bccf5f832f"
+      },
+      "config": "unsloth/Llama-3.2-1B-Instruct",
+      "paramsTotalB": 1.23,
+      "paramsActiveB": 1.23,
+      "isMoE": false,
+      "layers": 16,
+      "heads": 32,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 16,
+          "kvHeads": 8,
+          "headDim": 64
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 1.24,
+      "contextK": 131,
+      "license": "Llama 3.2 Community",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/meta-llama/Llama-3.2-1B-Instruct",
+        "https://huggingface.co/unsloth/Llama-3.2-1B-Instruct/blob/main/config.json"
+      ],
+      "confidence": "high"
+    },
+    "meta-llama/Llama-3.3-70B-Instruct": {
+      "aa": {
+        "llama-3-3-instruct-70b": "976cc8ad-7904-4056-83c5-960181f47d5f"
+      },
+      "config": "unsloth/Llama-3.3-70B-Instruct",
+      "paramsTotalB": 70,
+      "paramsActiveB": 70,
+      "isMoE": false,
+      "layers": 80,
+      "heads": 64,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 80,
+          "kvHeads": 8,
+          "headDim": 128
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 70.55,
+      "contextK": 131,
+      "license": "Llama 3.3 Community",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/meta-llama/Llama-3.3-70B-Instruct",
+        "https://huggingface.co/unsloth/Llama-3.3-70B-Instruct/blob/main/config.json"
+      ],
+      "confidence": "high"
+    },
+    "meta-llama/Meta-Llama-3-70B-Instruct": {
+      "aa": {
+        "llama-3-instruct-70b": "aa83359a-d804-4f0b-b5bf-dc637711c26f"
+      },
+      "config": "NousResearch/Meta-Llama-3-70B-Instruct",
+      "paramsTotalB": 70,
+      "paramsActiveB": 70,
+      "isMoE": false,
+      "layers": 80,
+      "heads": 64,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 80,
+          "kvHeads": 8,
+          "headDim": 128
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 70.55,
+      "contextK": 8,
+      "license": "Llama 3 Community",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/meta-llama/Meta-Llama-3-70B-Instruct",
+        "https://huggingface.co/NousResearch/Meta-Llama-3-70B-Instruct/blob/main/config.json"
+      ],
+      "confidence": "high"
+    },
+    "meta-llama/Meta-Llama-3-8B-Instruct": {
+      "aa": {
+        "llama-3-instruct-8b": "82879bb8-89fb-4adc-b519-315b8ef30b77"
+      },
+      "config": "unsloth/llama-3-8b-Instruct",
+      "paramsTotalB": 8,
+      "paramsActiveB": 8,
+      "isMoE": false,
+      "layers": 32,
+      "heads": 32,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 32,
+          "kvHeads": 8,
+          "headDim": 128
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 8.03,
+      "contextK": 8,
+      "license": "Llama 3 Community",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/meta-llama/Meta-Llama-3-8B-Instruct",
+        "https://huggingface.co/unsloth/llama-3-8b-Instruct/blob/main/config.json"
+      ],
+      "confidence": "high"
+    },
+    "meta-models/Muse-Glimmer-30B": {
+      "aa": {
+        "muse-glimmer": "583f98fb-c4b8-4df3-8d40-60ac0ed69882"
+      },
+      "paramsTotalB": 29.8,
+      "paramsActiveB": 29.8,
+      "isMoE": false,
+      "layers": 52,
+      "heads": 32,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 13,
+          "kvHeads": 2,
+          "headDim": 128
+        },
+        {
+          "kind": "swa",
+          "layers": 39,
+          "kvHeads": 2,
+          "headDim": 128,
+          "window": 2048
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 29.78,
+      "contextK": 131,
+      "license": "Apache-2.0",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/meta-models/Muse-Glimmer-30B",
+        "https://huggingface.co/meta-models/Muse-Glimmer-30B/blob/main/config.json"
+      ],
+      "confidence": "high"
+    },
+    "meta-models/Muse-Spark-Open-816B-A42B": {
+      "aa": {
+        "muse-spark-open": "3661c8fb-caf7-4118-aa18-65b84fea8e44"
+      },
+      "paramsTotalB": 816,
+      "paramsActiveB": 42,
+      "isMoE": true,
+      "layers": 62,
+      "heads": 128,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 62,
+          "kvHeads": 16,
+          "headDim": 64
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 822.04,
+      "contextK": 1049,
+      "license": "Muse Model License",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB",
+        "layers",
+        "heads",
+        "kv",
+        "isMoE",
+        "contextK",
+        "precision",
+        "nativeWeightBytes",
+        "license"
+      ],
+      "sources": [
+        "https://huggingface.co/meta-models/Muse-Spark-Open-816B-A42B",
+        "https://huggingface.co/blog/meta-muse-spark-open"
+      ],
+      "notes": "config.json is gated (manual approval); layout from the HF blog + card: 62 full GQA layers, 16 KV heads × 64 — the blog's 266 GB at 1M tokens matches exactly.",
+      "confidence": "medium"
+    },
+    "microsoft/phi-4": {
+      "aa": {
+        "phi-4": "ee708f92-374e-4123-b900-e22d7b2afc19"
+      },
+      "paramsTotalB": 14.7,
+      "paramsActiveB": 14.7,
+      "isMoE": false,
+      "layers": 40,
+      "heads": 40,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 40,
+          "kvHeads": 10,
+          "headDim": 128
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 14.66,
+      "contextK": 16,
+      "license": "MIT",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/microsoft/phi-4",
+        "https://huggingface.co/microsoft/phi-4/blob/main/config.json"
+      ],
+      "confidence": "high"
+    },
+    "microsoft/Phi-4-mini-instruct": {
+      "aa": {
+        "phi-4-mini": "9f873c2f-2c2d-4ccb-9e1b-71bf61b052be"
+      },
+      "paramsTotalB": 3.8,
+      "paramsActiveB": 3.8,
+      "isMoE": false,
+      "layers": 32,
+      "heads": 24,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 32,
+          "kvHeads": 8,
+          "headDim": 128
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 3.84,
+      "contextK": 131,
+      "license": "MIT",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/microsoft/Phi-4-mini-instruct",
+        "https://huggingface.co/microsoft/Phi-4-mini-instruct/blob/main/config.json"
+      ],
+      "confidence": "high"
+    },
+    "MiniMaxAI/MiniMax-M1-80k": {
+      "aa": {
+        "minimax-m1-80k": "9ca246a7-cf13-42c9-9182-5b5ad6b79026"
+      },
+      "paramsTotalB": 456,
+      "paramsActiveB": 45.9,
+      "isMoE": true,
+      "layers": 80,
+      "heads": 64,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 10,
+          "kvHeads": 8,
+          "headDim": 128
+        },
+        {
+          "kind": "linear",
+          "mixer": "lightning",
+          "layers": 70,
+          "state": 1048576,
+          "stateBytes": 4,
+          "conv": 0
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 456.09,
+      "contextK": 1000,
+      "license": "Apache-2.0",
+      "thinking": true,
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB",
+        "contextK"
+      ],
+      "sources": [
+        "https://huggingface.co/MiniMaxAI/MiniMax-M1-80k",
+        "https://huggingface.co/MiniMaxAI/MiniMax-M1-80k/blob/main/config.json"
+      ],
+      "notes": "Card: 1M-token input context (config max_position_embeddings 10,240,000 is a RoPE setting, not the trained window). Thinking: card: a hybrid-attention reasoning model (80K thinking budget).",
+      "confidence": "high"
+    },
+    "MiniMaxAI/MiniMax-M2": {
+      "aa": {
+        "minimax-m2": "f74ea286-cd29-4eb4-af14-1389b19c21e5"
+      },
+      "paramsTotalB": 230,
+      "paramsActiveB": 10,
+      "isMoE": true,
+      "layers": 62,
+      "heads": 48,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 62,
+          "kvHeads": 8,
+          "headDim": 128
+        }
+      ],
+      "nativeWeightBytes": 1.01,
+      "precision": "FP8",
+      "hfParamsB": 228.69,
+      "contextK": 197,
+      "license": "Modified MIT",
+      "thinking": true,
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/MiniMaxAI/MiniMax-M2",
+        "https://huggingface.co/MiniMaxAI/MiniMax-M2/blob/main/config.json"
+      ],
+      "notes": "Card: an interleaved thinking model; full GQA attention (not MLA); FP8 release.",
+      "confidence": "high"
+    },
+    "MiniMaxAI/MiniMax-M2.7": {
+      "aa": {
+        "minimax-m2-7": "4bbceacb-cf47-464b-b60f-e1d1fe016d67"
+      },
+      "paramsTotalB": 230,
+      "paramsActiveB": 10,
+      "isMoE": true,
+      "layers": 62,
+      "heads": 48,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 62,
+          "kvHeads": 8,
+          "headDim": 128
+        }
+      ],
+      "nativeWeightBytes": 1.01,
+      "precision": "FP8",
+      "hfParamsB": 228.69,
+      "contextK": 205,
+      "license": "MiniMax M2.7 Non-Commercial License",
+      "thinking": true,
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB",
+        "license"
+      ],
+      "sources": [
+        "https://huggingface.co/MiniMaxAI/MiniMax-M2.7",
+        "https://huggingface.co/MiniMaxAI/MiniMax-M2.7/blob/main/config.json",
+        "https://github.com/MiniMax-AI/MiniMax-M2.7/blob/main/LICENSE"
+      ],
+      "notes": "Full GQA attention (not MLA); FP8 release.",
+      "confidence": "high"
+    },
+    "MiniMaxAI/MiniMax-M3": {
+      "aa": {
+        "minimax-m3": "277f939a-985b-4b37-859d-b3eabc7c0b26"
+      },
+      "paramsTotalB": 428,
+      "paramsActiveB": 23,
+      "isMoE": true,
+      "layers": 60,
+      "heads": 64,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 60,
+          "kvHeads": 4,
+          "headDim": 128
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 427.04,
+      "contextK": 1049,
+      "license": "MiniMax Community License",
+      "thinking": true,
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/MiniMaxAI/MiniMax-M3",
+        "https://huggingface.co/MiniMaxAI/MiniMax-M3/blob/main/config.json"
+      ],
+      "notes": "GQA + MiniMax Sparse Attention: the sparse index keys are excluded, so the KV figure is a lower bound.",
+      "confidence": "high"
+    },
+    "mistralai/Devstral-Small-2-24B-Instruct-2512": {
+      "aa": {
+        "devstral-small-2": "ce819310-af7c-49d3-9a02-6845111e1788"
+      },
+      "paramsTotalB": 24,
+      "paramsActiveB": 24,
+      "isMoE": false,
+      "layers": 40,
+      "heads": 32,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 40,
+          "kvHeads": 8,
+          "headDim": 128
+        }
+      ],
+      "nativeWeightBytes": 1.07,
+      "precision": "FP8",
+      "hfParamsB": 24.01,
+      "contextK": 393,
+      "license": "Apache-2.0",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/mistralai/Devstral-Small-2-24B-Instruct-2512",
+        "https://huggingface.co/mistralai/Devstral-Small-2-24B-Instruct-2512/blob/main/config.json"
+      ],
+      "confidence": "high"
+    },
+    "mistralai/Ministral-3-14B-Instruct-2512": {
+      "aa": {
+        "ministral-3-14b": "713fae11-c75c-4f10-ae2c-8e4074cd58af"
+      },
+      "paramsTotalB": 13.5,
+      "paramsActiveB": 13.5,
+      "isMoE": false,
+      "layers": 40,
+      "heads": 32,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 40,
+          "kvHeads": 8,
+          "headDim": 128
+        }
+      ],
+      "nativeWeightBytes": 1.13,
+      "precision": "FP8",
+      "hfParamsB": 13.95,
+      "contextK": 262,
+      "license": "Apache-2.0",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/mistralai/Ministral-3-14B-Instruct-2512",
+        "https://huggingface.co/mistralai/Ministral-3-14B-Instruct-2512/blob/main/config.json"
+      ],
+      "confidence": "high"
+    },
+    "mistralai/Ministral-3-3B-Instruct-2512": {
+      "aa": {
+        "ministral-3-3b": "66f4ce73-9a9b-4b49-9c6e-bedb9bfdc720"
+      },
+      "paramsTotalB": 3.4,
+      "paramsActiveB": 3.4,
+      "isMoE": false,
+      "layers": 26,
+      "heads": 32,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 26,
+          "kvHeads": 8,
+          "headDim": 128
+        }
+      ],
+      "nativeWeightBytes": 1.21,
+      "precision": "FP8",
+      "hfParamsB": 3.85,
+      "contextK": 262,
+      "license": "Apache-2.0",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/mistralai/Ministral-3-3B-Instruct-2512",
+        "https://huggingface.co/mistralai/Ministral-3-3B-Instruct-2512/blob/main/config.json"
+      ],
+      "confidence": "high"
+    },
+    "mistralai/Ministral-3-8B-Instruct-2512": {
+      "aa": {
+        "ministral-3-8b": "9741f3c2-cbb1-4a3f-99ee-7bd7384d9038"
+      },
+      "paramsTotalB": 8.4,
+      "paramsActiveB": 8.4,
+      "isMoE": false,
+      "layers": 34,
+      "heads": 32,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 34,
+          "kvHeads": 8,
+          "headDim": 128
+        }
+      ],
+      "nativeWeightBytes": 1.17,
+      "precision": "FP8",
+      "hfParamsB": 8.92,
+      "contextK": 262,
+      "license": "Apache-2.0",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/mistralai/Ministral-3-8B-Instruct-2512",
+        "https://huggingface.co/mistralai/Ministral-3-8B-Instruct-2512/blob/main/config.json"
+      ],
+      "confidence": "high"
+    },
+    "mistralai/Mistral-Small-3.2-24B-Instruct-2506": {
+      "aa": {
+        "mistral-small-3-2": "43da3718-3d6e-40dd-901a-05664179ff7f"
+      },
+      "paramsTotalB": 24,
+      "paramsActiveB": 24,
+      "isMoE": false,
+      "layers": 40,
+      "heads": 32,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 40,
+          "kvHeads": 8,
+          "headDim": 128
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 24.01,
+      "contextK": 131,
+      "license": "Apache-2.0",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/mistralai/Mistral-Small-3.2-24B-Instruct-2506",
+        "https://huggingface.co/mistralai/Mistral-Small-3.2-24B-Instruct-2506/blob/main/config.json"
+      ],
+      "confidence": "high"
+    },
+    "moonshotai/Kimi-K2-Thinking": {
+      "aa": {
+        "kimi-k2-thinking": "bddebfd3-0a8d-47f5-b722-bc4c2ca5a5dc"
+      },
+      "paramsTotalB": 1000,
+      "paramsActiveB": 32,
+      "isMoE": true,
+      "layers": 61,
+      "heads": 64,
+      "kv": [
+        {
+          "kind": "mla",
+          "layers": 61,
+          "latent": 512,
+          "rope": 64
+        }
+      ],
+      "nativeWeightBytes": 0.58,
+      "precision": "INT4",
+      "hfParamsB": 1026.41,
+      "contextK": 262,
+      "license": "Modified MIT",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/moonshotai/Kimi-K2-Thinking",
+        "https://huggingface.co/moonshotai/Kimi-K2-Thinking/blob/main/config.json"
+      ],
+      "notes": "Card: native INT4 quantization-aware training — benchmarks are measured at INT4.",
+      "confidence": "high"
+    },
+    "moonshotai/Kimi-K3": {
+      "aa": {
+        "kimi-k3": "f7d2fc3e-1f7b-405f-818c-07952a4af78f"
+      },
+      "paramsTotalB": 2780,
+      "paramsActiveB": 104,
+      "isMoE": true,
+      "layers": 93,
+      "heads": 96,
+      "kv": [
+        {
+          "kind": "mla",
+          "layers": 24,
+          "latent": 512,
+          "rope": 64
+        },
+        {
+          "kind": "linear",
+          "mixer": "kda",
+          "layers": 69,
+          "state": 1572864,
+          "stateBytes": 4,
+          "conv": 110592
+        }
+      ],
+      "nativeWeightBytes": 0.56,
+      "precision": "MXFP4",
+      "hfParamsB": 2779.93,
+      "contextK": 1049,
+      "license": "Kimi K3 License",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB",
+        "license"
+      ],
+      "sources": [
+        "https://huggingface.co/moonshotai/Kimi-K3",
+        "https://huggingface.co/moonshotai/Kimi-K3/blob/main/config.json"
+      ],
+      "notes": "69 Kimi Delta Attention + 24 gated MLA layers; MXFP4 QAT weights (1.56 TB). Licence: separate agreement for MaaS above $20M revenue.",
+      "confidence": "high"
+    },
+    "Motif-Technologies/Motif-3": {
+      "aa": {
+        "motif-3": "b01eefb1-c9f8-412d-8353-571031a52f23"
+      },
+      "paramsTotalB": 314,
+      "paramsActiveB": 13.2,
+      "isMoE": true,
+      "layers": 53,
+      "heads": 80,
+      "kv": [
+        {
+          "kind": "mla",
+          "layers": 14,
+          "latent": 512,
+          "rope": 64
+        },
+        {
+          "kind": "swa",
+          "layers": 39,
+          "kvHeads": 1,
+          "headDim": 576,
+          "window": 128,
+          "vHeadDim": 0
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 314.84,
+      "contextK": 262,
+      "license": "MIT",
+      "thinking": true,
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/Motif-Technologies/Motif-3",
+        "https://huggingface.co/Motif-Technologies/Motif-3/blob/main/config.json"
+      ],
+      "notes": "Grouped differential attention on an MLA latent: 14 global + 39 sliding-window (128) layers. Thinking: card: reasoning model.",
+      "confidence": "high"
+    },
+    "nex-agi/Nex-N2-Pro": {
+      "aa": {
+        "nex-n2-pro": "3b5ba264-ad25-429b-a460-4d8698205f0d"
+      },
+      "base": "Qwen/Qwen3.5-397B-A17B",
+      "paramsTotalB": 397,
+      "paramsActiveB": 17,
+      "isMoE": true,
+      "layers": 60,
+      "heads": 32,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 15,
+          "kvHeads": 2,
+          "headDim": 256
+        },
+        {
+          "kind": "linear",
+          "mixer": "gated-deltanet",
+          "layers": 45,
+          "state": 1048576,
+          "stateBytes": 4,
+          "conv": 36864
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 396.8,
+      "contextK": 262,
+      "license": "Apache-2.0",
+      "thinking": true,
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/nex-agi/Nex-N2-Pro",
+        "https://huggingface.co/nex-agi/Nex-N2-Pro/blob/main/config.json"
+      ],
+      "notes": "An agentic post-train of Qwen3.5-397B-A17B (same layout). Thinking: card: thinking model (Qwen3.5-397B base).",
+      "confidence": "high"
+    },
+    "NousResearch/Hermes-4-405B": {
+      "aa": {
+        "hermes-4-llama-3-1-405b-reasoning": "82b207dd-d285-4a52-b2fc-2cbd27543899"
+      },
+      "paramsTotalB": 405,
+      "paramsActiveB": 405,
+      "isMoE": false,
+      "layers": 126,
+      "heads": 128,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 126,
+          "kvHeads": 8,
+          "headDim": 128
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 405.85,
+      "contextK": 131,
+      "license": "Llama 3 Community",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/NousResearch/Hermes-4-405B",
+        "https://huggingface.co/NousResearch/Hermes-4-405B/blob/main/config.json"
+      ],
+      "confidence": "high"
+    },
+    "NousResearch/Hermes-4-70B": {
+      "aa": {
+        "hermes-4-llama-3-1-70b-reasoning": "6ba9e8eb-8124-436d-842f-dbe36df80c27"
+      },
+      "paramsTotalB": 70,
+      "paramsActiveB": 70,
+      "isMoE": false,
+      "layers": 80,
+      "heads": 64,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 80,
+          "kvHeads": 8,
+          "headDim": 128
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 70.55,
+      "contextK": 131,
+      "license": "Llama 3 Community",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/NousResearch/Hermes-4-70B",
+        "https://huggingface.co/NousResearch/Hermes-4-70B/blob/main/config.json"
+      ],
+      "confidence": "high"
+    },
+    "nvidia/Llama-3_1-Nemotron-Ultra-253B-v1": {
+      "aa": {
+        "llama-3-1-nemotron-ultra-253b-v1-reasoning": "cf095603-72b6-47f8-8ee1-09a42890f92a"
+      },
+      "base": "meta-llama/Llama-3.1-405B-Instruct",
+      "paramsTotalB": 253,
+      "paramsActiveB": 253,
+      "isMoE": false,
+      "layers": 162,
+      "heads": 128,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 64,
+          "kvHeads": 8,
+          "headDim": 128
+        },
+        {
+          "kind": "none",
+          "layers": 98
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 253.4,
+      "contextK": 131,
+      "license": "NVIDIA Open Model License",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/nvidia/Llama-3_1-Nemotron-Ultra-253B-v1",
+        "https://huggingface.co/nvidia/Llama-3_1-Nemotron-Ultra-253B-v1/blob/main/config.json"
+      ],
+      "confidence": "high"
+    },
+    "nvidia/Llama-3_3-Nemotron-Super-49B-v1": {
+      "aa": {
+        "llama-3-3-nemotron-super-49b-reasoning": "1a8ba535-df18-459b-ad40-3199191296d7"
+      },
+      "base": "meta-llama/Llama-3.3-70B-Instruct",
+      "paramsTotalB": 49,
+      "paramsActiveB": 49,
+      "isMoE": false,
+      "layers": 80,
+      "heads": 64,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 49,
+          "kvHeads": 8,
+          "headDim": 128
+        },
+        {
+          "kind": "none",
+          "layers": 31
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 49.87,
+      "contextK": 131,
+      "license": "NVIDIA Open Model License",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/nvidia/Llama-3_3-Nemotron-Super-49B-v1",
+        "https://huggingface.co/nvidia/Llama-3_3-Nemotron-Super-49B-v1/blob/main/config.json"
+      ],
+      "confidence": "high"
+    },
+    "nvidia/Llama-3_3-Nemotron-Super-49B-v1_5": {
+      "aa": {
+        "llama-nemotron-super-49b-v1-5-reasoning": "e1cfa926-9e2b-4a0d-8c31-48366a5041c5"
+      },
+      "base": "meta-llama/Llama-3.3-70B-Instruct",
+      "paramsTotalB": 49,
+      "paramsActiveB": 49,
+      "isMoE": false,
+      "layers": 80,
+      "heads": 64,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 49,
+          "kvHeads": 8,
+          "headDim": 128
+        },
+        {
+          "kind": "none",
+          "layers": 31
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 49.87,
+      "contextK": 131,
+      "license": "NVIDIA Open Model License",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/nvidia/Llama-3_3-Nemotron-Super-49B-v1_5",
+        "https://huggingface.co/nvidia/Llama-3_3-Nemotron-Super-49B-v1_5/blob/main/config.json"
+      ],
+      "confidence": "high"
+    },
+    "nvidia/Llama-3.1-Nemotron-70B-Instruct-HF": {
+      "aa": {
+        "llama-3-1-nemotron-instruct-70b": "7393c56a-ec31-48e9-b804-c04f2d2cb641"
+      },
+      "base": "meta-llama/Llama-3.1-70B-Instruct",
+      "paramsTotalB": 70,
+      "paramsActiveB": 70,
+      "isMoE": false,
+      "layers": 80,
+      "heads": 64,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 80,
+          "kvHeads": 8,
+          "headDim": 128
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 70.55,
+      "contextK": 131,
+      "license": "Llama 3.1 Community",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/nvidia/Llama-3.1-Nemotron-70B-Instruct-HF",
+        "https://huggingface.co/nvidia/Llama-3.1-Nemotron-70B-Instruct-HF/blob/main/config.json"
+      ],
+      "confidence": "high"
+    },
+    "nvidia/Nemotron-Cascade-2-30B-A3B": {
+      "aa": {
+        "nemotron-cascade-2-30b-a3b": "9815da7d-70f4-44d6-b539-9ffef0faa152"
+      },
+      "paramsTotalB": 31.6,
+      "paramsActiveB": 3.2,
+      "isMoE": true,
+      "layers": 52,
+      "heads": 32,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 6,
+          "kvHeads": 2,
+          "headDim": 128
+        },
+        {
+          "kind": "linear",
+          "mixer": "mamba2",
+          "layers": 23,
+          "state": 524288,
+          "stateBytes": 4,
+          "conv": 18432
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 31.58,
+      "contextK": 262,
+      "license": "NVIDIA Open Model License",
+      "thinking": true,
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/nvidia/Nemotron-Cascade-2-30B-A3B",
+        "https://huggingface.co/nvidia/Nemotron-Cascade-2-30B-A3B/blob/main/config.json"
+      ],
+      "notes": "Same NemotronH layout as Nemotron 3 Nano 30B; card: thinking by default.",
+      "confidence": "high"
+    },
+    "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16": {
+      "aa": {
+        "nvidia-nemotron-3-nano-30b-a3b-reasoning": "76dcf6ef-39ea-4be0-b693-b88da25b4caf"
+      },
+      "paramsTotalB": 31.6,
+      "paramsActiveB": 3.2,
+      "isMoE": true,
+      "layers": 52,
+      "heads": 32,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 6,
+          "kvHeads": 2,
+          "headDim": 128
+        },
+        {
+          "kind": "linear",
+          "mixer": "mamba2",
+          "layers": 23,
+          "state": 524288,
+          "stateBytes": 4,
+          "conv": 18432
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 31.58,
+      "contextK": 262,
+      "license": "NVIDIA Nemotron Open Model License",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16",
+        "https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16/blob/main/config.json"
+      ],
+      "notes": "Card: 31.6B total, ~3.2B active (3.6B including embeddings).",
+      "confidence": "high"
+    },
+    "nvidia/NVIDIA-Nemotron-3-Nano-4B-BF16": {
+      "aa": {
+        "nvidia-nemotron-3-nano-4b": "9ee13921-62a4-425a-a22b-df3302198d93"
+      },
+      "paramsTotalB": 3.97,
+      "paramsActiveB": 3.97,
+      "isMoE": false,
+      "layers": 42,
+      "heads": 40,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 4,
+          "kvHeads": 8,
+          "headDim": 128
+        },
+        {
+          "kind": "linear",
+          "mixer": "mamba2",
+          "layers": 21,
+          "state": 983040,
+          "stateBytes": 2,
+          "conv": 29184
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 3.97,
+      "contextK": 262,
+      "license": "NVIDIA Nemotron Open Model License",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Nano-4B-BF16",
+        "https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Nano-4B-BF16/blob/main/config.json"
+      ],
+      "confidence": "high"
+    },
+    "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16": {
+      "aa": {
+        "nvidia-nemotron-3-super-120b-a12b": "63872e9c-3377-4a6b-b477-7bba244c38e9"
+      },
+      "paramsTotalB": 120,
+      "paramsActiveB": 12,
+      "isMoE": true,
+      "layers": 88,
+      "heads": 32,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 8,
+          "kvHeads": 2,
+          "headDim": 128
+        },
+        {
+          "kind": "linear",
+          "mixer": "mamba2",
+          "layers": 40,
+          "state": 1048576,
+          "stateBytes": 4,
+          "conv": 30720
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 123.61,
+      "contextK": 262,
+      "license": "NVIDIA Nemotron Open Model License",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16",
+        "https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16/blob/main/config.json"
+      ],
+      "notes": "88 layers = 40 Mamba-2 + 40 MoE + 8 attention.",
+      "confidence": "high"
+    },
+    "nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16": {
+      "aa": {
+        "nvidia-nemotron-3-ultra-550b-a55b": "5b52def2-ac9b-4465-ad80-91ea8079e253"
+      },
+      "paramsTotalB": 550,
+      "paramsActiveB": 55,
+      "isMoE": true,
+      "layers": 108,
+      "heads": 64,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 12,
+          "kvHeads": 2,
+          "headDim": 128
+        },
+        {
+          "kind": "linear",
+          "mixer": "mamba2",
+          "layers": 48,
+          "state": 2097152,
+          "stateBytes": 4,
+          "conv": 55296
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 560.52,
+      "contextK": 262,
+      "license": "OpenMDW-1.1",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16",
+        "https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16/blob/main/config.json"
+      ],
+      "confidence": "high"
+    },
+    "nvidia/NVIDIA-Nemotron-3.5-Bolt-74B-A9B-BF16": {
+      "aa": {
+        "nemotron-3-5-bolt-74b-a9b": "7d2aa050-888e-4c27-a92d-10337a4dfb3a"
+      },
+      "paramsTotalB": 74.9,
+      "paramsActiveB": 9,
+      "isMoE": true,
+      "layers": 88,
+      "heads": 32,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 8,
+          "kvHeads": 2,
+          "headDim": 128
+        },
+        {
+          "kind": "linear",
+          "mixer": "mamba2",
+          "layers": 40,
+          "state": 1048576,
+          "stateBytes": 4,
+          "conv": 30720
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 74.89,
+      "contextK": 262,
+      "license": "OpenMDW-1.1",
+      "thinking": true,
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Bolt-74B-A9B-BF16",
+        "https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Bolt-74B-A9B-BF16/blob/main/config.json"
+      ],
+      "notes": "Thinking: card: reasoning model (NemotronH Omni Reasoning).",
+      "confidence": "high"
+    },
+    "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16": {
+      "aa": {
+        "nemotron-3-5-lightning": "29976311-665a-4b2f-ac72-557c33e0758e"
+      },
+      "paramsTotalB": 31.6,
+      "paramsActiveB": 3.2,
+      "isMoE": true,
+      "layers": 52,
+      "heads": 32,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 6,
+          "kvHeads": 2,
+          "headDim": 128
+        },
+        {
+          "kind": "linear",
+          "mixer": "mamba2",
+          "layers": 23,
+          "state": 524288,
+          "stateBytes": 4,
+          "conv": 18432
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 32.91,
+      "contextK": 262,
+      "license": "OpenMDW-1.1",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16",
+        "https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16/blob/main/config.json"
+      ],
+      "notes": "Same NemotronH 30B-A3B layout and parameter count as Nemotron 3 Nano 30B (3.2B active excluding embeddings).",
+      "confidence": "high"
+    },
+    "nvidia/NVIDIA-Nemotron-Nano-9B-v2": {
+      "aa": {
+        "nvidia-nemotron-nano-9b-v2-reasoning": "f1d52583-9d20-4099-99ac-b5df9430c3b6"
+      },
+      "paramsTotalB": 9,
+      "paramsActiveB": 9,
+      "isMoE": false,
+      "layers": 56,
+      "heads": 40,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 4,
+          "kvHeads": 8,
+          "headDim": 128
+        },
+        {
+          "kind": "linear",
+          "mixer": "mamba2",
+          "layers": 27,
+          "state": 1310720,
+          "stateBytes": 2,
+          "conv": 36864
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 8.89,
+      "contextK": 131,
+      "license": "NVIDIA Open Model License",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/nvidia/NVIDIA-Nemotron-Nano-9B-v2",
+        "https://huggingface.co/nvidia/NVIDIA-Nemotron-Nano-9B-v2/blob/main/config.json"
+      ],
+      "confidence": "high"
+    },
+    "openai/gpt-oss-120b": {
+      "aa": {
+        "gpt-oss-120b": "f0083258-8646-45b8-8082-7aaf6c2ea82a"
+      },
+      "paramsTotalB": 117,
+      "paramsActiveB": 5.1,
+      "isMoE": true,
+      "layers": 36,
+      "heads": 64,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 18,
+          "kvHeads": 8,
+          "headDim": 64
+        },
+        {
+          "kind": "swa",
+          "layers": 18,
+          "kvHeads": 8,
+          "headDim": 64,
+          "window": 128
+        }
+      ],
+      "nativeWeightBytes": 0.56,
+      "precision": "MXFP4",
+      "hfParamsB": 116.83,
+      "contextK": 131,
+      "license": "Apache-2.0",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/openai/gpt-oss-120b",
+        "https://huggingface.co/openai/gpt-oss-120b/blob/main/config.json"
+      ],
+      "notes": "MoE weights post-trained in MXFP4; card: runs on a single 80 GB GPU.",
+      "confidence": "high"
+    },
+    "openai/gpt-oss-20b": {
+      "aa": {
+        "gpt-oss-20b": "36f73aaf-d38a-4b56-a2b3-d04d17186910"
+      },
+      "paramsTotalB": 20.9,
+      "paramsActiveB": 3.6,
+      "isMoE": true,
+      "layers": 24,
+      "heads": 64,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 12,
+          "kvHeads": 8,
+          "headDim": 64
+        },
+        {
+          "kind": "swa",
+          "layers": 12,
+          "kvHeads": 8,
+          "headDim": 64,
+          "window": 128
+        }
+      ],
+      "nativeWeightBytes": 0.66,
+      "precision": "MXFP4",
+      "hfParamsB": 20.91,
+      "contextK": 131,
+      "license": "Apache-2.0",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/openai/gpt-oss-20b",
+        "https://huggingface.co/openai/gpt-oss-20b/blob/main/config.json"
+      ],
+      "notes": "MoE weights in MXFP4; card: runs within 16 GB of memory.",
+      "confidence": "high"
+    },
+    "openbmb/MiniCPM5-2B": {
+      "aa": {
+        "minicpm5-2b": "641a073a-41c9-4773-9b02-d965c16607c5"
+      },
+      "paramsTotalB": 2.52,
+      "paramsActiveB": 2.52,
+      "isMoE": false,
+      "layers": 42,
+      "heads": 16,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 42,
+          "kvHeads": 2,
+          "headDim": 128
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 2.52,
+      "contextK": 131,
+      "license": "Apache-2.0",
+      "thinking": true,
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/openbmb/MiniCPM5-2B",
+        "https://huggingface.co/openbmb/MiniCPM5-2B/blob/main/config.json"
+      ],
+      "notes": "Hybrid thinking via enable_thinking; 2 KV heads. Thinking: card: hybrid thinking (enable_thinking).",
+      "confidence": "high"
+    },
+    "Qwen/Qwen2.5-72B-Instruct": {
+      "aa": {
+        "qwen2-5-72b-instruct": "b4f7d7a4-869a-4ee7-b17a-4046cd1e79fd"
+      },
+      "paramsTotalB": 72.7,
+      "paramsActiveB": 72.7,
+      "isMoE": false,
+      "layers": 80,
+      "heads": 64,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 80,
+          "kvHeads": 8,
+          "headDim": 128
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 72.71,
+      "contextK": 33,
+      "license": "Qwen License",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/Qwen/Qwen2.5-72B-Instruct",
+        "https://huggingface.co/Qwen/Qwen2.5-72B-Instruct/blob/main/config.json"
+      ],
+      "confidence": "high"
+    },
+    "Qwen/Qwen3-0.6B": {
+      "aa": {
+        "qwen3-0.6b-instruct-reasoning": "4ae6c88d-9e4a-4850-89fe-18a1c04a66cc"
+      },
+      "paramsTotalB": 0.6,
+      "paramsActiveB": 0.6,
+      "isMoE": false,
+      "layers": 28,
+      "heads": 16,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 28,
+          "kvHeads": 8,
+          "headDim": 128
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 0.75,
+      "contextK": 33,
+      "license": "Apache-2.0",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB",
+        "contextK"
+      ],
+      "sources": [
+        "https://huggingface.co/Qwen/Qwen3-0.6B",
+        "https://huggingface.co/Qwen/Qwen3-0.6B/blob/main/config.json"
+      ],
+      "notes": "Card: 32,768 native context.",
+      "confidence": "high"
+    },
+    "Qwen/Qwen3-1.7B": {
+      "aa": {
+        "qwen3-1.7b-instruct-reasoning": "5962d643-0a6f-4630-bb08-ab5720d80056"
+      },
+      "paramsTotalB": 1.7,
+      "paramsActiveB": 1.7,
+      "isMoE": false,
+      "layers": 28,
+      "heads": 16,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 28,
+          "kvHeads": 8,
+          "headDim": 128
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 2.03,
+      "contextK": 33,
+      "license": "Apache-2.0",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB",
+        "contextK"
+      ],
+      "sources": [
+        "https://huggingface.co/Qwen/Qwen3-1.7B",
+        "https://huggingface.co/Qwen/Qwen3-1.7B/blob/main/config.json"
+      ],
+      "notes": "Card: 32,768 native context.",
+      "confidence": "high"
+    },
+    "Qwen/Qwen3-14B": {
+      "aa": {
+        "qwen3-14b-instruct-reasoning": "4559e9f0-8aad-4681-89fb-68cb915e0f16"
+      },
+      "paramsTotalB": 14.8,
+      "paramsActiveB": 14.8,
+      "isMoE": false,
+      "layers": 40,
+      "heads": 40,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 40,
+          "kvHeads": 8,
+          "headDim": 128
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 14.77,
+      "contextK": 33,
+      "license": "Apache-2.0",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB",
+        "contextK"
+      ],
+      "sources": [
+        "https://huggingface.co/Qwen/Qwen3-14B",
+        "https://huggingface.co/Qwen/Qwen3-14B/blob/main/config.json"
+      ],
+      "notes": "Card: 32,768 native context (131,072 with YaRN).",
+      "confidence": "high"
+    },
+    "Qwen/Qwen3-235B-A22B-Thinking-2507": {
+      "aa": {
+        "qwen3-235b-a22b-instruct-2507-reasoning": "f6ccbe1d-bd7e-484b-9795-18cc9f91552d"
+      },
+      "paramsTotalB": 235,
+      "paramsActiveB": 22,
+      "isMoE": true,
+      "layers": 94,
+      "heads": 64,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 94,
+          "kvHeads": 4,
+          "headDim": 128
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 235.09,
+      "contextK": 262,
+      "license": "Apache-2.0",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/Qwen/Qwen3-235B-A22B-Thinking-2507",
+        "https://huggingface.co/Qwen/Qwen3-235B-A22B-Thinking-2507/blob/main/config.json"
+      ],
+      "confidence": "high"
+    },
+    "Qwen/Qwen3-30B-A3B-Thinking-2507": {
+      "aa": {
+        "qwen3-30b-a3b-2507-reasoning": "5e0164b3-d902-4bcb-a1b2-83b4f4cd6143"
+      },
+      "paramsTotalB": 30.5,
+      "paramsActiveB": 3.3,
+      "isMoE": true,
+      "layers": 48,
+      "heads": 32,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 48,
+          "kvHeads": 4,
+          "headDim": 128
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 30.53,
+      "contextK": 262,
+      "license": "Apache-2.0",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/Qwen/Qwen3-30B-A3B-Thinking-2507",
+        "https://huggingface.co/Qwen/Qwen3-30B-A3B-Thinking-2507/blob/main/config.json"
+      ],
+      "confidence": "high"
+    },
+    "Qwen/Qwen3-32B": {
+      "aa": {
+        "qwen3-32b-instruct-reasoning": "b00ecd62-a53f-4aed-b833-3e9d6b0170ba"
+      },
+      "paramsTotalB": 32.8,
+      "paramsActiveB": 32.8,
+      "isMoE": false,
+      "layers": 64,
+      "heads": 64,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 64,
+          "kvHeads": 8,
+          "headDim": 128
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 32.76,
+      "contextK": 33,
+      "license": "Apache-2.0",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB",
+        "contextK"
+      ],
+      "sources": [
+        "https://huggingface.co/Qwen/Qwen3-32B",
+        "https://huggingface.co/Qwen/Qwen3-32B/blob/main/config.json"
+      ],
+      "notes": "Card: 32,768 native context (131,072 with YaRN).",
+      "confidence": "high"
+    },
+    "Qwen/Qwen3-4B-Instruct-2507": {
+      "aa": {
+        "qwen3-4b-2507-instruct": "b0249961-b8b2-479d-8325-a29ea17c7b89"
+      },
+      "paramsTotalB": 4,
+      "paramsActiveB": 4,
+      "isMoE": false,
+      "layers": 36,
+      "heads": 32,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 36,
+          "kvHeads": 8,
+          "headDim": 128
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 4.02,
+      "contextK": 262,
+      "license": "Apache-2.0",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/Qwen/Qwen3-4B-Instruct-2507",
+        "https://huggingface.co/Qwen/Qwen3-4B-Instruct-2507/blob/main/config.json"
+      ],
+      "confidence": "high"
+    },
+    "Qwen/Qwen3-8B": {
+      "aa": {
+        "qwen3-8b-instruct": "b2dd592a-fbc5-458a-b26d-f3964cbab82f"
+      },
+      "paramsTotalB": 8.2,
+      "paramsActiveB": 8.2,
+      "isMoE": false,
+      "layers": 36,
+      "heads": 32,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 36,
+          "kvHeads": 8,
+          "headDim": 128
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 8.19,
+      "contextK": 33,
+      "license": "Apache-2.0",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB",
+        "contextK"
+      ],
+      "sources": [
+        "https://huggingface.co/Qwen/Qwen3-8B",
+        "https://huggingface.co/Qwen/Qwen3-8B/blob/main/config.json"
+      ],
+      "notes": "Card: 32,768 native context (131,072 with YaRN); config max_position_embeddings 40,960 includes generation headroom.",
+      "confidence": "high"
+    },
+    "Qwen/Qwen3-Coder-30B-A3B-Instruct": {
+      "aa": {
+        "qwen3-coder-30b-a3b-instruct": "da9fe224-8af3-46d7-a8c4-6220779c3f35"
+      },
+      "paramsTotalB": 30.5,
+      "paramsActiveB": 3.3,
+      "isMoE": true,
+      "layers": 48,
+      "heads": 32,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 48,
+          "kvHeads": 4,
+          "headDim": 128
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 30.53,
+      "contextK": 262,
+      "license": "Apache-2.0",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/Qwen/Qwen3-Coder-30B-A3B-Instruct",
+        "https://huggingface.co/Qwen/Qwen3-Coder-30B-A3B-Instruct/blob/main/config.json"
+      ],
+      "confidence": "high"
+    },
+    "Qwen/Qwen3-Coder-480B-A35B-Instruct": {
+      "aa": {
+        "qwen3-coder-480b-a35b-instruct": "093883ed-f5fc-443b-8e18-afbfb166699e"
+      },
+      "paramsTotalB": 480,
+      "paramsActiveB": 35,
+      "isMoE": true,
+      "layers": 62,
+      "heads": 96,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 62,
+          "kvHeads": 8,
+          "headDim": 128
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 480.15,
+      "contextK": 262,
+      "license": "Apache-2.0",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/Qwen/Qwen3-Coder-480B-A35B-Instruct",
+        "https://huggingface.co/Qwen/Qwen3-Coder-480B-A35B-Instruct/blob/main/config.json"
+      ],
+      "confidence": "high"
+    },
+    "Qwen/Qwen3-Next-80B-A3B-Thinking": {
+      "aa": {
+        "qwen3-next-80b-a3b-reasoning": "c8a79180-7d16-4474-8701-9a77c0baa56a"
+      },
+      "paramsTotalB": 80,
+      "paramsActiveB": 3,
+      "isMoE": true,
+      "layers": 48,
+      "heads": 16,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 12,
+          "kvHeads": 2,
+          "headDim": 256
+        },
+        {
+          "kind": "linear",
+          "mixer": "gated-deltanet",
+          "layers": 36,
+          "state": 524288,
+          "stateBytes": 2,
+          "conv": 24576
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 81.32,
+      "contextK": 262,
+      "license": "Apache-2.0",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/Qwen/Qwen3-Next-80B-A3B-Thinking",
+        "https://huggingface.co/Qwen/Qwen3-Next-80B-A3B-Thinking/blob/main/config.json"
+      ],
+      "confidence": "high"
+    },
+    "Qwen/Qwen3.5-0.8B": {
+      "aa": {
+        "qwen3-5-0-8b-non-reasoning": "405e2235-0925-4634-a3c7-fbd5f6394bc0"
+      },
+      "paramsTotalB": 0.8,
+      "paramsActiveB": 0.8,
+      "isMoE": false,
+      "layers": 24,
+      "heads": 8,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 6,
+          "kvHeads": 2,
+          "headDim": 256
+        },
+        {
+          "kind": "linear",
+          "mixer": "gated-deltanet",
+          "layers": 18,
+          "state": 262144,
+          "stateBytes": 4,
+          "conv": 18432
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 0.87,
+      "contextK": 262,
+      "license": "Apache-2.0",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/Qwen/Qwen3.5-0.8B",
+        "https://huggingface.co/Qwen/Qwen3.5-0.8B/blob/main/config.json"
+      ],
+      "confidence": "high"
+    },
+    "Qwen/Qwen3.5-122B-A10B": {
+      "aa": {
+        "qwen3-5-122b-a10b": "2236df45-0699-40d1-b5cc-69ee345d2257"
+      },
+      "paramsTotalB": 122,
+      "paramsActiveB": 10,
+      "isMoE": true,
+      "layers": 48,
+      "heads": 32,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 12,
+          "kvHeads": 2,
+          "headDim": 256
+        },
+        {
+          "kind": "linear",
+          "mixer": "gated-deltanet",
+          "layers": 36,
+          "state": 1048576,
+          "stateBytes": 4,
+          "conv": 36864
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 125.09,
+      "contextK": 262,
+      "license": "Apache-2.0",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/Qwen/Qwen3.5-122B-A10B",
+        "https://huggingface.co/Qwen/Qwen3.5-122B-A10B/blob/main/config.json"
+      ],
+      "confidence": "high"
+    },
+    "Qwen/Qwen3.5-27B": {
+      "aa": {
+        "qwen3-5-27b": "169e47f5-3d4d-4ad4-8f8b-ab46f0c73f67"
+      },
+      "paramsTotalB": 27,
+      "paramsActiveB": 27,
+      "isMoE": false,
+      "layers": 64,
+      "heads": 24,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 16,
+          "kvHeads": 4,
+          "headDim": 256
+        },
+        {
+          "kind": "linear",
+          "mixer": "gated-deltanet",
+          "layers": 48,
+          "state": 786432,
+          "stateBytes": 4,
+          "conv": 30720
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 27.78,
+      "contextK": 262,
+      "license": "Apache-2.0",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/Qwen/Qwen3.5-27B",
+        "https://huggingface.co/Qwen/Qwen3.5-27B/blob/main/config.json"
+      ],
+      "confidence": "high"
+    },
+    "Qwen/Qwen3.5-2B": {
+      "aa": {
+        "qwen3-5-2b": "5d4acc80-7a88-4e84-bfe7-99071b84e6a4"
+      },
+      "paramsTotalB": 2,
+      "paramsActiveB": 2,
+      "isMoE": false,
+      "layers": 24,
+      "heads": 8,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 6,
+          "kvHeads": 2,
+          "headDim": 256
+        },
+        {
+          "kind": "linear",
+          "mixer": "gated-deltanet",
+          "layers": 18,
+          "state": 262144,
+          "stateBytes": 4,
+          "conv": 18432
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 2.27,
+      "contextK": 262,
+      "license": "Apache-2.0",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/Qwen/Qwen3.5-2B",
+        "https://huggingface.co/Qwen/Qwen3.5-2B/blob/main/config.json"
+      ],
+      "confidence": "high"
+    },
+    "Qwen/Qwen3.5-35B-A3B": {
+      "aa": {
+        "qwen3-5-35b-a3b": "46d8315e-1630-463f-ab62-84185fa0faab"
+      },
+      "paramsTotalB": 35,
+      "paramsActiveB": 3,
+      "isMoE": true,
+      "layers": 40,
+      "heads": 16,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 10,
+          "kvHeads": 2,
+          "headDim": 256
+        },
+        {
+          "kind": "linear",
+          "mixer": "gated-deltanet",
+          "layers": 30,
+          "state": 524288,
+          "stateBytes": 4,
+          "conv": 24576
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 35.95,
+      "contextK": 262,
+      "license": "Apache-2.0",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/Qwen/Qwen3.5-35B-A3B",
+        "https://huggingface.co/Qwen/Qwen3.5-35B-A3B/blob/main/config.json"
+      ],
+      "confidence": "high"
+    },
+    "Qwen/Qwen3.5-397B-A17B": {
+      "aa": {
+        "qwen3-5-397b-a17b": "0e66bae9-41f1-42fc-9276-ce8cb6f72919"
+      },
+      "paramsTotalB": 397,
+      "paramsActiveB": 17,
+      "isMoE": true,
+      "layers": 60,
+      "heads": 32,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 15,
+          "kvHeads": 2,
+          "headDim": 256
+        },
+        {
+          "kind": "linear",
+          "mixer": "gated-deltanet",
+          "layers": 45,
+          "state": 1048576,
+          "stateBytes": 4,
+          "conv": 36864
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 403.4,
+      "contextK": 262,
+      "license": "Apache-2.0",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/Qwen/Qwen3.5-397B-A17B",
+        "https://huggingface.co/Qwen/Qwen3.5-397B-A17B/blob/main/config.json"
+      ],
+      "confidence": "high"
+    },
+    "Qwen/Qwen3.5-4B": {
+      "aa": {
+        "qwen3-5-4b": "651ef7ae-9a8f-477e-9c8e-460aa156ba02"
+      },
+      "paramsTotalB": 4,
+      "paramsActiveB": 4,
+      "isMoE": false,
+      "layers": 32,
+      "heads": 16,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 8,
+          "kvHeads": 4,
+          "headDim": 256
+        },
+        {
+          "kind": "linear",
+          "mixer": "gated-deltanet",
+          "layers": 24,
+          "state": 524288,
+          "stateBytes": 4,
+          "conv": 24576
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 4.66,
+      "contextK": 262,
+      "license": "Apache-2.0",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/Qwen/Qwen3.5-4B",
+        "https://huggingface.co/Qwen/Qwen3.5-4B/blob/main/config.json"
+      ],
+      "confidence": "high"
+    },
+    "Qwen/Qwen3.5-9B": {
+      "aa": {
+        "qwen3-5-9b": "2d28a13a-096e-475a-beb8-26bbd1c7d51c"
+      },
+      "paramsTotalB": 9,
+      "paramsActiveB": 9,
+      "isMoE": false,
+      "layers": 32,
+      "heads": 16,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 8,
+          "kvHeads": 4,
+          "headDim": 256
+        },
+        {
+          "kind": "linear",
+          "mixer": "gated-deltanet",
+          "layers": 24,
+          "state": 524288,
+          "stateBytes": 4,
+          "conv": 24576
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 9.65,
+      "contextK": 262,
+      "license": "Apache-2.0",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/Qwen/Qwen3.5-9B",
+        "https://huggingface.co/Qwen/Qwen3.5-9B/blob/main/config.json"
+      ],
+      "confidence": "high"
+    },
+    "Qwen/Qwen3.6-27B": {
+      "aa": {
+        "qwen3-6-27b": "8c29d66d-bf98-4ea3-8572-5409353ecc66"
+      },
+      "paramsTotalB": 27,
+      "paramsActiveB": 27,
+      "isMoE": false,
+      "layers": 64,
+      "heads": 24,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 16,
+          "kvHeads": 4,
+          "headDim": 256
+        },
+        {
+          "kind": "linear",
+          "mixer": "gated-deltanet",
+          "layers": 48,
+          "state": 786432,
+          "stateBytes": 4,
+          "conv": 30720
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 27.78,
+      "contextK": 262,
+      "license": "Apache-2.0",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/Qwen/Qwen3.6-27B",
+        "https://huggingface.co/Qwen/Qwen3.6-27B/blob/main/config.json"
+      ],
+      "confidence": "high"
+    },
+    "Qwen/Qwen3.6-35B-A3B": {
+      "aa": {
+        "qwen3-6-35b-a3b": "8665ca00-c687-44c7-875c-22618cb31c4f"
+      },
+      "paramsTotalB": 35,
+      "paramsActiveB": 3,
+      "isMoE": true,
+      "layers": 40,
+      "heads": 16,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 10,
+          "kvHeads": 2,
+          "headDim": 256
+        },
+        {
+          "kind": "linear",
+          "mixer": "gated-deltanet",
+          "layers": 30,
+          "state": 524288,
+          "stateBytes": 4,
+          "conv": 24576
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 35.95,
+      "contextK": 262,
+      "license": "Apache-2.0",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/Qwen/Qwen3.6-35B-A3B",
+        "https://huggingface.co/Qwen/Qwen3.6-35B-A3B/blob/main/config.json"
+      ],
+      "confidence": "high"
+    },
+    "Qwen/Qwen3.8-2.4T-A95B": {
+      "aa": {
+        "qwen3-8-2-4t-a95b": "8df710d3-9dae-4498-9b4e-9818238e6f31"
+      },
+      "paramsTotalB": 2446,
+      "paramsActiveB": 95,
+      "isMoE": true,
+      "layers": 92,
+      "heads": 64,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 23,
+          "kvHeads": 4,
+          "headDim": 256
+        },
+        {
+          "kind": "linear",
+          "mixer": "gated-deltanet",
+          "layers": 69,
+          "state": 2097152,
+          "stateBytes": 4,
+          "conv": 61440
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 2446.18,
+      "contextK": 262,
+      "license": "Qwen3.8 Max License",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB",
+        "license"
+      ],
+      "sources": [
+        "https://huggingface.co/Qwen/Qwen3.8-2.4T-A95B",
+        "https://huggingface.co/Qwen/Qwen3.8-2.4T-A95B/blob/main/config.json"
+      ],
+      "notes": "69 Gated DeltaNet + 23 gated full-attention layers.",
+      "confidence": "high"
+    },
+    "Qwen/Qwen3.8-27B": {
+      "aa": {
+        "qwen3-8-27b": "b01dee41-c62b-48ed-8d16-984adc405e5c"
+      },
+      "paramsTotalB": 27.8,
+      "paramsActiveB": 27.8,
+      "isMoE": false,
+      "layers": 64,
+      "heads": 24,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 16,
+          "kvHeads": 4,
+          "headDim": 256
+        },
+        {
+          "kind": "linear",
+          "mixer": "gated-deltanet",
+          "layers": 48,
+          "state": 786432,
+          "stateBytes": 4,
+          "conv": 30720
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 27.78,
+      "contextK": 262,
+      "license": "Apache-2.0",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/Qwen/Qwen3.8-27B",
+        "https://huggingface.co/Qwen/Qwen3.8-27B/blob/main/config.json"
+      ],
+      "notes": "48 Gated DeltaNet + 16 gated full-attention layers (the Qwen3.6-27B layout).",
+      "confidence": "high"
+    },
+    "Qwen/Qwen3.8-Flash-Next": {
+      "aa": {
+        "qwen3-8-flash-next": "9ac3908c-9eb2-44db-8c01-3ec7da6fc2ae"
+      },
+      "paramsTotalB": 180,
+      "paramsActiveB": 6,
+      "isMoE": true,
+      "layers": 48,
+      "heads": 24,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 12,
+          "kvHeads": 2,
+          "headDim": 256
+        },
+        {
+          "kind": "linear",
+          "mixer": "gated-deltanet",
+          "layers": 36,
+          "state": 786432,
+          "stateBytes": 4,
+          "conv": 30720
+        },
+        {
+          "kind": "indexer",
+          "layers": 12,
+          "dim": 128,
+          "ratio": 4
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 180,
+      "contextK": 262,
+      "license": "Qwen Community License 1.0",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB",
+        "license"
+      ],
+      "sources": [
+        "https://huggingface.co/Qwen/Qwen3.8-Flash-Next",
+        "https://huggingface.co/Qwen/Qwen3.8-Flash-Next/blob/main/config.json"
+      ],
+      "notes": "36 Gated DeltaNet + 12 sparse full-attention layers; 180B total includes a 51B n-gram embedding table.",
+      "confidence": "high"
+    },
+    "ServiceNow-AI/Apriel-1.5-15b-Thinker": {
+      "aa": {
+        "apriel-v1-5-15b-thinker": "ac1031bc-c53e-4af7-9c6e-2005e0ff44fa"
+      },
+      "paramsTotalB": 15,
+      "paramsActiveB": 15,
+      "isMoE": false,
+      "layers": 48,
+      "heads": 32,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 48,
+          "kvHeads": 8,
+          "headDim": 128
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 14.86,
+      "contextK": 262,
+      "license": "MIT",
+      "thinking": true,
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/ServiceNow-AI/Apriel-1.5-15b-Thinker",
+        "https://huggingface.co/ServiceNow-AI/Apriel-1.5-15b-Thinker/blob/main/config.json"
+      ],
+      "confidence": "high"
+    },
+    "ServiceNow-AI/Apriel-1.6-15b-Thinker": {
+      "aa": {
+        "apriel-v1-6-15b-thinker": "a71c1a35-ccc8-43f0-a5a2-070a690b9a00"
+      },
+      "paramsTotalB": 15,
+      "paramsActiveB": 15,
+      "isMoE": false,
+      "layers": 48,
+      "heads": 32,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 48,
+          "kvHeads": 8,
+          "headDim": 128
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 14.86,
+      "contextK": 262,
+      "license": "MIT",
+      "thinking": true,
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/ServiceNow-AI/Apriel-1.6-15b-Thinker",
+        "https://huggingface.co/ServiceNow-AI/Apriel-1.6-15b-Thinker/blob/main/config.json"
+      ],
+      "confidence": "high"
+    },
+    "skt/A.X-K2": {
+      "aa": {
+        "a-x-k2": "8215372b-66ff-457b-855e-e8abeafc9571"
+      },
+      "paramsTotalB": 688,
+      "paramsActiveB": 33,
+      "isMoE": true,
+      "layers": 61,
+      "heads": 64,
+      "kv": [
+        {
+          "kind": "mla",
+          "layers": 61,
+          "latent": 512,
+          "rope": 64
+        },
+        {
+          "kind": "indexer",
+          "layers": 61,
+          "dim": 128
+        }
+      ],
+      "nativeWeightBytes": 1,
+      "precision": "FP8",
+      "hfParamsB": 691.69,
+      "contextK": 262,
+      "license": "Apache-2.0",
+      "thinking": true,
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/skt/A.X-K2",
+        "https://huggingface.co/skt/A.X-K2/blob/main/config.json"
+      ],
+      "notes": "Thinking: card: reasoning model.",
+      "confidence": "high"
+    },
+    "stepfun-ai/Step-5-Preview": {
+      "aa": {
+        "step-5": "094ea3e3-ce41-419e-8bd1-723389663158"
+      },
+      "paramsTotalB": 600,
+      "paramsActiveB": 27,
+      "isMoE": true,
+      "layers": 92,
+      "heads": 64,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 23,
+          "kvHeads": 4,
+          "headDim": 192
+        },
+        {
+          "kind": "swa",
+          "layers": 69,
+          "kvHeads": 4,
+          "headDim": 192,
+          "window": 512
+        }
+      ],
+      "nativeWeightBytes": 1.07,
+      "precision": "FP8",
+      "hfParamsB": 604.34,
+      "contextK": 1049,
+      "license": "StepFun Model License 1.0",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB",
+        "license"
+      ],
+      "sources": [
+        "https://huggingface.co/stepfun-ai/Step-5-Preview",
+        "https://huggingface.co/stepfun-ai/Step-5-Preview/blob/main/config.json"
+      ],
+      "notes": "69 sliding-window (512) + 23 full sparse-GQA layers (sparse-indexer keys not counted); FP8 release.",
+      "confidence": "high"
+    },
+    "tencent/Hy3": {
+      "aa": {
+        "hy3": "b23e6c69-96e5-44c9-8f58-4b42e0c399d5"
+      },
+      "paramsTotalB": 295,
+      "paramsActiveB": 21,
+      "isMoE": true,
+      "layers": 80,
+      "heads": 64,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 80,
+          "kvHeads": 8,
+          "headDim": 128
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 298.79,
+      "contextK": 262,
+      "license": "Apache-2.0",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/tencent/Hy3",
+        "https://huggingface.co/tencent/Hy3/blob/main/config.json"
+      ],
+      "notes": "Plain full-attention GQA — the high-KV foil for the 2026 hybrids.",
+      "confidence": "high"
+    },
+    "thinkingmachines/Inkling": {
+      "aa": {
+        "inkling": "0de09623-2b1a-4c8d-86ef-7f5245d4e24b"
+      },
+      "paramsTotalB": 975,
+      "paramsActiveB": 41,
+      "isMoE": true,
+      "layers": 66,
+      "heads": 64,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 11,
+          "kvHeads": 8,
+          "headDim": 128
+        },
+        {
+          "kind": "swa",
+          "layers": 55,
+          "kvHeads": 16,
+          "headDim": 128,
+          "window": 512
+        },
+        {
+          "kind": "linear",
+          "mixer": "block-conv",
+          "layers": 66,
+          "state": 0,
+          "stateBytes": 2,
+          "conv": 18432
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 952.38,
+      "contextK": 1049,
+      "license": "Apache-2.0",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB",
+        "contextK"
+      ],
+      "sources": [
+        "https://huggingface.co/thinkingmachines/Inkling",
+        "https://huggingface.co/thinkingmachines/Inkling/blob/main/config.json"
+      ],
+      "notes": "55 sliding-window (512) + 11 global GQA layers.",
+      "confidence": "high"
+    },
+    "thinkingmachines/Inkling-Small": {
+      "aa": {
+        "inkling-small": "7261504e-503c-4a66-a9d3-a3272cdf9ad6"
+      },
+      "paramsTotalB": 276,
+      "paramsActiveB": 12,
+      "isMoE": true,
+      "layers": 42,
+      "heads": 32,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 7,
+          "kvHeads": 8,
+          "headDim": 128
+        },
+        {
+          "kind": "swa",
+          "layers": 35,
+          "kvHeads": 8,
+          "headDim": 128,
+          "window": 512
+        },
+        {
+          "kind": "linear",
+          "mixer": "block-conv",
+          "layers": 42,
+          "state": 0,
+          "stateBytes": 2,
+          "conv": 12288
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 265.96,
+      "contextK": 1049,
+      "license": "Apache-2.0",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB",
+        "contextK"
+      ],
+      "sources": [
+        "https://huggingface.co/thinkingmachines/Inkling-Small",
+        "https://huggingface.co/thinkingmachines/Inkling-Small/blob/main/config.json"
+      ],
+      "notes": "35 sliding-window (512) + 7 global GQA layers; short convs in every block; card: 1M context (model_max_length 1,048,576).",
+      "confidence": "high"
+    },
+    "upstage/Solar-Open-100B": {
+      "aa": {
+        "solar-open-100b-reasoning": "59a1bb20-9170-4dc2-ba9c-12d326cf068e"
+      },
+      "paramsTotalB": 102.6,
+      "paramsActiveB": 12,
+      "isMoE": true,
+      "layers": 48,
+      "heads": 64,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 48,
+          "kvHeads": 8,
+          "headDim": 128
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 102.65,
+      "contextK": 131,
+      "license": "Upstage Solar License",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/upstage/Solar-Open-100B",
+        "https://huggingface.co/upstage/Solar-Open-100B/blob/main/config.json"
+      ],
+      "notes": "Card: 102B total / 12B active MoE (102.6B), 128K context.",
+      "confidence": "high"
+    },
+    "upstage/Solar-Open2-250B": {
+      "aa": {
+        "solar-open2-250b": "7eabd8ca-bf43-4d56-b3df-efd1c4eebfb0"
+      },
+      "paramsTotalB": 250,
+      "paramsActiveB": 15,
+      "isMoE": true,
+      "layers": 48,
+      "heads": 64,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 12,
+          "kvHeads": 8,
+          "headDim": 128
+        },
+        {
+          "kind": "linear",
+          "mixer": "kda",
+          "layers": 36,
+          "state": 1048576,
+          "stateBytes": 4,
+          "conv": 73728
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 250.29,
+      "contextK": 1049,
+      "license": "Upstage Solar License",
+      "thinking": true,
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB",
+        "license"
+      ],
+      "sources": [
+        "https://huggingface.co/upstage/Solar-Open2-250B",
+        "https://huggingface.co/upstage/Solar-Open2-250B/blob/main/config.json"
+      ],
+      "notes": "12 NoPE GQA + 36 KDA linear layers; card: only 12 of 48 layers keep a KV cache. Thinking: card: reasoning model.",
+      "confidence": "high"
+    },
+    "XiaomiMiMo/MiMo-V2.6-Flash-MOPD": {
+      "aa": {
+        "mimo-v2-6-flash": "127de816-57d3-4037-8484-480a613cd413"
+      },
+      "paramsTotalB": 309,
+      "paramsActiveB": 15,
+      "isMoE": true,
+      "layers": 48,
+      "heads": 64,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 9,
+          "kvHeads": 4,
+          "headDim": 192,
+          "vHeadDim": 128
+        },
+        {
+          "kind": "swa",
+          "layers": 39,
+          "kvHeads": 8,
+          "headDim": 192,
+          "window": 128,
+          "vHeadDim": 128
+        }
+      ],
+      "nativeWeightBytes": 0.56,
+      "precision": "MXFP4",
+      "hfParamsB": 310.76,
+      "contextK": 1049,
+      "license": "MIT",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/XiaomiMiMo/MiMo-V2.6-Flash-MOPD",
+        "https://huggingface.co/XiaomiMiMo/MiMo-V2.6-Flash-MOPD/blob/main/config.json"
+      ],
+      "notes": "39 sliding-window (128) + 9 global GQA layers; FP8 with MXFP4-stored experts.",
+      "confidence": "high"
+    },
+    "XiaomiMiMo/MiMo-V2.6-Pro-MOPD": {
+      "aa": {
+        "mimo-v2-6-pro": "24d8fdfe-6241-424e-b7b7-1b6efb06e4fb"
+      },
+      "paramsTotalB": 1020,
+      "paramsActiveB": 42,
+      "isMoE": true,
+      "layers": 70,
+      "heads": 128,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 10,
+          "kvHeads": 8,
+          "headDim": 192,
+          "vHeadDim": 128
+        },
+        {
+          "kind": "swa",
+          "layers": 60,
+          "kvHeads": 8,
+          "headDim": 192,
+          "window": 128,
+          "vHeadDim": 128
+        }
+      ],
+      "nativeWeightBytes": 0.55,
+      "precision": "MXFP4",
+      "hfParamsB": 1024.22,
+      "contextK": 1049,
+      "license": "MIT",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/XiaomiMiMo/MiMo-V2.6-Pro-MOPD",
+        "https://huggingface.co/XiaomiMiMo/MiMo-V2.6-Pro-MOPD/blob/main/config.json"
+      ],
+      "notes": "60 sliding-window (128) + 10 global GQA layers; K 192 / V 128 head dims; FP8 with MXFP4-stored experts.",
+      "confidence": "high"
+    },
+    "zai-org/GLM-4.5-Air": {
+      "aa": {
+        "glm-4-5-air": "5d303dc9-c027-401f-9803-4e9aa3331007"
+      },
+      "paramsTotalB": 106,
+      "paramsActiveB": 12,
+      "isMoE": true,
+      "layers": 46,
+      "heads": 96,
+      "kv": [
+        {
+          "kind": "full",
+          "layers": 46,
+          "kvHeads": 8,
+          "headDim": 128
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 110.47,
+      "contextK": 131,
+      "license": "MIT",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/zai-org/GLM-4.5-Air",
+        "https://huggingface.co/zai-org/GLM-4.5-Air/blob/main/config.json"
+      ],
+      "confidence": "high"
+    },
+    "zai-org/GLM-5.2": {
+      "aa": {
+        "glm-5-2": "f7a4ea75-e548-4069-80d4-9be8bc7c009b"
+      },
+      "paramsTotalB": 753,
+      "paramsActiveB": 40,
+      "isMoE": true,
+      "layers": 78,
+      "heads": 64,
+      "kv": [
+        {
+          "kind": "mla",
+          "layers": 78,
+          "latent": 512,
+          "rope": 64
+        },
+        {
+          "kind": "indexer",
+          "layers": 21,
+          "dim": 128
+        }
+      ],
+      "nativeWeightBytes": 2,
+      "precision": "BF16",
+      "hfParamsB": 753.33,
+      "contextK": 1049,
+      "license": "MIT",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/zai-org/GLM-5.2",
+        "https://huggingface.co/zai-org/GLM-5.2/blob/main/config.json"
+      ],
+      "notes": "MLA (kv_lora 512 + rope 64) on all 78 layers + DSA lightning-indexer keys on the 21 full-indexer layers.",
+      "confidence": "high"
+    },
+    "zai-org/GLM-5.3": {
+      "aa": {
+        "glm-5-3": "cd684ea4-b475-4269-b001-d469d06d8a7a"
+      },
+      "paramsTotalB": 753,
+      "paramsActiveB": 40,
+      "isMoE": true,
+      "layers": 78,
+      "heads": 64,
+      "kv": [
+        {
+          "kind": "mla",
+          "layers": 78,
+          "latent": 512,
+          "rope": 64
+        },
+        {
+          "kind": "indexer",
+          "layers": 21,
+          "dim": 128
+        }
+      ],
+      "nativeWeightBytes": 1,
+      "precision": "FP8",
+      "hfParamsB": 753.33,
+      "contextK": 1049,
+      "license": "GLM-5.3 License (MIT-style)",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB",
+        "license"
+      ],
+      "sources": [
+        "https://huggingface.co/zai-org/GLM-5.3",
+        "https://huggingface.co/zai-org/GLM-5.3/blob/main/config.json"
+      ],
+      "notes": "Same 753B/40B MLA + DSA layout as GLM-5.2; FP8 release.",
+      "confidence": "high"
+    },
+    "zai-org/GLM-5.3-Flash": {
+      "aa": {
+        "glm-5-3-flash": "19496b81-9f41-4214-a77a-1df803b3c5ae"
+      },
+      "paramsTotalB": 321,
+      "paramsActiveB": 18,
+      "isMoE": true,
+      "layers": 45,
+      "heads": 64,
+      "kv": [
+        {
+          "kind": "mla",
+          "layers": 11,
+          "latent": 512,
+          "rope": 0
+        },
+        {
+          "kind": "indexer",
+          "layers": 45,
+          "dim": 128
+        },
+        {
+          "kind": "linear",
+          "mixer": "kda",
+          "layers": 34,
+          "state": 1048576,
+          "stateBytes": 4,
+          "conv": 73728
+        }
+      ],
+      "nativeWeightBytes": 1.02,
+      "precision": "FP8",
+      "hfParamsB": 321.32,
+      "contextK": 1049,
+      "license": "MIT",
+      "manual": [
+        "paramsTotalB",
+        "paramsActiveB"
+      ],
+      "sources": [
+        "https://huggingface.co/zai-org/GLM-5.3-Flash",
+        "https://huggingface.co/zai-org/GLM-5.3-Flash/blob/main/config.json"
+      ],
+      "notes": "34 KDA + 11 DSA/MLA layers (no RoPE dims); indexer keys on all 45 layers — matches Z.ai's 4.4× smaller KV than GLM-5.3 within 5%.",
+      "confidence": "high"
+    }
+  }
+}

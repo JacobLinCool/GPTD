@@ -481,7 +481,7 @@ export class InspectPanel {
       )
       this.cardModel.set(
         2,
-        t('rack.model.arch', { win: (model.contextWindowK).toFixed(0), bytes: model.weightBytes, attn: model.attn }),
+        t('rack.model.arch', { win: (model.contextWindowK).toFixed(0), bytes: model.nativeWeightBytes, attn: t(`attn.${model.attn}`, undefined, model.attn) }),
       )
       this.cardModel.set(
         3,

@@ -615,6 +615,21 @@ export const en: Record<string, string> = {
   // ===== [/ws:sim] =====
 
   // ===== [ws:models] model roster: new models, provenance labels =====
+  'attn.MHA': 'MHA',
+  'attn.MQA': 'MQA',
+  'attn.GQA': 'GQA',
+  'attn.MLA': 'MLA',
+  'attn.hybrid-linear': 'Hybrid (linear + attention)',
+  'attn.hybrid-swa': 'Hybrid (sliding window + global)',
+  'attn.csa': 'Compressed sparse attention',
+  'models.detail.kv': 'KV {kvb} KB/token on {kvLayers} of {layers} layers · +{state} MB/request',
+  'models.detail.precision': 'Released in {precision} · {bytes} B/param',
+  'models.detail.thinking': 'Thinks ~{tokens} hidden tokens per answer',
+  'models.detail.instant': 'Answers without hidden reasoning',
+  'models.bench.bridged': '≈ bridged from {preds} (±{sd})',
+  'models.bench.equated': 'equated to the 2026-06 reference scale',
+  'models.bench.latest': 'from the latest Artificial Analysis snapshot',
+  'models.bench.legend': '≈ = bridged: Artificial Analysis no longer publishes this benchmark',
   // ===== [/ws:models] =====
 
   // ===== [ws:physics] serving physics: thinking tokens, parallelism, batching, infra nodes =====

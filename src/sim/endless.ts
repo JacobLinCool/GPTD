@@ -4,9 +4,9 @@ import { WAVES } from './content'
 /**
  * Endless mode: past the authored campaign, waves are generated procedurally
  * and the "benchmarks" keep hardening — request complexity, volume, workload,
- * and rewards all climb with the wave index. The model tree caps at 2T while
- * difficulty does not, so every endless run eventually ends; the score is how
- * deep you got.
+ * and rewards all climb with the wave index. The model tree tops out at the
+ * roster's largest open checkpoint (~2.8T) while difficulty does not, so every
+ * endless run eventually ends; the score is how deep you got.
  */
 export interface EndlessScaling {
   count: number

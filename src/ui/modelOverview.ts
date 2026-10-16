@@ -603,8 +603,10 @@ export class ModelOverview {
     const lines: { text: string; fill: number }[] = []
     lines.push({ text: t('models.detail.tier', { tier: t('tier.' + m.tier), spec: t('spec.' + m.spec) }), fill: COLORS.textDim })
     lines.push({ text: t('models.detail.params', { total: sizeLabel(m.paramsTotalB), active: sizeLabel(m.paramsActiveB), moe: m.isMoE ? t('rack.model.moe') : t('rack.model.dense') }), fill: COLORS.text })
-    lines.push({ text: t('models.detail.arch', { layers: m.layers, kv: m.kvHeads, head: m.headDim, attn: m.attn }), fill: COLORS.text })
-    lines.push({ text: t('models.detail.window', { win: m.contextWindowK, bytes: m.weightBytes }), fill: COLORS.text })
+    lines.push({ text: t('models.detail.arch', { layers: m.layers, kv: m.kvHeads, head: m.headDim, attn: t(`attn.${m.attn}`, undefined, m.attn) }), fill: COLORS.text })
+    lines.push({ text: t('models.detail.kv', { kvb: (m.kvBytesPerToken / 1024).toFixed(1), kvLayers: m.kvLayers, layers: m.layers, state: m.kvStateMbPerReq.toFixed(0) }), fill: COLORS.text })
+    lines.push({ text: t('models.detail.window', { win: m.contextWindowK, bytes: m.nativeWeightBytes }), fill: COLORS.text })
+    lines.push({ text: m.isReasoning ? t('models.detail.thinking', { tokens: m.thinkTokens }) : t('models.detail.instant'), fill: COLORS.textDim })
     lines.push({ text: t('models.detail.vram', { fp16: fmtGb(m.paramsTotalB * 2), fp8: fmtGb(m.paramsTotalB) }), fill: COLORS.cooling })
     // serve speed / cost on the reference rack
     const lo = loadout(s, REF_HW, m.id)
@@ -629,20 +631,23 @@ export class ModelOverview {
       lines.push({ text: t('models.detail.dev', { dev: m.real.developer, lic: m.real.license, rel: m.real.released }), fill: COLORS.text })
       // The six real Artificial Analysis benchmarks that feed this checkpoint's
       // qualityBy (src/sim/roster.bench.generated.ts). Wraps to two lines.
+      // A cell AA no longer publishes is bridged from the measured ones: marked ≈.
       const bench = AA_BENCH[m.id]
+      const source = m.real.benchmarkSource ?? {}
       const benchParts: string[] = []
       if (bench) {
-        const add = (lbl: string, v: number | undefined): void => {
-          if (v != null) benchParts.push(`${lbl} ${Math.round(v)}`)
+        const add = (lbl: string, v: number | undefined, field?: keyof typeof source): void => {
+          if (v != null) benchParts.push(`${lbl} ${field && source[field]?.startsWith('bridge') ? '≈' : ''}${Math.round(v)}`)
         }
-        add('GPQA', bench.gpqaDiamond)
-        add('IFBench', bench.ifBench)
-        add('LCR', bench.lcr)
-        add('SciCode', bench.sciCode)
-        add('TB-Hard', bench.terminalBenchHard)
-        add('HLE', bench.hle)
+        add('GPQA', bench.gpqaDiamond, 'gpqaDiamond')
+        add('IFBench', bench.ifBench, 'ifBench')
+        add('LCR', bench.lcr, 'lcr')
+        add('SciCode', bench.sciCode, 'sciCode')
+        add('TB-Hard', bench.terminalBenchHard, 'terminalBenchHard')
+        add('HLE', bench.hle, 'hle')
       }
       lines.push({ text: benchParts.join(' · ') || t('models.detail.noBench'), fill: COLORS.sla })
+      if (Object.values(source).some((v) => v?.startsWith('bridge'))) lines.push({ text: t('models.bench.legend'), fill: COLORS.textDim })
     }
 
     let y = 38

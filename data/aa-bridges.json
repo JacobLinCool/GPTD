@@ -1,0 +1,369 @@
+{
+  "_comment": "Fitted by `node scripts/aa-sync.mjs bridges` (scripts/aa-cells.mjs). equating maps a re-scored latest cell back to the reference scale (ref = a + b·latest, fitted on same-UUID pairs; identity = AA froze the cell). bridges are OLS fits on measured reference-scale cells, tried in order (first whose predictors are all measured and n ≥ minN); a bridged value is clamped to the target's observed range. tb21Era imputes Terminal-Bench 2.1 (fitted on releases since `since`) before the TB-Hard bridge when a model has neither.",
+  "reference": "data/aa-reference-2026-06-21.json",
+  "latest": "data/aa-snapshot.json",
+  "models": {
+    "reference": 540,
+    "latest": 703
+  },
+  "equating": {
+    "gpqa": {
+      "kind": "identity",
+      "n": 509,
+      "changed": 0
+    },
+    "ifbench": {
+      "kind": "identity",
+      "n": 437,
+      "changed": 0
+    },
+    "lcr": {
+      "kind": "linear",
+      "a": -0.6347,
+      "b": 0.906,
+      "n": 414,
+      "changed": 342,
+      "r": 0.9871,
+      "sd": 4.04
+    },
+    "scicode": {
+      "kind": "linear",
+      "a": -1.2607,
+      "b": 1.0085,
+      "n": 77,
+      "changed": 75,
+      "r": 0.9846,
+      "sd": 1.8
+    },
+    "terminalbench_hard": {
+      "kind": "identity",
+      "n": 423,
+      "changed": 0
+    },
+    "hle": {
+      "kind": "linear",
+      "a": 0.3348,
+      "b": 0.9275,
+      "n": 503,
+      "changed": 464,
+      "r": 0.9984,
+      "sd": 0.54
+    }
+  },
+  "ranges": {
+    "gpqa": [
+      9.8,
+      96.3
+    ],
+    "scicode": [
+      0,
+      66.21
+    ],
+    "ifbench": [
+      12.11,
+      83.33
+    ],
+    "terminalbench_hard": [
+      0,
+      65.91
+    ],
+    "terminalbench_v2_1": [
+      0,
+      91.39
+    ]
+  },
+  "bridges": {
+    "gpqa": [
+      {
+        "preds": [
+          "hle",
+          "lcr",
+          "scicode"
+        ],
+        "beta": [
+          30.30516,
+          0.0446,
+          0.24559,
+          0.82855
+        ],
+        "n": 535,
+        "R": 0.924,
+        "sd": 7.5
+      },
+      {
+        "preds": [
+          "hle",
+          "lcr"
+        ],
+        "beta": [
+          43.05124,
+          0.33919,
+          0.51134
+        ],
+        "n": 542,
+        "R": 0.873,
+        "sd": 9.54
+      },
+      {
+        "preds": [
+          "lcr"
+        ],
+        "beta": [
+          42.93165,
+          0.64244
+        ],
+        "n": 542,
+        "R": 0.861,
+        "sd": 9.97
+      },
+      {
+        "preds": [
+          "hle"
+        ],
+        "beta": [
+          49.40736,
+          1.19757
+        ],
+        "n": 609,
+        "R": 0.755,
+        "sd": 13.49
+      }
+    ],
+    "scicode": [
+      {
+        "preds": [
+          "hle",
+          "lcr",
+          "gpqa"
+        ],
+        "beta": [
+          -4.56335,
+          0.19545,
+          0.08563,
+          0.46304
+        ],
+        "n": 535,
+        "R": 0.92,
+        "sd": 5.61
+      },
+      {
+        "preds": [
+          "hle",
+          "lcr"
+        ],
+        "beta": [
+          15.35006,
+          0.36351,
+          0.32161
+        ],
+        "n": 592,
+        "R": 0.885,
+        "sd": 6.87
+      },
+      {
+        "preds": [
+          "hle"
+        ],
+        "beta": [
+          20.68426,
+          0.8426
+        ],
+        "n": 657,
+        "R": 0.807,
+        "sd": 8.83
+      }
+    ],
+    "ifbench": [
+      {
+        "preds": [
+          "lcr",
+          "hle",
+          "gpqa"
+        ],
+        "beta": [
+          16.17964,
+          0.21834,
+          0.4382,
+          0.27983
+        ],
+        "n": 448,
+        "R": 0.838,
+        "sd": 9.4
+      },
+      {
+        "preds": [
+          "lcr",
+          "hle",
+          "scicode"
+        ],
+        "beta": [
+          24.60404,
+          0.28722,
+          0.48019,
+          0.22278
+        ],
+        "n": 447,
+        "R": 0.829,
+        "sd": 9.65
+      },
+      {
+        "preds": [
+          "lcr",
+          "hle"
+        ],
+        "beta": [
+          28.12966,
+          0.35871,
+          0.55879
+        ],
+        "n": 448,
+        "R": 0.821,
+        "sd": 9.81
+      },
+      {
+        "preds": [
+          "lcr"
+        ],
+        "beta": [
+          28.81115,
+          0.53243
+        ],
+        "n": 448,
+        "R": 0.787,
+        "sd": 10.6
+      },
+      {
+        "preds": [
+          "hle"
+        ],
+        "beta": [
+          33.27341,
+          1.186
+        ],
+        "n": 449,
+        "R": 0.739,
+        "sd": 11.57
+      }
+    ],
+    "terminalbench_hard": [
+      {
+        "preds": [
+          "terminalbench_v2_1",
+          "hle",
+          "scicode"
+        ],
+        "beta": [
+          -2.51158,
+          0.43823,
+          0.35463,
+          0.18049
+        ],
+        "n": 144,
+        "R": 0.967,
+        "sd": 4.97
+      },
+      {
+        "preds": [
+          "terminalbench_v2_1",
+          "hle"
+        ],
+        "beta": [
+          1.34817,
+          0.4712,
+          0.44063
+        ],
+        "n": 144,
+        "R": 0.964,
+        "sd": 5.14
+      },
+      {
+        "preds": [
+          "terminalbench_v2_1"
+        ],
+        "beta": [
+          2.26764,
+          0.66279
+        ],
+        "n": 144,
+        "R": 0.955,
+        "sd": 5.74
+      },
+      {
+        "preds": [
+          "hle",
+          "scicode",
+          "lcr"
+        ],
+        "beta": [
+          -7.8533,
+          0.7784,
+          0.3243,
+          0.16613
+        ],
+        "n": 431,
+        "R": 0.912,
+        "sd": 6.99
+      },
+      {
+        "preds": [
+          "hle"
+        ],
+        "beta": [
+          1.33749,
+          1.35687
+        ],
+        "n": 432,
+        "R": 0.858,
+        "sd": 8.72
+      }
+    ]
+  },
+  "tb21Era": {
+    "since": "2026-01",
+    "fits": [
+      {
+        "preds": [
+          "hle",
+          "scicode",
+          "lcr"
+        ],
+        "beta": [
+          -14.775,
+          0.84891,
+          0.3858,
+          0.53367
+        ],
+        "n": 179,
+        "R": 0.949,
+        "sd": 8.65
+      },
+      {
+        "preds": [
+          "hle",
+          "scicode"
+        ],
+        "beta": [
+          -7.43369,
+          1.02143,
+          0.85099
+        ],
+        "n": 179,
+        "R": 0.929,
+        "sd": 10.13
+      },
+      {
+        "preds": [
+          "hle"
+        ],
+        "beta": [
+          11.08193,
+          1.68835
+        ],
+        "n": 186,
+        "R": 0.895,
+        "sd": 12.16
+      }
+    ]
+  },
+  "minN": 60
+}
