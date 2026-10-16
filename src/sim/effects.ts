@@ -315,7 +315,9 @@ function formatTflopsPerGpu(hw: ServerHardwareDef, fmt: WeightFormat): number {
 /** Ranking key for auto: the faster tensor rate first, then the smaller weights. */
 function formatRank(hw: ServerHardwareDef | null, model: ModelDef, fmt: WeightFormat): number {
   const rate = hw ? formatTflopsPerGpu(hw, fmt) : fmt === 'fp8' ? 2 : 1
-  return rate * 10 - residentBytes(model, fmt)
+  // tie-break on the format's own width: a native 4-bit release ties BF16 and INT4 on resident
+  // bytes and tensor rate, and must be labelled (and powered) as the 4-bit format it serves in
+  return rate * 10 - residentBytes(model, fmt) - 0.001 * FORMAT_BYTES[fmt]
 }
 
 /**

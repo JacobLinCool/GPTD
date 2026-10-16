@@ -399,10 +399,10 @@ const HW_SPECS: Record<string, HwSpec> = {
   },
   hw_giga: {
     id: 'hw_giga', name: 'GB200 NVL72', gpuModel: 'GB200 NVL72 (72× B200)', gpus: 72,
-    bf16TflopsPerGpu: 2250, fp8TflopsPerGpu: 4500, fp4TflopsPerGpu: 9000, hbmGbPerGpu: 180, hbmTbsPerGpu: 8.0,
+    bf16TflopsPerGpu: 2250, fp8TflopsPerGpu: 4500, fp4TflopsPerGpu: 9000, hbmGbPerGpu: 186, hbmTbsPerGpu: 8.0,
     tdpWattsPerGpu: 1200, cooling: 'liquid', capexUsd: 3000000, gpuHrUsdPerGpu: 5.0,
     powerDraw: 26, heat: 26, range: 3.6, color: 0xf5e663, accent: 0xfdf6b8,
-    desc: 'A 72-GPU NVLink rack: 13.8 TB of HBM. A trillion-parameter model spans a pipeline of 8-GPU tensor-parallel stages; smaller models run as many replicas. Per-user speed is still one 8-GPU group\'s.',
+    desc: 'A 72-GPU NVLink rack: 13.4 TB of HBM. A trillion-parameter model spans a pipeline of 8-GPU tensor-parallel stages; smaller models run as many replicas. Per-user speed is still one 8-GPU group\'s.',
   },
 }
 

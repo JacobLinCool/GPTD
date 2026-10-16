@@ -463,7 +463,13 @@ export function serializeState(s: GameState): AgentSnapshot {
       sellValue: towerValue(s, t),
       nextHwId: nh?.id,
       upgradeCost: nh ? hardwareUpgradeCost(s, t) : undefined,
-      deployableModelIds: t.def.kind === 'server' && t.hwId ? (deployableByHw[t.hwId] ?? []) : [],
+      // the rack's own weight-format setting decides what fits (auto = the tier view in hardware[])
+      deployableModelIds:
+        t.def.kind === 'server' && t.hwId
+          ? t.precision
+            ? ownedIds.filter((id) => serverFitsMemory(s, loadout(s, t.hwId, id, t.precision)))
+            : (deployableByHw[t.hwId] ?? [])
+          : [],
     }
   })
 

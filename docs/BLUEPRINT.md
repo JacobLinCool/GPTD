@@ -8,7 +8,7 @@
 
 - 模型的 serving 速率一律由 §6.2 的 lane step 計算：每個 decode step 重讀權重與每條串流的 KV，算力端以 `2 × paramsActiveB` FLOPs/token 計。模型不持有抽象速度欄位；架構事實（`paramsTotalB`、`paramsActiveB`、KV 版面、release precision、context window）來自各 checkpoint 的 Hugging Face `config.json`（`data/model-arch.json`）。
 - KV 以架構真值計：`kvBytesPerToken` 只算會隨 context 成長的層（full attention、MLA latent + rope、CSA/HCA 壓縮項、sparse indexer keys），sliding-window 與 linear/SSM 層的固定成本歸 `kvStateMbPerReq`。`attn` 只是顯示標籤。
-- 權重格式是**每座 rack 的選擇**（`Tower.precision`，未設定 = auto）：駐留 bytes = `min(nativeWeightBytes, 格式 bytes)`；只有量化到 release precision 以下才付品質稅。
+- 權重格式是**每座 rack 的選擇**（`Tower.precision`，未設定 = auto）：駐留 bytes = 格式的精度等級低於 release 時取格式 bytes，否則維持 release bytes（4-bit release 再量化成別的 4-bit 格式不會更省）；只有量化到 release precision 以下才付品質稅。
 - 能力是兩個向量：`qualityBy`（思考模式能力；從六個 benchmark cell 校準）與 hybrid 才有的 `qualityByInstant`。思考支援 `thinking` 來自 chat template；每個請求的回答模式由 `answerMode(model, def)` 決定。
 - 第一層安全是 `ModelDef.alignment: AlignmentProfile{safety, refusalStyle, overRefusal}`；over-refusal 唯一真相是 `alignment.overRefusal × refusalExposure`。
 - infra 狀態集中在 typed `s.infra: InfraState`；`s.upgrades` 只保存「已研究」標記與 method-unlock / red-team 計數。
@@ -569,7 +569,7 @@ prefill / decode 雙 roof 的結構以真實單位計算：所有 tok/s、watt�
 
 **parallel plan**（`rackPlan`）：一個 model copy 佔用能放下它的最小 2 的次方 GPU 群組，其餘 GPU 跑更多副本。
 ```
-weightGb = paramsTotalB × min(nativeWeightBytes, 格式 bytes)       // MoE 全部 expert 駐留
+weightGb = paramsTotalB × residentBytes(model, 格式)       // 只有更低的精度等級才縮小；MoE 全部 expert 駐留
 draftGb  = spec ? max(0.5, 0.03 × weightGb) : 0
 g        = 最小的 2^k ≤ gpus，使 weightGb + draftGb + g × (1.5 − flash 0.5) < g × hbmGbPerGpu
 允許的 g：無 TP → 1；TP → ≤ 8；TP + PP → ≤ gpus（否則 blocker 'tp' / 'pp'；放不下 → 'vram'）
@@ -621,7 +621,7 @@ k = 該群組剩餘 KV 放得下的串流數（≤ 28）；k < 28 的 cohort 輪
 | `hw_frontier` | H200 | 1 | 989 / 1979 / — | 141 GB | 4.8 | 700 | air | $60K → 60 | 3.2 | 3.3 |
 | `hw_pod` | DGX H200 | 8 | 989 / 1979 / — | 141 GB | 4.8 | 700 | air | $320K → 320 | 25.6 | 3.4 |
 | `hw_superpod` | DGX B200 | 8 | 2250 / 4500 / 9000 | 180 GB | 8.0 | 1000 | air | $500K → 500 | 40 | 3.5 |
-| `hw_giga` | GB200 NVL72 | 72 | 2250 / 4500 / 9000 | 192 GB | 8.0 | 1200 | **liquid** | $3M → 3000 | 360 | 3.6 |
+| `hw_giga` | GB200 NVL72 | 72 | 2250 / 4500 / 9000 | 186 GB | 8.0 | 1200 | **liquid** | $3M → 3000 | 360 | 3.6 |
 
 單 GPU tier 用部署節點的 capex（卡 + 機箱 / CPU / NIC），不是裸晶片價。`ModelDef` 的 serving 欄位是 `paramsTotalB/paramsActiveB/isMoE/kvBytesPerToken/kvStateMbPerReq/nativeWeightBytes/contextWindowK/layers`（`layers` 用於 all-reduce 成本）；`kvLayers/kvHeads/headDim/attn` 是顯示欄位。
 

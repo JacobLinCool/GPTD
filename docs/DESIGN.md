@@ -102,7 +102,7 @@ Racks are real accelerators (`HW_SPECS` in `content.ts`). Each entry carries per
 | `hw_frontier` | Frontier GPU Rack (H200-class) | 1 | 989 / 1979 / — | 141 GB | 4.8 TB/s | 700 W | air | $60k | 3.2 | 3.3 |
 | `hw_pod` | DGX H200 (8× H200) | 8 | 989 / 1979 / — | 141 GB | 4.8 TB/s | 700 W | air | $320k | 3.2 | 3.4 |
 | `hw_superpod` | DGX B200 (8× B200) | 8 | 2250 / 4500 / 9000 | 180 GB | 8.0 TB/s | 1000 W | air | $500k | 5.0 | 3.5 |
-| `hw_giga` | GB200 NVL72 (72× B200) | 72 | 2250 / 4500 / 9000 | 192 GB | 8.0 TB/s | 1200 W | **liquid** | $3M | 5.0 | 3.6 |
+| `hw_giga` | GB200 NVL72 (72× B200) | 72 | 2250 / 4500 / 9000 | 186 GB | 8.0 TB/s | 1200 W | **liquid** | $3M | 5.0 | 3.6 |
 
 Key physics the ladder teaches:
 
@@ -271,7 +271,7 @@ Per-user speed falls as the batch and its contexts grow, while aggregate through
 
 **Chunked prefill is a token budget.** With chunked prefill each engine step carries the running decodes plus up to a per-deployment budget of prompt tokens, profiled Sarathi-style from a 30 ms step target (or ≥25% stretch of a long decode step) and clamped to 256–8192 tokens. A prompt inside the budget finishes in one step; a longer one spans several; the decodes keep streaming, a little slower (they pay the longer chunk-carrying steps), and chunked prompt work runs at 90% of the monolithic prefill rate. Chunked prefill and P/D disaggregation are rival philosophies (a hard research conflict, §8).
 
-**Memory & KV.** Resident weights = `paramsTotalB × min(release bytes, format bytes)` (+1.5 GB framework per GPU, less with FlashAttention). KV of one stream:
+**Memory & KV.** Resident weights = `paramsTotalB × (format bytes if the format is a lower precision class than the release, else release bytes)` — re-quantizing a 4-bit release to another 4-bit format saves nothing (+1.5 GB framework per GPU, less with FlashAttention). KV of one stream:
 
 ```
 KV(ctx) = kvBytesPerToken × ctx × (kvQuantBytes / 2) + kvStateMbPerReq

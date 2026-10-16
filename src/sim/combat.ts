@@ -262,7 +262,9 @@ function handOff(s: GameState, hosts: Host[]): void {
     for (const h of hosts) {
       if (!within(h.t, r, h.r2)) continue
       if (h.model.id === r.kvModelId) {
-        const phaseOk = r.prefill > 0 ? h.t.role !== 'decode' : h.t.role !== 'prefill'
+        // a partly ingested prompt needs a rack that prefills; a streaming answer's KV is home on ANY
+        // rack of its model in reach — including the prefill pool it waits on for a decode pool
+        const phaseOk = r.prefill > 0 && r.prefillDoneAt === undefined ? h.t.role !== 'decode' : true
         if (phaseOk && h.feasible(r)) {
           home = true
           break
@@ -778,7 +780,7 @@ function placePrompt(s: GameState, near: Admitted[], r: Request): void {
 /** Admit one request sprite onto a rack's group: its prefix-cache lookup, its cohort and the KV it reserves. */
 function admitJob(s: GameState, a: Admitted, gi: number, r: Request): void {
   const h = a.h
-  if (r.prefill > 0 && !r.cacheLooked && r.def.cacheable && h.cacheBest > 0) {
+  if (r.prefill > 0 && !r.recompute && !r.cacheLooked && r.def.cacheable && h.cacheBest > 0) {
     lookupPrefix(s, r, h)
     if (r.prefill <= 0) {
       firstToken(s, r, h, 0)

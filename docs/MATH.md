@@ -268,7 +268,7 @@ Every SLA penalty is multiplied by `s.modifiers.slaDamage`. `served` and `bad` a
 | `hw_frontier` (H200) | 1 | 989 / 1979 / — | 141 GB | 4.8 | 700 | air | $60K → 60 | 3.2 | 3.3 |
 | `hw_pod` (DGX H200) | 8 | 989 / 1979 / — | 141 GB | 4.8 | 700 | air | $320K → 320 | 25.6 | 3.4 |
 | `hw_superpod` (DGX B200) | 8 | 2250 / 4500 / 9000 | 180 GB | 8.0 | 1000 | air | $500K → 500 | 40 | 3.5 |
-| `hw_giga` (GB200 NVL72) | 72 | 2250 / 4500 / 9000 | 192 GB | 8.0 | 1200 | liquid | $3M → 3000 | 360 | 3.6 |
+| `hw_giga` (GB200 NVL72) | 72 | 2250 / 4500 / 9000 | 186 GB | 8.0 | 1200 | liquid | $3M → 3000 | 360 | 3.6 |
 
 Support buildings: Router 24 credits, range 3.6, 0.2 kW · Cache 20, range 3.0, 0.2 kW · Prompt Guard 14 · Llama Guard 40 · Moderation 18 · Power Plant 18 (+8 kW) · Cooling Tower 18 (+8 kW air) · Liquid Cooling Loop 90 (+75 kW liquid) · Training Lab 36. Selling refunds 60% of the current hardware's cost.
 
@@ -434,7 +434,8 @@ The 135-checkpoint pool (52 hand-authored + 83 generated from `data/model-arch.j
 
 ### 3.2 Weight formats, memory and the parallel plan
 ```
-residentBytes(m, fmt) = min(m.nativeWeightBytes, FORMAT_BYTES[fmt])       # a release is never inflated
+residentBytes(m, fmt) = bits(FORMAT_BYTES[fmt]) < bits(m.nativeWeightBytes) ? FORMAT_BYTES[fmt] : m.nativeWeightBytes
+                                                  # only a lower precision class shrinks; never inflated; 4-bit→4-bit keeps the release
 nativeFormat(m, hw)  = 16-bit → bf16 · 8-bit → fp8 · 4-bit → (Blackwell ? nvfp4 : int4)
 formatAvailable      = fmt is the native format  OR  (researched AND (fmt ≠ nvfp4 OR Blackwell))
 formatQuantizes      = precisionClass(residentBytes) < precisionClass(nativeWeightBytes)

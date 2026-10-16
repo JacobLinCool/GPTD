@@ -1619,6 +1619,43 @@ describe('P/D disaggregation (rack roles)', () => {
   })
 })
 
+describe('P/D pools next to a rack of another model (no re-prefill loop)', () => {
+  const run = (withOther: boolean) => {
+    const s = createState(4242)
+    richBuild(s)
+    s.infra.disagg = true
+    const pre = buildGeneralRack(s, 2, 2, INSTRUCT)
+    const dec = buildGeneralRack(s, 12, 2, INSTRUCT)
+    if (withOther) buildGeneralRack(s, 2, 0, 'g_qwen3_5_9b_2') // another model overlapping the prefill pool
+    s.towers.find((t) => t.id === pre)!.role = 'prefill'
+    s.towers.find((t) => t.id === dec)!.role = 'decode'
+    liveWave(s)
+    holdWave(s)
+    const r = spawnRequest(s, 'rag')
+    untilResolved(s, r, 20000)
+    return r
+  }
+  it('a streaming answer waits for its own model’s decode pool instead of being re-prefilled by the other model every tick', () => {
+    const alone = run(false)
+    const mixed = run(true)
+    expect(mixed.recompute).toBeFalsy()
+    expect(mixed.e2elReal).toBeCloseTo(alone.e2elReal, 3)
+    expect(mixed.decodeSec).toBeCloseTo(alone.decodeSec, 3)
+  })
+})
+
+describe('auto weight format on a native 4-bit release', () => {
+  it('a 4-bit release serves in a 4-bit format (not labelled BF16) once INT4 is researched, and keeps its release size', () => {
+    const s = createState(4243)
+    richBuild(s)
+    infraOn(s, 'inf_wq_int4')
+    s.infra.quant.fp8 = false // a rack without FP8 kernels: only BF16 and INT4 compete
+    const lo = loadout(s, 'hw_perf', 'gptoss_120b')
+    expect(effectsModule.servingFormat(s, lo)).toBe('int4')
+    expect(effectsModule.bytesPerParam(s, lo)).toBeCloseTo(MODEL_DEFS['gptoss_120b'].nativeWeightBytes, 9)
+  })
+})
+
 describe('the serving-systems era ladder (Orca → vLLM, s.infra-driven)', () => {
   it('before Continuous Batching, a rack runs one static batch at a time; after, the engine batches cohorts until KV runs out', () => {
     const s = createState(90)
