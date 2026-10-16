@@ -788,9 +788,12 @@ describe('era hazard pressure: severity climbs with tier and novel attacks dodge
     expect(short.inSec).toBeLessThan(0.1)
     expect(long.inSec).toBeGreaterThan(short.inSec * 1.5)
     expect(short.outSec).toBeGreaterThan(short.inSec)
-    // the encoder (Prompt Guard 2 86M: 92.4 ms per classification, segments scanned in parallel) stays fixed
-    expect(charged('guard_encoder', 'chat', 1).inSec).toBeCloseTo(0.092, 9)
-    expect(charged('guard_encoder', 'chat', 4).inSec).toBeCloseTo(0.092, 9)
+    // the encoder (a served Prompt Guard 2 86M: a few ms, segments scanned in parallel) stays fixed —
+    // and it is several times faster than the generative judge on the same turn (REFERENCE-DOSSIER §3.3)
+    const enc = TOWER_DEFS.guard_encoder.guardrail!.checkLatencyMs! / 1000
+    expect(charged('guard_encoder', 'chat', 1).inSec).toBeCloseTo(enc, 9)
+    expect(charged('guard_encoder', 'chat', 4).inSec).toBeCloseTo(enc, 9)
+    expect(short.inSec).toBeGreaterThan(enc * 2.5)
   })
 
   it('an authored wave can arm a lane its event weaponised, and the preview shows the real profile', () => {

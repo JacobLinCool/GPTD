@@ -109,7 +109,7 @@ function fmtVramPair(fp16: number, fp8: number): string {
   return `${fmtGbCompact(fp16)}/${fmtGbCompact(fp8)}`
 }
 
-/** Single-stream decode speed on the cheapest rack that holds the model — "how fast is it where it fits". */
+/** Per-user decode speed with one request cohort (COHORT_STREAMS streams) on the cheapest rack that holds the model — "how fast is it where it fits". */
 function homeSpeed(s: GameState, m: ModelDef): { speed: number; tpotMs: number; hwId: string | null } {
   const hw = smallestRackFor(s, m)
   if (!hw) return { speed: 0, tpotMs: Infinity, hwId: null }

@@ -34,6 +34,7 @@ import {
   sizeLabel,
 } from '../sim/content'
 import { StudioTab } from './studio'
+import { ON_TIME_USE } from '../sim/loadForecast'
 import { coolingPools } from '../sim/power'
 import {
   activeSlotFor,
@@ -199,6 +200,10 @@ function clamp(v: number, lo: number, hi: number): number {
 function tpotColor(ms: number): number {
   return ms <= LAT_CLASS_SLO.IN.tpotMs ? COLORS.good : ms <= LAT_CLASS_SLO.NR.tpotMs ? COLORS.warn : COLORS.danger
 }
+/** A latency against its own bound: comfortably inside, near it, or past it. */
+function useColor(use: number): number {
+  return use <= ON_TIME_USE ? COLORS.good : use <= 1 ? COLORS.warn : COLORS.danger
+}
 function ttftColor(ms: number): number {
   return ms <= LAT_CLASS_SLO.IN.ttftMs ? COLORS.good : ms <= LAT_CLASS_SLO.NR.ttftMs ? COLORS.warn : COLORS.danger
 }
@@ -321,7 +326,7 @@ class DeployRow extends Container {
     this.badgeT.x = this.sizeT.x + this.sizeT.width + 6
     if (c.fits) {
       this.speedT.text = t('inspect.dep.speed', { v: fmtTokS(c.perUserTokS) })
-      this.speedT.style.fill = tpotColor(c.tpotMs)
+      this.speedT.style.fill = Number.isFinite(c.tpotBoundMs) ? useColor(c.tpotMs / c.tpotBoundMs) : tpotColor(c.tpotMs)
       this.smartT.text = c.kinds
         ? t('inspect.dep.smart', { q: c.judgedQ.toFixed(0), k: c.clears, n: c.kinds })
         : t('inspect.dep.smartQ', { q: c.judgedQ.toFixed(0) })
@@ -2250,11 +2255,12 @@ function typeSlo(def: RequestTypeDef): string {
 function fleetMeanDollarsPerMtoken(s: GameState): number {
   let sum = 0
   let n = 0
+  const traffic = upcomingTraffic(s)
   for (const tw of s.towers) {
     if (tw.def.kind !== 'server') continue
     const lo = loadoutOf(s, tw)
     if (!lo.hw || !lo.model || !serverFitsMemory(s, lo)) continue
-    const dpm = rackDollarsPerMtoken(s, lo)
+    const dpm = rackDollarsPerMtoken(s, lo, undefined, traffic)
     if (Number.isFinite(dpm)) {
       sum += dpm
       n++

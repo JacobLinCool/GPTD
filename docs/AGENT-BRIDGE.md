@@ -170,7 +170,7 @@ guessing. Unknown actions are rejected the same way, never a crash.
                 "affordable": true, "blockedReason": null },
               { "defId": "guard_encoder", …,
                 "guardrail": { "archetype": "encoder", "side": "input",
-                               "latencyMs": 92,   // one check, quoted at a 512-token prompt (see below)
+                               "latencyMs": 10,   // one check, quoted at a 512-token prompt (see below)
                                "recall": 0.975, "falsePositiveRate": 0.015,
                                "catches": [ { "hazard": "jailbreak", "locked": false },
                                             { "hazard": "injection", "locked": true, "unlockedBy": "r_eval_redteam_v1" } ] } } ],
@@ -230,7 +230,7 @@ starter Edge racks and one Prompt Guard):
 `unsafe` (an unsafe answer that was delivered) and `bad` (a wrong answer — refunded)
 cost **Trust**; `sloMiss` (correct but late — paid at 50%) costs **SLA** and a little
 Trust; `leaked` (a 504) and `unservable` (rejected by a context window or a KV
-budget) cost both meters; `overRefused` (a benign request refused by the model or a
+budget on every rack that saw it) cost both meters; `overRefused` (a benign request refused by the model or a
 guard) costs a little of both. A jailbreak that is blocked or refused counts as
 `served`; one that is never answered costs SLA only. Read `lastReport.trustLostBy` / `slaLostBy` /
 `sloCauses` / `overRefusedBy` after each wave, and `incident` / `nextWave`
@@ -244,9 +244,10 @@ Detection of `injection` / `pii` stays locked until the red-team evals listed in
 `catches[].unlockedBy` are researched.
 
 `catalog[].guardrail.latencyMs` is one check quoted at a 512-token prompt. The
-encoder charges that fixed time on every request; the generative guard runs a real
-inference on its own GPU, so its charge grows with the turn it reads — the prompt
-on input, the prompt plus the answer on output (each capped at 2,048 tokens).
+encoder charges that fixed time (about 10 ms) on every request; the generative guard
+runs a real inference on its own GPU, so its charge — several times the encoder's —
+grows with the turn it reads: the prompt on input, the prompt plus the answer on
+output (each capped at 2,048 tokens).
 Later in the campaign a share of attacks are novel variants: the encoder keeps
 about 45% of its recall on them, while the generative guard keeps all of it.
 

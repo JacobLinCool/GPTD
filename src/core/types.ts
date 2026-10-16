@@ -129,7 +129,7 @@ export interface AlignmentProfile {
 }
 
 /**
- * Static hardware profile for a server rack — now REAL accelerator specs.
+ * Static hardware profile for a server rack — REAL accelerator specs.
  * A board tile represents `gpus` GPUs; aggregate fields (bf16Tflops, hbmGb, …)
  * are `perGpu × gpus`, filled at load (§6.3). Power and heat are real kW from
  * `tdpWatts` (effects.ts serverPower / serverHeat); the legacy `powerDraw` / `heat`
@@ -365,7 +365,7 @@ export interface ModelDef {
  * Costs Data up front, then requisitions the STRONGEST racks during waves
  * (they train instead of serving) until `compute` FLOPS·s have accumulated.
  * `kind` maps to a research track (§4.5 / C7): 'model' → 'posttrain',
- * 'tech' → 'infra' (no def maps to 'eval' yet — that track is reserved).
+ * 'tech' → 'infra', 'eval' → 'eval' (the red-team evals).
  */
 export interface ResearchDef {
   id: string
@@ -556,7 +556,7 @@ export interface RequestTypeDef {
   outputTokens: number
   /** §1.3 latency class → which real-ms SLO bucket this request is judged against. */
   latClass: LatencyClass
-  /** §1.3 per-type SLO overrides (ms). `agent` rides E2EL only (latClass TO + e2elSloMs). */
+  /** §1.3 per-type SLO overrides (ms): a tighter TTFT (comp's 200 ms), or an end-to-end bound on top of the class bounds (agent: NR + 60 s E2EL). */
   ttftSloMs?: number
   e2elSloMs?: number
   /**
@@ -592,7 +592,9 @@ export interface RequestTypeDef {
    * OR-Bench) measure refusal on deliberately borderline prompts, not on everyday
    * traffic, so this multiplies both the model's `alignment.overRefusal` (layer 1) and
    * a guardrail's false-positive rate (layer 2). 0 = never refused (an embedding
-   * generates no text to refuse).
+   * generates no text to refuse). It applies only to benign requests: an archetype that
+   * always carries a hazard (the agent's prompt-injection exposure) is never over-refused
+   * unless a wave strips its hazard.
    */
   refusalExposure: number
   /**
@@ -723,21 +725,43 @@ export interface Request {
   hiddenTokens: number
   /** real seconds to the first ANSWER token (TTFT + the hidden reasoning), latched when the answer starts. */
   ttfatReal: number
-  /** the model that holds this request's KV (latched at its first token); a decode-pinned rack only takes its own model's KV. */
+  /**
+   * the model that holds this request's KV — its partly ingested prompt, or its whole context
+   * once it has a first token. Only racks running that model may continue it; another model
+   * takes over only by re-prefilling (combat `handOff`).
+   */
   kvModelId?: string
   /** the rack that produced the first token; a P/D decode-pool rack elsewhere pays the KV transfer from it. */
   kvTowerId?: number
   /** real seconds of KV transfer still owed when a decode pool picks the request up (P/D disaggregation). */
   kvTransferSec: number
+  /**
+   * the rack whose engine runs this answer's decode (set at its first token; taken over by the
+   * least busy rack of its model in reach once it walks out of its home's reach). Its home admits
+   * it before any new prompt; other racks of its model only help decode it with spare capacity.
+   */
+  homeTowerId?: number
+  /**
+   * a streaming answer whose KV model went out of reach is being re-prefilled by a rack of
+   * another model (recompute preemption): `prefill` holds its whole sequence again, its first
+   * token stands, and the re-ingest time is a stall inside its decode (E2EL, TPOT).
+   */
+  recompute: boolean
   /** latched true once this request misses a latency bound of its class SLO (cause in `sloCause`). */
   sloViolated: boolean
   /**
    * latched true when an in-range online server REJECTED this request on a hard capacity
-   * gate: its context exceeds the model window, or its KV exceeds the rack's whole KV
-   * budget. If it then leaks without ever being served, the outcome is `unservable`
-   * (a distinct bucket), not a plain leak (§2.5).
+   * gate: its full sequence exceeds the model window, or one stream's KV exceeds a whole
+   * model copy's KV budget.
    */
   windowBlocked: boolean
+  /**
+   * latched true when an in-range online server could hold this request at its full sequence
+   * (window and KV). A request that reaches the core unanswered is `unservable` only when a
+   * rack rejected it on a hard gate and NO rack that saw it could ever have held it; otherwise
+   * it waited on capacity and is a plain `leaked` (§2.5).
+   */
+  fitSeen: boolean
   speed: number
   /** resolved scalar difficulty = def.difficulty[primaryAxis] × complexityMul (the quality gate, §6.4). */
   difficulty: number
@@ -798,7 +822,7 @@ export interface Request {
   attackHandled: boolean
   /** inside an online Router's range this tick (capability-aware dispatch applies, §4.10). */
   routed: boolean
-  /** the rack a Router reserved this request for this tick (null = any rack in range may take it). */
+  /** the rack a Router dispatched this request's prompt to this tick (null = not routed this tick). */
   routedTo: number | null
   /** the request's single prefix-cache lookup has been rolled (hit or miss, it is never re-rolled). */
   cacheLooked: boolean
@@ -1254,21 +1278,22 @@ export interface GameState {
   /** globally researched model checkpoints (deployable for free) */
   models: Record<string, true>
   /**
-   * Derived (player-created) checkpoints, resolved via `resolveModel(s,id)`
-   * ahead of the static `MODEL_DEFS`. Empty `{}` in P0.5 (creation is P3b);
-   * the resolution layer is stood up now so derived models resolve in-sim.
+   * Derived (player-created) checkpoints the Post-Training Studio minted, resolved via
+   * `resolveModel(s, id)` ahead of the static `MODEL_DEFS`.
    */
   derivedModels: Record<string, ModelDef>
   /** monotonically increasing id counter for derived checkpoints (`drv_{seq}`). */
   derivedSeq: number
-  /** DORMANT infra typed bag (R6); effects still read `s.upgrades` this phase. */
+  /** the researched serving stack, typed (R6): `applyInfraEffects` folds every infra node's effects into it, and every effects getter reads it. */
   infra: InfraState
   /** the three concurrent research tracks (§4.5 / C7), each busy or idle. */
   research: ResearchTracks
   /**
-   * §3.6 global guardrail decision threshold (0..1, default 0.5). Higher → guardrails
-   * catch more hazards (recall↑) but wrongly block more benign traffic (over-refuse↑) —
-   * the no-free-lunch tradeoff. Per-building tuning is a later nicety; one knob for P3d.
+   * §3.6 the guardrails' decision threshold (0..1). The game runs every guard at the fixed
+   * calibrated operating point 0.5 — where `effRecall` returns the guard's measured recall and
+   * `overRefuse` its measured false-positive rate; no control changes it. The curve on either
+   * side (more recall for more false refusals) is the no-free-lunch tradeoff the safety math
+   * models and the tests exercise.
    */
   guardrailThreshold: number
   /** global market price multiplier on token revenue (§6.6; init 1, drift deferred). */

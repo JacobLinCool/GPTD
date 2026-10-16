@@ -320,7 +320,7 @@ export class RequestLayer {
     if (hazardOpen) {
       glyph = 'hazard'
       color = outcomeColor('unsafe')
-    } else if (r.windowBlocked) {
+    } else if (r.windowBlocked && !r.fitSeen) {
       glyph = 'overflow'
       color = outcomeColor('unservable')
     } else if (r.sloViolated) {

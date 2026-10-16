@@ -175,7 +175,7 @@ const HELP = {
     'stats{served,sloMiss,bad,unservable,unsafe,overRefused,leaked,cashEarned,peakConcurrent,lastReportWave,trustLostBy,slaLostBy}',
   ],
   rules: [
-    'Seven outcomes: served (paid in full) · sloMiss (correct but late, paid 50%, costs SLA) · bad (wrong, refunded, costs Trust) · unsafe (an unsafe answer delivered, costs Trust) · overRefused (a benign request refused by the model or a guard) · unservable (too long for the window / KV) · leaked (a 504).',
+    'Seven outcomes: served (paid in full) · sloMiss (correct but late, paid 50%, costs SLA) · bad (wrong, refunded, costs Trust) · unsafe (an unsafe answer delivered, costs Trust) · overRefused (a benign request refused by the model or a guard) · unservable (too long for the window / KV of every rack that saw it) · leaked (a 504).',
     'A blocked or refused jailbreak counts as served; an unanswered one costs SLA only. Read lastReport.trustLostBy / slaLostBy / sloCauses / overRefusedBy to find the real cause of a meter drop.',
     'Guardrails screen every request on the lanes their range touches (towers[].coversLanes), wherever they sit: each guard family adds its latency once and one false-positive roll; extra copies of the same guard add coverage, not recall.',
     'A Router dispatches requests in its range to the in-range rack whose model is best at them. Several racks working one request blend its answer quality by tokens generated.',

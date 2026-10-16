@@ -11,13 +11,17 @@ import {
   MBU_DECODE,
   MFU_DECODE,
   MFU_PREFILL,
+  MOE_LAYER_OVERHEAD_US,
   PP_BUBBLE_MS,
   RACK_UTILIZATION,
   RACKS_PER_TILE,
   SIM_DT,
   SIM_TIME_SCALE,
+  SPEC_FADE_END_STREAMS,
+  SPEC_FADE_START_STREAMS,
   STEP_OVERHEAD_MS,
   THROTTLE_FLOOR,
+  TILE,
   TRAFFIC_SCALE,
 } from '../src/config'
 import type { CapabilityAxis, GameEvent, GameState, ModelDef, Outcome, PostTrainMeta, Request, Tower } from '../src/core/types'
@@ -305,7 +309,7 @@ describe('request resolution', () => {
     runFor(unsafe, 45)
     expect(unsafe.stats.unsafe).toBe(1) // unhandled hazard reached the core
 
-    // add an input encoder guardrail (catches jailbreak at 92 ms): now it is caught
+    // add an input encoder guardrail (catches jailbreak in a few ms): now it is caught
     const safe = createState(4)
     richBuild(safe)
     buildLowSafety(safe, 3, 2)
@@ -1154,10 +1158,10 @@ describe('hardware/model split (expert mechanics)', () => {
     const lo = loadout(s, 'hw_perf', AGENT_SHORT) // 117B total / 5.1B active MoE on one H100
     const m = MODEL_DEFS[AGENT_SHORT]
     const p = rackPlan(s, lo)
-    const step = (streams: number) =>
-      effectsModule.laneStep(s, lo, p, { streams, kvGb: 0, bgPrefillSec: 0, overlapPrefill: false }).stepSec
+    const mem = (streams: number) =>
+      effectsModule.laneStep(s, lo, p, { streams, kvGb: 0, bgPrefillSec: 0, overlapPrefill: false }).memSec
     // a lone token reads only its active experts; 28 tokens touch most of them
-    expect(step(28) / step(1)).toBeGreaterThan(5)
+    expect(mem(28) / mem(1)).toBeGreaterThan(5)
     // a dense model of the same active size barely notices the batch (memory-bound)
     const dense = loadout(s, 'hw_perf', 'g_qwen3_5_4b_2')
     const dp = rackPlan(s, dense)
@@ -1165,6 +1169,24 @@ describe('hardware/model split (expert mechanics)', () => {
       effectsModule.laneStep(s, dense, dp, { streams, kvGb: 0, bgPrefillSec: 0, overlapPrefill: false }).stepSec
     expect(dstep(28) / dstep(1)).toBeLessThan(1.5)
     expect(m.paramsTotalB / m.paramsActiveB).toBeGreaterThan(10)
+  })
+
+  it('an MoE pays a per-layer routing cost at small batch: gpt-oss-120b alone on one H100 decodes ≈250 tok/s', () => {
+    const s = fp8State(34)
+    const lo = loadout(s, 'hw_perf', AGENT_SHORT)
+    const m = MODEL_DEFS[AGENT_SHORT]
+    const solo = decodeTokSb1(s, lo)
+    // Artificial Analysis' production median is ≈212 tok/s: the router, top-k, permute and grouped
+    // expert GEMMs are small kernels a single stream cannot fill
+    expect(solo).toBeGreaterThan(220)
+    expect(solo).toBeLessThan(280)
+    const p = rackPlan(s, lo)
+    const st = effectsModule.laneStep(s, lo, p, { streams: 1, kvGb: 0, bgPrefillSec: 0, overlapPrefill: false })
+    expect(st.fixedSec).toBeCloseTo(STEP_OVERHEAD_MS / 1000 + m.layers * MOE_LAYER_OVERHEAD_US * 1e-6, 9)
+    // a dense model pays no expert routing
+    const dense = loadout(s, 'hw_perf', 'g_qwen3_5_9b_2')
+    const ds = effectsModule.laneStep(s, dense, rackPlan(s, dense), { streams: 1, kvGb: 0, bgPrefillSec: 0, overlapPrefill: false })
+    expect(ds.fixedSec).toBeCloseTo(STEP_OVERHEAD_MS / 1000, 9)
   })
 
   it('every stream re-reads its KV each step: long contexts slow per-user decode (the KV-read term)', () => {
@@ -1696,6 +1718,38 @@ describe('speculative decoding (EAGLE, §4.4)', () => {
     // verification spends compute, it never adds any
     expect(computeRoofTokS(spec, lo)).toBeCloseTo(computeRoofTokS(base, lo), 6)
     expect(p.draftGb).toBeGreaterThan(0)
+  })
+
+  it('its gain fades with the batch: whole up to ~32 streams per lane, about half at 64, gone by ~128', () => {
+    expect(effectsModule.specFade(1)).toBe(1)
+    expect(effectsModule.specFade(SPEC_FADE_START_STREAMS)).toBe(1)
+    expect(effectsModule.specFade(64)).toBeCloseTo(0.5, 6)
+    expect(effectsModule.specFade(SPEC_FADE_END_STREAMS)).toBe(0)
+    const base = createState(98)
+    infraOn(base, 'inf_batching', 'inf_paged', 'inf_wq_fp8')
+    const spec = createState(98)
+    infraOn(spec, 'inf_batching', 'inf_paged', 'inf_wq_fp8', 'inf_spec')
+    // a fast MoE (memory-bound to large batches) and a dense 9B on one H100
+    for (const id of ['g_qwen3_5_9b_2', AGENT_SHORT]) {
+      const lo = loadout(base, 'hw_perf', id)
+      const gain = (streams: number): number => {
+        const per = (g: GameState): number => {
+          const st = effectsModule.laneStep(g, lo, effectsModule.rackPlan(g, lo), {
+            streams,
+            kvGb: 0,
+            bgPrefillSec: 0,
+            overlapPrefill: false,
+            specTokens: effectsModule.specTokensFor(g, 'chat'),
+          })
+          return effectsModule.specYield(effectsModule.specTokensFor(g, 'chat'), st) / st.stepSec
+        }
+        return per(spec) / per(base)
+      }
+      expect(gain(8)).toBeGreaterThan(1.5)
+      expect(gain(64)).toBeLessThan(gain(8))
+      expect(gain(128)).toBeLessThanOrEqual(1 + 1e-9) // nothing left to gain: the draft head only costs
+      expect(gain(256)).toBeLessThanOrEqual(1 + 1e-9)
+    }
   })
 
   it('the draft head takes VRAM and burns power on EVERY tier', () => {
@@ -2252,15 +2306,16 @@ describe('two-layer safety (§3)', () => {
     expect(high.served).toBeGreaterThan(0)
   })
 
-  it('layer 2 guard_encoder catches jailbreak/injection at a FIXED 92 ms on the input (→ TTFT)', () => {
+  it('layer 2 guard_encoder catches jailbreak/injection at a FIXED ~10 ms on the input (→ TTFT)', () => {
     const enc = TOWER_DEFS['guard_encoder'].guardrail!
     expect(enc.archetype).toBe('encoder')
     expect(enc.side).toBe('input')
-    expect(enc.checkLatencyMs).toBe(92)
+    // a served 86M encoder: a few ms of forward + the service hop (REFERENCE-DOSSIER §3.3/§3.6)
+    expect(enc.checkLatencyMs).toBe(10)
     expect(enc.runsOnRoofline).toBe(false)
     const s = createState(302)
     richBuild(s)
-    expect(guardLatencyMs(s, enc)).toBe(92) // fixed, not the roofline
+    expect(guardLatencyMs(s, enc)).toBe(10) // fixed, not the roofline
     // a low-safety rack + an encoder guard on the lane → the jailbreaks are blocked
     shadowModel(s, 'g_qwen3_5_9b_2', { safety: 15, refusalStyle: 'none', overRefusal: 0 }, 'sh')
     for (const c of [3, 8, 14, 20]) buildGeneralRack(s, c, 2, 'sh')
@@ -2275,7 +2330,7 @@ describe('two-layer safety (§3)', () => {
     expect(blocked.length).toBeGreaterThanOrEqual(11)
     for (const r of blocked) expect(r.prefill).toBe(r.tokensIn) // no rack ingested a single prompt token
     // the input check is on the request path: the benign chat paid it in TTFT
-    if (chat.prefillDoneAt !== undefined) expect(chat.ttftReal).toBeGreaterThanOrEqual(0.092 - 1e-9)
+    if (chat.prefillDoneAt !== undefined) expect(chat.ttftReal).toBeGreaterThanOrEqual(0.01 - 1e-9)
   })
 
   it('layer 2 guard_llm runs the real §6 roofline: a short verdict on a real 12B prefill that grows with the turn, drawing real power', () => {
@@ -2302,6 +2357,11 @@ describe('two-layer safety (§3)', () => {
     // its prefill reads the turn: a longer prompt costs more, unlike the encoder's one fixed forward
     expect(guardCheckMs(s, llm, 2048)).toBeGreaterThan(2 * guardCheckMs(s, llm, 300))
     expect(guardCheckMs(s, enc, 2048)).toBe(guardCheckMs(s, enc, 300))
+    // the real contrast (REFERENCE-DOSSIER §3.3): at equal optimization the generative judge is
+    // several times the encoder on a typical prompt, and about an order of magnitude on a long turn
+    expect(guardCheckMs(s, llm, 512)).toBeGreaterThan(2.5 * guardCheckMs(s, enc, 512))
+    expect(guardCheckMs(s, llm, GUARD_TURN_TOKENS)).toBeGreaterThan(6 * guardCheckMs(s, enc, GUARD_TURN_TOKENS))
+    expect(guardCheckMs(bf16, llm, 512)).toBeGreaterThan(4 * guardCheckMs(bf16, enc, 512))
     // a check reads the user turn (input) and the turn + answer (output), each capped at the screened turn
     expect(guardScreenTokens('input', 600, 400)).toBe(600)
     expect(guardScreenTokens('output', 600, 400)).toBe(1000)
@@ -2451,38 +2511,135 @@ function calmModel(s: GameState): string {
 }
 
 describe('answer quality is token-weighted (the racks that wrote the answer decide it)', () => {
-  it('a fast weak rack and a slow strong rack on one request ship a WRONG answer; the strong rack alone serves it', () => {
-    const run = (racks: ('weak' | 'strong')[]) => {
-      const s = createState(400)
+  it('racks of one model co-decode a request and its margin is the token-weighted mean of theirs', () => {
+    const s = createState(400)
+    richBuild(s)
+    infraOn(s, 'inf_wq_int4')
+    // one checkpoint on two racks, one in FP8 (lossless) and one in INT4 (a 2-point PTQ tax):
+    // the same model, so both may decode the request — each scores its own tokens
+    const line = REQUEST_TYPES.batch.difficulty.general!
+    const base = 'g_qwen3_5_9b_2'
+    shadowQuality(s, base, 'split', { general: line + 1 + alignmentTax(MODEL_DEFS[base]) })
+    const fp8 = buildGeneralRack(s, 2, 2, 'split')
+    const int4 = buildGeneralRack(s, 2, 0, 'split')
+    s.towers.find((t) => t.id === int4)!.precision = 'int4'
+    liveWave(s)
+    const r = freeze(benignOf(spawnRequest(s, 'batch')))
+    untilResolved(s, r)
+    expect(r.tokBy[fp8]).toBeGreaterThan(0)
+    expect(r.tokBy[int4]).toBeGreaterThan(0)
+    // +1 on the FP8 rack, −1 on the INT4 one: the answer's margin is the token-weighted mean
+    const w = r.tokBy[fp8] / (r.tokBy[fp8] + r.tokBy[int4])
+    expect(r.bestQuality).toBeCloseTo(w * 1 + (1 - w) * -1, 6)
+    expect(r.bestQuality).toBeCloseTo(r.qualTokSum / r.qualTokW, 9)
+  })
+
+  it('a rack of another model never continues a request on KV it did not compute: a fast small model cannot rescue a slow one', () => {
+    const run = (withFast: boolean) => {
+      const s = createState(401)
       richBuild(s)
-      shadowQuality(s, STARTER, 'weak', { general: 20 })
-      shadowQuality(s, GENERAL, 'strong', { general: 97 })
-      const ids: Record<string, number> = {}
-      for (const kind of racks) {
-        if (kind === 'weak') {
-          ids.weak = buildGeneralRack(s, 2, 2, 'weak') // H100 + a 1B model: very fast decode
-        } else {
-          tryBuild(s, 'srv_edge', 2, 0)
-          const t = lastTower(s)
-          upgradeHardware(s, t.id) // L40S: a slow decode for a 27B model
-          deployModel(s, t.id, 'strong')
-          ids.strong = t.id
-        }
-      }
+      shadowQuality(s, GENERAL, 'slow', { chat: 97 })
+      shadowQuality(s, STARTER, 'fast', { chat: 97 })
+      tryBuild(s, 'srv_edge', 2, 0)
+      const t = lastTower(s)
+      upgradeHardware(s, t.id) // L40S: a slow decode for a 27B model
+      deployModel(s, t.id, 'slow')
+      const slow = t.id
+      const fast = withFast ? buildGeneralRack(s, 2, 2, 'fast') : -1 // H100 + a tiny model: very fast
       liveWave(s)
-      const r = freeze(spawnRequest(s, 'batch'))
+      const r = freeze(benignOf(spawnRequest(s, 'chat')))
       untilResolved(s, r)
-      return { s, r, ids }
+      return { s, r, slow, fast }
     }
-    const mixed = run(['weak', 'strong'])
-    expect(mixed.s.stats.bad).toBe(1) // the strong rack wrote a sliver of it: no blessing
-    expect(mixed.r.bestQuality).toBeLessThan(0)
-    expect(mixed.r.bestQuality).toBeCloseTo(mixed.r.qualTokSum / mixed.r.qualTokW, 9)
-    expect(mixed.r.answeredBy).toBe(mixed.ids.weak) // the weak rack generated most of it
-    expect(mixed.r.tokBy[mixed.ids.strong]).toBeGreaterThan(0)
-    const alone = run(['strong'])
-    expect(alone.s.stats.served).toBe(1)
-    expect(alone.r.bestQuality).toBeGreaterThan(0)
+    const alone = run(false)
+    const mixed = run(true)
+    // the slow rack prefilled it (its KV), so only its model writes the answer
+    expect(mixed.r.kvModelId).toBe('slow')
+    expect(mixed.r.tokBy[mixed.fast] ?? 0).toBe(0)
+    expect(mixed.r.decodeSec).toBeCloseTo(alone.r.decodeSec, 6)
+    expect(mixed.r.sloCause).toBe(alone.r.sloCause)
+    expect(mixed.s.stats.sloMiss).toBe(alone.s.stats.sloMiss)
+    expect(alone.s.stats.sloMiss).toBe(1) // a 27B on an L40S misses chat's 40 ms TPOT either way
+  })
+
+  it('same-model co-decoding finishes in fewer board ticks but its latency stays the serial per-token sum', () => {
+    const run = (racks: number) => {
+      const s = createState(402)
+      richBuild(s)
+      const model = calmModel(s)
+      const ids = [buildGeneralRack(s, 2, 2, model)]
+      if (racks > 1) ids.push(buildGeneralRack(s, 2, 0, model))
+      liveWave(s)
+      const r = freeze(benignOf(spawnRequest(s, 'batch')))
+      let ticks = 0
+      for (; ticks < 20000 && r.alive; ticks++) step(s)
+      return { r, ids, ticks }
+    }
+    const one = run(1)
+    const two = run(2)
+    expect(two.ids.every((id) => (two.r.tokBy[id] ?? 0) > 0)).toBe(true)
+    expect(two.ticks).toBeLessThan(one.ticks * 0.7) // two towers work it down faster on the board
+    // …but no real-time latency improves
+    expect(Math.abs(two.r.e2elReal - one.r.e2elReal) / one.r.e2elReal).toBeLessThan(0.02)
+  })
+
+  it('a router follows the same co-decoding rule: two racks + a router serve a moving request exactly as the two racks alone', () => {
+    const run = (withRouter: boolean) => {
+      const s = createState(403)
+      richBuild(s)
+      const model = calmModel(s)
+      const a = buildGeneralRack(s, 3, 2, model)
+      const b = buildGeneralRack(s, 3, 0, model)
+      if (withRouter) expect(tryBuild(s, 'router', 1, 2)).toBe(true)
+      liveWave(s)
+      const r = benignOf(spawnRequest(s, 'batch'))
+      untilResolved(s, r)
+      return { s, r, a, b }
+    }
+    const plain = run(false)
+    const routed = run(true)
+    expect(routed.r.tokBy[routed.a] ?? 0).toBeCloseTo(plain.r.tokBy[plain.a] ?? 0, 6)
+    expect(routed.r.tokBy[routed.b] ?? 0).toBeCloseTo(plain.r.tokBy[plain.b] ?? 0, 6)
+    expect(routed.s.stats.served).toBe(plain.s.stats.served)
+    expect(routed.s.stats.leaked).toBe(plain.s.stats.leaked)
+    expect(routed.r.e2elReal).toBeCloseTo(plain.r.e2elReal, 6)
+  })
+
+  it('a request whose KV model is out of reach is taken over by another model only by re-prefilling its whole sequence', () => {
+    const s = createState(404)
+    richBuild(s)
+    shadowQuality(s, GENERAL, 'slowA', { general: 97 })
+    shadowQuality(s, 'g_qwen3_5_9b_2', 'fastB', { general: 97 })
+    // rack A at the lane ingress (a slow 27B on an L40S), rack B further down (another model): no overlap
+    tryBuild(s, 'srv_edge', 2, 2)
+    const a = lastTower(s)
+    upgradeHardware(s, a.id)
+    deployModel(s, a.id, 'slowA')
+    const b = buildGeneralRack(s, 12, 2, 'fastB')
+    liveWave(s)
+    const r = benignOf(spawnRequest(s, 'batch'))
+    let ttft = -1
+    let switchCtx = 0
+    let stallSec = 0
+    for (let i = 0; i < 40000 && r.alive; i++) {
+      const was = { model: r.kvModelId, decode: r.decodeSec, ctx: r.contextLen }
+      step(s)
+      if (ttft < 0 && r.prefillDoneAt !== undefined) ttft = r.ttftReal
+      if (!switchCtx && was.model === 'slowA' && r.kvModelId === 'fastB') {
+        switchCtx = was.ctx
+        stallSec = r.decodeSec - was.decode
+      }
+    }
+    expect(r.tokBy[a.id]).toBeGreaterThan(0) // A wrote the start of the answer…
+    expect(r.tokBy[b]).toBeGreaterThan(0) // …B finished it, after re-prefilling
+    expect(switchCtx).toBeGreaterThan(r.tokensIn) // its prompt plus every token A wrote
+    expect(r.recompute).toBe(false)
+    expect(r.ttftReal).toBe(ttft) // its first token stands
+    // the re-prefill of that whole sequence is a stall inside its decode (E2EL and TPOT)
+    const lo = loadoutOf(s, s.towers.find((t) => t.id === b)!)
+    const rate = effectsModule.prefillRateOn(s, lo, rackPlan(s, lo), switchCtx)
+    expect(stallSec).toBeGreaterThan(switchCtx / rate)
+    expect(s.stats.served).toBe(1)
   })
 })
 
@@ -2592,7 +2749,7 @@ describe('guardrails screen by lane coverage (§3.3)', () => {
     expect(upstream.overRefused).toBeGreaterThan(0)
     expect(atCore.overRefused).toBe(upstream.overRefused)
     expect(atCore.avgTtft).toBeCloseTo(upstream.avgTtft, 9)
-    expect(atCore.avgTtft).toBeGreaterThanOrEqual(0.092) // every chat paid the 92 ms check
+    expect(atCore.avgTtft).toBeGreaterThanOrEqual(0.01) // every chat paid the encoder's 10 ms check
   })
 
   it('replicas of one guard add coverage, not recall (nor latency); distinct guard families stack', () => {
@@ -2623,10 +2780,10 @@ describe('guardrails screen by lane coverage (§3.3)', () => {
     const stage = laneGuardStages(three.s)[0]
     expect(stage.length).toBe(1) // one encoder family on lane 0…
     expect(stage[0].input.length).toBe(3) // …with three covering replicas
-    expect(stage[0].inSec).toBeCloseTo(0.092, 9) // one check's latency, not three
+    expect(stage[0].inSec).toBeCloseTo(0.01, 9) // one check's latency, not three
     expect(three.s.stats.unsafe).toBe(one.s.stats.unsafe) // the same verdict on the same input
     expect(three.s.stats.served).toBe(one.s.stats.served)
-    for (const r of three.reqs) expect(r.guardInSec).toBeCloseTo(0.092, 9)
+    for (const r of three.reqs) expect(r.guardInSec).toBeCloseTo(0.01, 9)
     expect(one.s.stats.unsafe).toBeGreaterThan(5) // a weak threshold lets attacks through
     const deep = run([
       ['guard_encoder', 6, 0],
@@ -2758,6 +2915,148 @@ describe('outcomes, revenue and the meters (§2.5)', () => {
       expect(e.modelId).toBeDefined()
       expect(e.margin).toBeGreaterThanOrEqual(0)
     }
+  })
+})
+
+describe('prompt scheduling across lanes and racks (§0.4 / §4.3)', () => {
+  /** One H100 rack of the 9B (FP8, batching, paged KV), optionally chunked prefill; n prompts spawned in one tick. */
+  const burst = (typeId: string, n: number, chunked: boolean) => {
+    const s = createState(84)
+    richBuild(s)
+    if (chunked) infraOn(s, 'inf_chunked')
+    buildGeneralRack(s, 2, 2, 'g_qwen3_5_9b_2')
+    liveWave(s)
+    const reqs = Array.from({ length: n }, () => freeze(benignOf(spawnRequest(s, typeId))))
+    for (let i = 0; i < 600 && reqs.some((r) => r.prefillDoneAt === undefined); i++) step(s)
+    const lo = loadoutOf(s, lastTower(s))
+    const rate = effectsModule.prefillRateOn(s, lo, rackPlan(s, lo), reqs[0].tokensIn)
+    return { reqs, rate }
+  }
+
+  it('without chunked prefill a lane runs prompts back to back: a burst queues by prefill time, not a tick per prompt', () => {
+    const { reqs, rate } = burst('comp', 3, false)
+    const one = reqs[0].tokensIn / rate
+    expect(one).toBeLessThan((SIM_DT * SIM_TIME_SCALE) / 3) // three fit in one tick
+    reqs.forEach((r, i) => {
+      expect(r.queueSec).toBe(0) // none waited a whole tick
+      expect(r.ttftReal).toBeCloseTo((i + 1) * one, 6) // FCFS: each waits for the prompts ahead of it
+    })
+    // code completion's 200 ms first-token bound holds for the whole burst
+    expect(reqs.every((r) => !r.sloViolated)).toBe(true)
+    // chunking trades a little first-token time for smooth decodes: per prompt it is slightly slower
+    const chunked = burst('comp', 3, true)
+    expect(chunked.reqs[1].ttftReal).toBeGreaterThan(reqs[1].ttftReal)
+    expect(chunked.reqs[1].ttftReal).toBeLessThan(reqs[1].ttftReal * 1.5)
+  })
+
+  it('a prompt goes to the rack that can start it soonest: a burst spreads over identical racks in reach', () => {
+    const run = (router: boolean) => {
+      const s = createState(85)
+      richBuild(s)
+      const model = calmModel(s)
+      const a = buildGeneralRack(s, 2, 2, model)
+      const b = buildGeneralRack(s, 2, 0, model)
+      if (router) expect(tryBuild(s, 'router', 1, 2)).toBe(true)
+      liveWave(s)
+      const reqs = Array.from({ length: 8 }, () => freeze(benignOf(spawnRequest(s, 'rag'))))
+      for (let i = 0; i < 3000 && reqs.some((r) => r.prefillDoneAt === undefined); i++) step(s)
+      const on = (id: number) => reqs.filter((r) => r.kvTowerId === id).length
+      return { reqs, a: on(a), b: on(b), first: reqs[0].kvTowerId, aId: a }
+    }
+    for (const router of [false, true]) {
+      const r = run(router)
+      expect(r.a + r.b).toBe(8)
+      expect(Math.abs(r.a - r.b)).toBeLessThanOrEqual(1) // balanced, not all on the first-built rack
+      expect(r.first).toBe(r.aId) // a tie goes to the lower tower id (deterministic)
+      // each rack queues four prompts back to back: the last waits for four prefills, not eight
+      const one = r.reqs[0].ttftReal
+      expect(Math.max(...r.reqs.map((x) => x.ttftReal))).toBeCloseTo(4 * one, 6)
+    }
+  })
+
+  it('a router never strands a prompt on a full rack while another rack in reach has room', () => {
+    const run = (router: boolean) => {
+      const s = createState(86)
+      richBuild(s)
+      // two KV-tight L40S racks of the starter: a few RAG cohorts fill one
+      for (const row of [2, 0]) {
+        tryBuild(s, 'srv_edge', 2, row)
+        upgradeHardware(s, lastTower(s).id)
+      }
+      if (router) expect(tryBuild(s, 'router', 1, 2)).toBe(true)
+      liveWave(s)
+      const reqs = Array.from({ length: 8 }, () => freeze(benignOf(spawnRequest(s, 'rag'))))
+      for (let i = 0; i < 6000 && reqs.some((r) => r.prefillDoneAt === undefined); i++) step(s)
+      return Math.max(...reqs.map((x) => x.ttftReal))
+    }
+    const plain = run(false)
+    const routed = run(true)
+    expect(routed).toBeLessThan(5) // no prompt waits a minute for one rack while the other idles
+    expect(routed).toBeLessThan(plain * 1.5 + 0.5)
+  })
+
+  it('a rack keeps its own running answers and new prompts before it lends spare room to co-decode', () => {
+    const s = createState(89)
+    s.meters.cash = 99999
+    s.phase = 'build'
+    infraOn(s, 'inf_paged', 'inf_wq_fp8') // no Continuous Batching: one sprite per rack
+    const model = calmModel(s)
+    const a = buildGeneralRack(s, 2, 2, model)
+    const b = buildGeneralRack(s, 2, 0, model)
+    liveWave(s)
+    holdWave(s)
+    const first = freeze(benignOf(spawnRequest(s, 'batch')))
+    for (let i = 0; i < 600 && first.prefillDoneAt === undefined; i++) step(s)
+    expect(first.homeTowerId).toBe(a) // the tie went to the lower tower id
+    step(s)
+    expect(first.tokBy[b] ?? 0).toBeGreaterThan(0) // B's spare slot helps decode it
+    // a new prompt arrives: B's slot goes to it, not to helping A's answer
+    const next = freeze(benignOf(spawnRequest(s, 'chat')))
+    for (let i = 0; i < 600 && next.prefillDoneAt === undefined; i++) step(s)
+    expect(next.kvTowerId).toBe(b)
+    expect(next.queueSec).toBe(0)
+  })
+
+  it('a request is unservable only when no rack that saw it could ever hold it; one that waited on capacity leaks', () => {
+    const s = createState(87)
+    richBuild(s)
+    liveWave(s)
+    holdWave(s)
+    const probe = spawnRequest(s, 'summ', 1, 1, 1, 1, 6) // a ~72K-token prompt
+    s.requests.length = 0
+    const small = Object.values(MODEL_DEFS).find((m) => m.contextWindowK * 1000 < probe.tokensIn)!
+    const big = Object.values(MODEL_DEFS).find(
+      (m) => m.contextWindowK * 1000 > probe.tokensIn * 1.5 && serverFitsMemory(s, loadout(s, 'hw_perf', m.id)),
+    )!
+    expect(small).toBeDefined()
+    expect(big).toBeDefined()
+    s.phase = 'build'
+    buildGeneralRack(s, 2, 2, small.id) // at the ingress: its window is too short for the prompt
+    buildGeneralRack(s, 9, 2, big.id) // further down the lane: this one could hold it
+    liveWave(s)
+    holdWave(s)
+    const r = freeze(spawnRequest(s, 'summ', 1, 1, 1, 1, 6))
+    step(s)
+    expect(r.windowBlocked).toBe(true) // the short-window rack rejected it…
+    expect(r.fitSeen).toBe(false) // …and nothing that saw it could hold it
+    r.dist = 9 * TILE // walk it into the long-window rack's reach
+    step(s)
+    step(s)
+    expect(r.fitSeen).toBe(true) // the long-window rack in reach could
+    // reaching the core unanswered: a plain leak when some rack could have held it, else unservable
+    const leakAs = (fitSeen: boolean): Outcome => {
+      const t = createState(88)
+      liveWave(t)
+      holdWave(t)
+      const q = spawnRequest(t, 'summ')
+      q.windowBlocked = true
+      q.fitSeen = fitSeen
+      q.dist = pathLength(q.laneId) - 0.01
+      step(t)
+      return eventsOf(t, 'outcome').find((e) => e.requestId === q.id)!.outcome
+    }
+    expect(leakAs(false)).toBe('unservable')
+    expect(leakAs(true)).toBe('leaked')
   })
 })
 
@@ -3072,7 +3371,7 @@ describe('agent bridge snapshot', () => {
     expect(m.alignmentTax).toBeCloseTo(alignmentTax(MODEL_DEFS[GENERAL]), 2)
     expect(m.qualityBy.agentic).toBeCloseTo(MODEL_DEFS[GENERAL].qualityBy.agentic, 0)
     const enc = snap.catalog.find((c) => c.defId === 'guard_encoder')!.guardrail!
-    expect(enc.latencyMs).toBe(92)
+    expect(enc.latencyMs).toBe(TOWER_DEFS.guard_encoder.guardrail!.checkLatencyMs)
     expect(enc.catches).toContainEqual({ hazard: 'injection', locked: true, unlockedBy: 'r_eval_redteam_v1' })
     expect(enc.catches).toContainEqual({ hazard: 'jailbreak', locked: false })
     expect(snap.nextWave?.surgeLane).toBeNull()

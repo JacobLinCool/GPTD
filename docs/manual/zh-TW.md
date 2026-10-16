@@ -175,7 +175,7 @@ Training Lab、Post-Training Studio、Codex 與通知在兩種模式下運作相
 
 TTFT 是到第一個 token 的時間，TPOT 是每個輸出 token 的時間（整段回答結算一次），E2E 是整段回答，*首個回答*則是任何隱藏思考之後、第一個*可見* token 出現的時間。品質門檻每個 campaign 層級大約提高 2%，所以推理與 agentic 的門檻到最後會逼近 100。
 
-**正確與否是「軸匹配」。** 請求只對著回答它的模型在一條軸上的分數受評——chat、coding、reasoning、general 或 agentic。低於難度就是答錯（`bad`），並且退款。多座機架共同 decode 一個請求時，回答品質是寫出它的那幾座機架依 token 加權的混合，所以範圍內一座弱機架會把強機架拖下水。長提示也會吃掉品質：提示佔用模型 window 超過四分之一後品質就會下滑，真正擅長長 context 的模型損失少得多。**agentic** 軸是從尚未飽和的 benchmark 校準而來，所以一個聊天出色的模型，仍可能在每個 agent 任務上失手。
+**正確與否是「軸匹配」。** 請求只對著回答它的模型在一條軸上的分數受評——chat、coding、reasoning、general 或 agentic。低於難度就是答錯（`bad`），並且退款。回答品質是寫出它的那幾座機架依 token 加權的混合：跑同一個模型的機架可以共同 decode 一個請求（其中一座用 4-bit 格式時，會以它的量化代價把混合拉低），而由另一個模型接手的請求，則依兩個模型各自寫出的 token 計分。長提示也會吃掉品質：提示佔用模型 window 超過四分之一後品質就會下滑，真正擅長長 context 的模型損失少得多。**agentic** 軸是從尚未飽和的 benchmark 校準而來，所以一個聊天出色的模型，仍可能在每個 agent 任務上失手。
 
 **每種 archetype 遇到思考與拒答的方式都不同。** 思考模型會在回答前花掉隱藏 token——它的思考預算乘上該 archetype 的比例——而過度謹慎的對齊對各 archetype 的衝擊，與它們攜帶多少邊界內容成正比：
 
@@ -220,14 +220,14 @@ Open weights 下載就有，所以部署模型**不花錢**。限制模型的是
 roster 收錄 58 個真實的 open-weight checkpoint，從塞得進任何地方的 0.6B 模型，到 2.78 兆參數的 Kimi K3——即使用它原生的 4-bit 版本，權重也超過一個半 TB。它們來自 Qwen、Gemma、gpt-oss、DeepSeek、GLM、MiniMax、Nemotron、MiMo、Kimi 等等。每個模型各軸的能力都是**從公開 benchmark 校準**（Artificial Analysis 與 model card），從不手調；專家模式的模型總覽會顯示每個數字的來源。
 
 - **發布精度很重要。** 許多 checkpoint 以 BF16（每參數 2 bytes）發布，有些是 FP8，有些原生就是 4-bit（gpt-oss 的 MXFP4、DeepSeek V4 的 FP4 expert）。模型永遠以發布精度或更低精度服務；量化到發布精度以下（post-training quantization）能省記憶體，但可能損失品質，而原生 4-bit 的模型以 4-bit 執行不用付任何代價。
-- **Mixture-of-Experts 把記憶體與算力解耦。** MoE 必須把*所有* expert 都放進 VRAM，但每個 token 只跑它啟用的 expert，所以它讀提示的速度跟一個小得多的模型一樣快。decode 則不同：一整批真實使用者會選到許多不同的 expert，於是每一步無論如何都要讀很大一部分 expert 權重，一個忙碌的 MoE decode 起來更接近它的完整大小，而不是啟用大小。Expert Parallelism 會把 expert 分散到各副本上，讓每份副本讀得更少。
+- **Mixture-of-Experts 把記憶體與算力解耦。** MoE 必須把*所有* expert 都放進 VRAM，但每個 token 只跑它啟用的 expert，所以它讀提示的速度跟一個小得多的模型一樣快。decode 則不同：一整批真實使用者會選到許多不同的 expert，於是每一步無論如何都要讀很大一部分 expert 權重，一個忙碌的 MoE decode 起來更接近它的完整大小，而不是啟用大小。Expert Parallelism 會把 expert 分散到各副本上，讓每份副本讀得更少。每個 MoE 層每一步還有固定的 routing 成本，所以就算只有一位使用者，它 decode 起來也比同啟用大小的 dense 模型慢：單獨一位使用者在一張 H100 上的 gpt-oss 120B 每秒約 250 個 token。
 - **KV 記憶體取決於架構。** 專家模式的模型總覽會顯示每個模型每 token 的 KV bytes 與發布精度。混合式設計（sliding-window 或 linear-attention 層、壓縮的 latent attention）每 token 的 KV 遠少於完整 attention，所以同一座機架能裝下更長的提示、更多使用者。
 
 ### 挑模型：部署清單
 
 選一座機架，打開**部署**分頁。你擁有的每個 checkpoint 都會針對下一波、*在這座機架上*評分：
 
-- 每位使用者每秒 token 數，依 40 ms 與 200 ms 的每 token 上限著色；
+- 在下一波負載下（與 ★ 相同的預測）每位使用者每秒 token 數，取最接近每 token 上限的那一型，依該上限著色：綠色是穩穩在內、琥珀色是接近、紅色是超過；
 - `Q`——它在這波會受評的軸上的品質，以及它能乾淨服務這波幾種 archetype；
 - `safe`——它的對齊安全分數與誤拒比例；
 - **混合**或**思考型**標記（見下文），已載入的模型標 ✓；
@@ -252,9 +252,10 @@ roster 大多是混合型，這也是為什麼一個混合模型能同時撐住�
 一座機架不是一次服務一個人。棋盤上每個請求封包代表一群真實使用者——它會在機架上放上 28 條同時進行的串流——而忙碌的機架會交錯處理許多封包，每個 decode 步驟為每條串流各產出一個 token。Batching 是 serving 核心的取捨：每多一條串流，每一步就多一點負擔（它的 KV 得被讀取），所以**單一使用者的速度下降，總吞吐則上升**，直到逼近算力天花板。一座單獨看很快的機架，滿載時對對話來說可能就太慢。
 
 - **Continuous Batching** 是研究樹的根。在它之前，一份模型副本一次只服務一群；之後，引擎每份副本可同時跑最多 256 條串流，並在每一步把做完的換出去。
-- **KV 記憶體限制並行量。** 每條串流都要把它 context 的 key 與 value 留在記憶體裡，所以長提示與長回答佔用更多記憶體。機架的 KV 滿了，新請求就得等（等待時間算進它的 TTFT）；一個 KV 會超過某座機架全部預算的請求永遠不會被那裡收下，若沒有其他機架接得下，就以「無法服務」收場。PagedAttention 把可用 KV 從空閒記憶體的 55% 提高到 96%，FP8 與 INT4 KV cache 分別把它減半與減到四分之一，KV Offloading 則把冷的前綴留在 CPU 端以便重用。
+- **機架分攤流量，模型守住自己的 KV。** 提示會交給範圍內最快能開始處理它的那座機架，所以一波湧入會分散到它碰到的各座機架上。讀了提示的機架就持有它的 KV：跑同一個模型的其他機架可以用剩餘空間幫忙 decode 回答（在棋盤上更快完成，但每個 token 仍花它真實的時間），跑不同模型的機架則讀不了那份 KV——它只能把提示與目前為止的回答全部重讀一次才能接手，這會讓回答停頓。
+- **KV 記憶體限制並行量。** 每條串流都要把它 context 的 key 與 value 留在記憶體裡，所以長提示與長回答佔用更多記憶體。機架的 KV 滿了，新請求就得等（等待時間算進它的 TTFT，即使最後由更靠近 core 的機架服務它）；一個 KV 會超過某座機架全部預算的請求永遠不會被那裡收下，若看到它的機架沒有一座容得下，就以「無法服務」收場。PagedAttention 把可用 KV 從空閒記憶體的 55% 提高到 96%，FP8 與 INT4 KV cache 分別把它減半與減到四分之一，KV Offloading 則把冷的前綴留在 CPU 端以便重用。
 - **Prefix caching 跳過共享的提示。** Cache 建築讓範圍內的機架，在可快取流量上有機會重用快取的提示前綴。命中時會跳過 prefill 中共享前綴的那一部分，其餘獨特的部分仍要 prefill，所以 Cache 能降低 TTFT 並騰出 prefill 產能。每個請求只查一次；重疊的 Cache 不會疊加（取最好的那個），命中率上限是 70%，因為獨特的提示沒有可共享的部分。Prefix Caching 研究會把 Cache 從 35% 提升到這個上限。被快取的提示 token 照全價計費——它們確實被服務了。
-- **Chunked Prefill 讓回答持續流出。** 沒有它時，一座機架開始讀長提示，就會卡住 batch 裡所有回答，直到提示讀完（灰色 LED）。有了它，每個引擎步驟都會帶著進行中的回答，再加上一份依機架速度訂定的提示 token 預算：短提示一步就完成，長提示被切成好幾步，回答則持續流出，只是稍慢一點。
+- **Chunked Prefill 讓回答持續流出。** 沒有它時，機架會一個接一個地讀提示，讀的期間卡住 batch 裡所有回答（灰色 LED）。有了它，每個引擎步驟都會帶著進行中的回答，再加上一份依機架速度訂定的提示 token 預算：短提示一步就完成，長提示被切成好幾步，回答則持續流出，只是稍慢一點。
 
 ## 兩層安全
 
@@ -266,7 +267,7 @@ roster 大多是混合型，這也是為什麼一個混合模型能同時撐住�
 
 | Guardrail | 家族 | 檢查時間 | 攔截 | 側 | 對機隊的成本 |
 | --------- | ---- | -------- | ---- | -- | ------------ |
-| **Prompt Guard**（編碼器） | 微調過的 86M 分類器 | 固定 92 ms | jailbreak；Red-Team Eval 後加上 injection | 輸入 | 無——不佔機架 |
+| **Prompt Guard**（編碼器） | 微調過的 86M 分類器 | 固定 10 ms | jailbreak；Red-Team Eval 後加上 injection | 輸入 | 無——不佔機架 |
 | **Llama Guard**（生成式） | 12B 的評判模型 | 一次真實推論：一般提示每側數十 ms，長的對話輪次更多 | jailbreak 與有害內容；Red-Team Eval 後加上 injection；Red-Team Eval II 後加上 PII | 兩側 | 跑在它自己的 H100 上：耗電，也計 GPU-hour |
 
 （遊戲還模擬了第三個家族：廠商託管、針對有害內容與 PII 的 Moderation API；它不在 build bar 上，因為 campaign 的流量用不到它。）
@@ -274,7 +275,7 @@ roster 大多是混合型，這也是為什麼一個混合模型能同時撐住�
 真正重要的是 guardrail 在一條 lane 上怎麼組合：
 
 - **縱深防禦有效，重複堆疊無效。** 不同家族的 guardrail 會疊加：每一個都有機會攔下其他家族漏掉的。在同一條 lane 上再放一個*相同*的 guardrail，只會多覆蓋其他 lane，不會提高攔截率——同一個分類器對同一個提示會給出同一個判定。
-- **每個 guardrail 都有代價。** 一條 lane 上的每個家族都會把它的檢查時間加到那裡的每個請求上（92 ms 幾乎是程式碼補全 200 ms 首 token 預算的一半），而且每個家族都會對無害流量各擲一次誤判。覆蓋帶有攻擊的 lane 就好，不要鋪滿整個棋盤。
+- **每個 guardrail 都有代價。** 一條 lane 上的每個家族都會把它的檢查時間加到那裡的每個請求上（Llama Guard 在輸入端的 30–80 ms 是程式碼補全 200 ms 首 token 預算中不小的一塊，編碼器的 10 ms 則只是一小塊），而且每個家族都會對無害流量各擲一次誤判。覆蓋帶有攻擊的 lane 就好，不要鋪滿整個棋盤。
 - **Prompt injection 需要 Red-Team Eval（紅隊評測）。** 研究它之前，任何 guardrail 都攔不下 injection，agent 唯一的防線就是它的模型。Red-Team Eval 也會降低每個 guardrail 的誤擋；Red-Team Eval II 解鎖 PII 偵測。
 - **攻擊會進化。** 隨著 campaign 推進，攻擊越來越凌厲（嚴重度一路逼近上限），而從 2023 年中起，越來越多攻擊是沒有任何分類器訓練過的*新型*變體——到最後佔一半。編碼器對新型攻擊只剩不到一半的攔截率；生成式評判模型則完全保留，模型自身的對齊看的是嚴重度，而不是新不新。後期的安全需要 Llama Guard 或對齊良好的模型，而不是更多編碼器。
 
@@ -303,7 +304,7 @@ infra 樹只管 serving 基礎設施，從不改動模型權重。
 
 - **Scheduling** — Continuous Batching（根）、Multi-Step Scheduling（吞吐更高，但新請求加入前有短暫延遲），以及 **Chunked Prefill 或 P/D Disaggregation**——兩者互斥。Disaggregation 把機架分成 prefill 池與 decode 池（V 切換機架角色），帶來小幅的調校增益，池之間則要傳送 KV。
 - **KV memory** — PagedAttention、Prefix Caching、FlashAttention（長提示與 KV 讀取更快，並省回一點 activation 記憶體）、FP8 與 INT4 KV cache（INT4 在超過 32K token 時會損失一點品質），以及 KV Offloading（在 CPU 端放更大的 prefix cache，重新載入要經過 PCIe 延遲）。
-- **Decoding** — Speculative Decoding：由小的草稿模型提出 token、大模型一次驗證，低負載時每步能產出好幾個 token。它會佔一點 VRAM、在每個層級都更耗電、對程式碼幫助最大、對開放式推理最小，batch 一旦受算力限制就會自動關閉。
+- **Decoding** — Speculative Decoding：由小的草稿模型提出 token、大模型一次驗證，低負載時每步能產出好幾個 token。它會佔一點 VRAM、在每個層級都更耗電、對程式碼幫助最大、對開放式推理最小，而且 batch 越大增益越小——每條 lane 大約一群請求以內完整、四群左右就消失——不再划算時會自動關閉。
 - **權重格式** — FP8（記憶體減半、實際上無損，並有 FP8 tensor 速度）、INT4 AWQ/GPTQ（約 BF16 記憶體的四分之一，以 BF16 速度運算，並會損失品質——提示超過 8K token 時更多），以及 NVFP4（只限 Blackwell 機架：4-bit 記憶體、FP4 tensor 速度、品質損失較小）。之後每座機架可用它的「權重」按鈕各自挑格式；*自動*會選對這個模型零品質損失中最快的格式，而有損的 4-bit 格式正是把一個機架原本裝不下的模型塞上去的方法。較低精度也更省電。
 - **Parallelism** — Tensor Parallelism（最多跨 8 顆 GPU）、Pipeline Parallelism（超過 8 顆，每個提示有 pipeline bubble）、Data Parallelism（在各副本間平衡請求）、Expert Parallelism（把 MoE 的 expert 分散到各副本，讓忙碌的 batch 每份副本讀得更少）。
 - **Routing、adapter、引擎** — KV-Aware Routing（被 Router 分派的可快取請求會落在已持有它前綴的地方：更多 Cache 命中）、Multi-LoRA Serving（機架可在波中切換同一個 base 的 adapter checkpoint，在下一個建造階段前速度略降），以及引擎的選擇，**SGLang 或 TensorRT-LLM**——兩者互斥：SGLang 重用更多前綴，TensorRT-LLM 的 kernel 更快。
@@ -354,7 +355,7 @@ infra 軌也負責解鎖 Studio 的方法（PEFT、偏好最佳化、GRPO、Cons
 
 ## 經濟 — 真實的每 token 美元價
 
-- **收入按 token 計價。** 每種 archetype 都有輸入價與輸出價（見 archetype 表）。成功的請求按實際處理的 token 付費——它讀的提示（含快取的前綴），加上它拿到的回答；太晚的付一半；其他結果都不付錢，答錯的會退款。隱藏的思考 token 從不計費。agent 與推理的回答賣高價；embedding 與對話賣便宜。
+- **收入按 token 計價。** 每種 archetype 都有輸入價與輸出價（見 archetype 表）。成功的請求按實際處理的 token 付費——它讀的提示（含快取的前綴），加上它拿到的回答；太晚的付一半；其他結果都不付錢，答錯的會退款。隱藏的思考 token 從不計費，所以機架卡片的 $/Mtoken 以計費的回答 token 計：會在下一波流量上思考的模型，卡片上的成本較高。agent 與推理的回答賣高價；embedding 與對話賣便宜。
 - **SLA 合約每波都付。** 一波清完時，你的固定客戶會付這波的合約款乘上它的 **Goodput**——這波所有請求中被乾淨服務的比例。它是你前期收入的大宗，並隨年代成長；頭目波付得更多。隨著提示變長，token 收入會超過它。波次結算與清波橫幅把這筆款項列為*過關獎勵*。
 
   | 波次層級 | Goodput 100% 時的合約款 | 該層級的頭目波 |
@@ -386,7 +387,7 @@ infra 軌也負責解鎖 Studio 的方法（PEFT、偏好最佳化、GRPO、Cons
 
 三個常見陷阱：
 
-- **服務時間從一座能服務它的機架開始算。** 請求抵達一座能 prefill 它的機架之前，在 lane 上移動的時間是站位時間，不算 TTFT。從那之後，排隊、guardrail 檢查、prefill 與 decode 全都算數。
+- **服務時間從一座能服務它的機架開始算。** 請求抵達一座能 prefill 它的機架之前，在 lane 上移動的時間是站位時間，不算 TTFT。從那之後，排隊（包括在滿載機架範圍內的等待，即使最後由更靠近 core 的機架服務它）、guardrail 檢查、prefill 與 decode 全都算數。
 - **單看一座機架不等於整波。** 一座機架單獨看可能很快，batch 滿了之後還是會錯過那一波；★ 與下一波預測正是因此才以這波的混合負載來評估。
 - **速度和品質是兩件事。** 小模型配快 GPU 可能準時卻答錯；強模型配慢機架可能答對卻太晚。
 

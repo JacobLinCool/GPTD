@@ -43,6 +43,7 @@ import {
 } from './actions'
 import { HARDWARE_DEFS, HARDWARE_TIERS, METHOD_RECIPES, RESEARCH_DEFS, TOWER_DEFS, WAVES } from './content'
 import {
+  buildDrawKw,
   formatAvailable,
   isBlackwell,
   type Loadout,
@@ -549,7 +550,7 @@ function ensureSupport(s: GameState, id: string, want: number, minSpend = 0): vo
   let guard = 0
   while (countDef(s, id) < want && guard++ < 12) {
     if (spendable(s) < buildCost(s, TOWER_DEFS[id]) + minSpend) return
-    if (!ensureCapacity(s, (TOWER_DEFS[id].powerDraw ?? 0) + 0.1)) return
+    if (!ensureCapacity(s, buildDrawKw(s, TOWER_DEFS[id]) + 0.1)) return
     if (spendable(s) < buildCost(s, TOWER_DEFS[id])) return
     if (!place(s, id, central ? supportSlot(s, TOWER_DEFS[id].kind) : laneSlot(s))) return
   }
@@ -567,11 +568,11 @@ const novelShare = (demand: Demand[]): number => demand.reduce((m, d) => Math.ma
 
 /**
  * The guardrail stage on every lane. A Prompt Guard encoder screens jailbreaks (and, once
- * Red-Team Eval has calibrated it, injection) for 92 ms; as the era's attacks turn adaptive it
- * misses most novel variants, so once they are a large share the stage becomes a generative
- * judge (Llama Guard): one family, about the same input latency after FP8, every hazard
- * including harmful content, and it keeps its recall on novel attacks. Keeping both would stack
- * their latency on code completion's 200 ms TTFT, so the encoder is retired when the judge lands.
+ * Red-Team Eval has calibrated it, injection) in about 10 ms; as the era's attacks turn adaptive
+ * it misses most novel variants, so once they are a large share the stage becomes a generative
+ * judge (Llama Guard): one family, several times the encoder's input latency (and an output check
+ * too), every hazard including harmful content, and it keeps its recall on novel attacks. Both
+ * families together would add their false refusals, so the encoder is retired when the judge lands.
  */
 function planGuards(s: GameState, demand: Demand[], waveNo: number): void {
   const hazardous = carries(demand, 'jailbreak') || carries(demand, 'injection') || carries(demand, 'harmful')

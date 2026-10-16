@@ -238,7 +238,9 @@ export const REQUEST_TYPES: Record<string, RequestTypeDef> = {
     difficulty: { agentic: 82, reasoning: 66 },
     context: 70,
     prefixShare: 0.7,
-    // n/a while it carries an injection hazard (a hazard carrier is never benign)
+    // applies only where a wave strips its hazard: every agent step carries the injection
+    // hazard below (a pessimistic stand-in — every tool output is treated as possibly hostile),
+    // and a hazard carrier is never benign, so it is never over-refused
     refusalExposure: 0.5,
     toolUse: true,
     // §3.4 agents are prompt-INJECTION targets: a malicious tool/document can hijack
@@ -1482,7 +1484,7 @@ export const TOWER_DEFS: Record<string, TowerDef> = {
     powerDraw: 0.2,
     heat: 0.2,
     tagline: 'Capability-aware dispatch',
-    desc: 'Requests inside its range are dispatched to the in-range rack whose model is best at that request (ties go to the faster rack) instead of whichever rack grabs them first, so weak racks stop answering hard requests. With KV-Aware Routing researched, routed cacheable traffic also lands on the replica that holds its prefix: more prefix-cache hits.',
+    desc: 'Prompts inside its range go to the in-range rack whose model answers them correctly and finishes soonest (the strongest when none can) instead of simply the rack that could start them soonest, so weak racks stop answering hard requests and fast racks take the easy ones. The rack that reads a prompt holds its KV, so its model writes the answer. With KV-Aware Routing researched, routed cacheable traffic also lands on the replica that holds its prefix: more prefix-cache hits.',
   },
   cache: {
     id: 'cache',
@@ -1499,11 +1501,11 @@ export const TOWER_DEFS: Record<string, TowerDef> = {
     desc: 'Aura: racks in range can reuse a cached prompt PREFIX on cacheable traffic (Embedding, Chat, Code Completion, RAG, Agentic). A hit skips the shared-prefix part of the prefill (the unique rest still prefills): lower TTFT, less prefill contention. Each request gets one lookup, and overlapping caches do not stack: the best one counts, capped by how much traffic really shares a prefix.',
   },
   // §3.3 the three external guardrail families — the real contrast: a BERT encoder is one
-  // fixed forward (Prompt Guard 2 86M: 92.4 ms per 512-token classification on an A100, longer
-  // prompts split into segments scanned in parallel) that adaptive attacks slip past; a
-  // generative 12B judge is a real inference on a GPU of your own — a prefill of the turn it
-  // reads plus a few verdict tokens (tens of ms on an H100 for a typical prompt, growing with
-  // the turn), on both sides, paying GPU-hours and power.
+  // fixed forward (a served Prompt Guard 2 86M decides in a few ms; longer prompts split into
+  // segments scanned in parallel) that adaptive attacks slip past; a generative 12B judge is a
+  // real inference on a GPU of your own — a prefill of the turn it reads plus a few verdict
+  // tokens (tens of ms on an H100 for a typical prompt, growing with the turn), on both sides,
+  // paying GPU-hours and power.
   guard_encoder: {
     id: 'guard_encoder',
     name: 'Prompt Guard (encoder)',
@@ -1518,12 +1520,15 @@ export const TOWER_DEFS: Record<string, TowerDef> = {
       archetype: 'encoder',
       side: 'input',
       catches: ['jailbreak', 'injection'],
-      checkLatencyMs: 92, // Prompt Guard 86M: a single BERT forward, ms-scale (NOT the roofline)
+      // a served Prompt Guard 86M: a few ms of BERT forward (optimized encoder guards decide in
+      // 2.4–9.5 ms, REFERENCE-DOSSIER §3.6) + the service hop and tokenization — not the roofline;
+      // Meta's model card measures 92.4 ms unbatched on an A100 (REALISM §4.2)
+      checkLatencyMs: 10,
       runsOnRoofline: false,
       baseRecall: 0.975,
     },
-    tagline: 'Input-side · jailbreak (+ injection after Red-Team) · 92 ms',
-    desc: 'A lightweight BERT encoder (Prompt Guard 86M): one millisecond-scale forward pass on the INPUT, before any rack computes. It screens every request on the lanes its range touches, wherever it sits: +92 ms TTFT and a small false-refusal rate on that traffic. Blocks jailbreaks outright; prompt-injection detection unlocks with Red-Team Eval. More encoders cover more lanes; they never re-screen the same request.',
+    tagline: 'Input-side · jailbreak (+ injection after Red-Team) · 10 ms',
+    desc: 'A lightweight BERT encoder (Prompt Guard 86M): one millisecond-scale forward pass on the INPUT, before any rack computes. It screens every request on the lanes its range touches, wherever it sits: +10 ms TTFT (service hop included) and a small false-refusal rate on that traffic. Blocks jailbreaks outright; prompt-injection detection unlocks with Red-Team Eval. More encoders cover more lanes; they never re-screen the same request.',
   },
   guard_llm: {
     id: 'guard_llm',

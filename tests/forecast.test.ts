@@ -50,6 +50,7 @@ interface Fleet {
   guard?: string
   caches?: number
   redteam?: boolean
+  routers?: number
 }
 
 /** A fleet in the build phase before `wave` (1-based): racks core-first on one tier, grid + chillers, no incident. */
@@ -64,7 +65,8 @@ function fleet(f: Fleet, seed: number): GameState {
   }
   if (f.redteam) s.upgrades['eval_redteam'] = 1
   if (f.guard) expect(tryBuild(s, f.guard, LANE[0].col, LANE[0].row)).toBe(true)
-  let i = 4
+  for (let k = 0; k < (f.routers ?? 0); k++) expect(tryBuild(s, 'router', LANE[2 + k].col, LANE[2 + k].row)).toBe(true)
+  let i = 4 + Math.max(0, (f.routers ?? 0) - 2)
   for (let k = 0; k < f.racks; k++) {
     const p = LANE[i++]
     expect(tryBuild(s, 'srv_edge', p.col, p.row)).toBe(true)
@@ -101,6 +103,7 @@ function served(f: Fleet, modelId: string): number {
 }
 
 const MODERN = ['inf_batching', 'inf_wq_fp8', 'inf_paged', 'inf_prefix', 'inf_chunked']
+const MID = [...MODERN, 'inf_flash', 'inf_kvquant_fp8', 'inf_par_tp', 'inf_spec']
 const TOWER_GUARD_ENCODER = TOWER_DEFS.guard_encoder.guardrail!
 const RUN_TIMEOUT_MS = 60_000
 
@@ -177,6 +180,66 @@ describe('deploy picker ★: the pick serves the wave it is recommended for', ()
     },
     RUN_TIMEOUT_MS,
   )
+})
+
+describe('picker speed chip: the speed the ★ is scored at', () => {
+  it('shows each row the per-user speed of the archetype nearest its TPOT bound, under the forecast load', () => {
+    const f: Fleet = { wave: 16, racks: 12, hw: 'hw_perf', research: MODERN, guard: 'guard_encoder' }
+    const traffic = upcomingTraffic(fleet(f, 1))!
+    const cands = picker(f)
+    for (const c of cands) {
+      if (!c.fit.length) continue
+      let worst = -1
+      let want = { tokS: 0, tpot: Infinity, bound: Infinity }
+      traffic.entries.forEach((e, i) => {
+        const fit = c.fit[i]
+        if (e.outputTokens <= 1 || !(fit.lat.perUserDecodeTokS > 0)) return
+        const bound = (e.def.latClass === 'IN' ? 40 : e.def.latClass === 'NR' ? 200 : Infinity)
+        const use = Number.isFinite(bound) ? fit.lat.tpotMs / bound : 0
+        if (use > worst) {
+          worst = use
+          want = { tokS: fit.lat.perUserDecodeTokS, tpot: fit.lat.tpotMs, bound }
+        }
+      })
+      expect(c.perUserTokS).toBeCloseTo(want.tokS, 9)
+      expect(c.tpotMs).toBeCloseTo(want.tpot, 9)
+      expect(c.tpotBoundMs).toBe(want.bound)
+    }
+    // the ★ serves the wave, so its chip sits inside the bound it is judged against
+    const star = cands.find((c) => c.recommended)!
+    expect(star.tpotMs).toBeLessThan(star.tpotBoundMs)
+  })
+})
+
+describe('picker rows: every row scores the share the sim serves', () => {
+  // representative racks and eras — before Continuous Batching on L40S, mid-2024 H100s without
+  // chunked prefill (long documents queue at the entry racks), a 2025 H200 fleet behind a
+  // generative guard, and the ★ and the alternatives a player weighs on each
+  const NO_BATCH: Fleet = { wave: 3, racks: 6, hw: 'hw_standard', research: [] }
+  const DOCS: Fleet = { wave: 16, racks: 12, hw: 'hw_perf', research: MODERN.slice(0, 4), guard: 'guard_encoder' }
+  const H200: Fleet = { wave: 29, racks: 18, hw: 'hw_frontier', research: MID, guard: 'guard_llm', redteam: true, caches: 3, routers: 2 }
+  const MIX: Fleet = { wave: 38, racks: 24, hw: 'hw_frontier', research: MID, guard: 'guard_llm', redteam: true, caches: 5, routers: 3 }
+  const cases: [string, Fleet, string][] = [
+    ['W3 L40S, no batching', NO_BATCH, 'minicpm5_2b'],
+    ['W3 L40S, no batching', NO_BATCH, 'g_qwen3_5_2b'],
+    ['W16 H100, no chunked prefill', DOCS, 'g_qwen3_5_9b_2'],
+    ['W16 H100, no chunked prefill', DOCS, 'minicpm5_2b'],
+    ['W29 H200 + Llama Guard', H200, 'minicpm5_2b'],
+    ['W29 H200 + Llama Guard', H200, 'g_qwen3_5_9b_2'],
+    ['W38 H200, five archetypes', MIX, 'g_qwen3_5_35b_a3b_2'],
+  ]
+  for (const [name, f, id] of cases) {
+    it(
+      `${name}: ${id} within 10 points of the sim`,
+      () => {
+        const row = picker(f).find((c) => c.model.id === id)!
+        expect(row).toBeDefined()
+        const sim = served(f, id)
+        expect(Math.abs(row.score - sim)).toBeLessThanOrEqual(0.1)
+      },
+      RUN_TIMEOUT_MS,
+    )
+  }
 })
 
 describe('over-refusal: the real lever fixes the drain', () => {
