@@ -132,5 +132,7 @@ export function resolveOutcome(s: GameState, r: Request, outcome: Outcome, detai
     towerId: r.answeredBy,
     modelId: r.answeredModelId,
     cached: r.cachedTokens > 0,
+    thinkingMode: r.thinkingMode,
+    hiddenTokens: r.hiddenTokens,
   })
 }

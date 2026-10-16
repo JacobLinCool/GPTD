@@ -8,6 +8,7 @@ import {
   TILE,
 } from '../config'
 import type {
+  AnswerMode,
   CapabilityAxis,
   GameState,
   ModelDef,
@@ -18,6 +19,7 @@ import type {
 } from '../core/types'
 import {
   admissionDelaySec,
+  answerMode,
   cacheChance,
   cohortFit,
   cohortKvGb,
@@ -87,7 +89,7 @@ class Host {
   readonly slots: number
   /** the hard context window in real tokens. */
   readonly window: number
-  private qByCache: Partial<Record<CapabilityAxis, number>> | null = null
+  private qByCache: Partial<Record<`${AnswerMode}:${CapabilityAxis}`, number>> | null = null
   private tpotCache = -1
   private cacheBestCache = -1
   private stepRefCache = -1
@@ -112,10 +114,15 @@ class Host {
     return this.plan.kvGbPerReplica
   }
 
-  /** effective quality on one axis (qualityBy − PTQ tax − alignment tax). */
-  q(axis: CapabilityAxis): number {
+  /** effective quality on one axis in one answer mode (that mode's vector − PTQ tax − alignment tax). */
+  q(axis: CapabilityAxis, mode: AnswerMode): number {
     const cache = (this.qByCache ??= {})
-    return (cache[axis] ??= serverQualityVs(this.s, this.lo, axis))
+    return (cache[`${mode}:${axis}`] ??= serverQualityVs(this.s, this.lo, axis, mode))
+  }
+
+  /** §1.4 the mode this rack's model answers the request in (a hybrid: instant on interactive traffic). */
+  mode(r: Request): AnswerMode {
+    return answerMode(this.model, r.def)
   }
 
   /** real seconds per token of one stream with one cohort on the rack, throttle applied (the dispatch tie-break). */
@@ -152,9 +159,9 @@ class Host {
     return this.cacheBestCache
   }
 
-  /** hidden reasoning tokens this rack's model spends on one request of the archetype. */
+  /** hidden reasoning tokens this rack's model spends on one request of the archetype (0 in instant mode). */
   hidden(r: Request): number {
-    return hiddenTokensFor(this.model, r.def.thinkMul)
+    return hiddenTokensFor(this.model, r.def)
   }
 
   /**
@@ -216,11 +223,11 @@ function canHost(h: Host, r: Request): boolean {
 }
 
 /**
- * §6.4 the answer-quality margin this rack would give the request: effQ on its judged axis
- * − the long-context penalty of its current sequence − difficulty.
+ * §6.4 the answer-quality margin this rack would give the request: effQ on its judged axis in
+ * the mode its model answers it in − the long-context penalty of its current sequence − difficulty.
  */
 function marginOn(s: GameState, h: Host, r: Request): number {
-  return h.q(r.def.primaryAxis) - longContextPenaltyFor(s, h.model, h.format, r.contextLen) - r.difficulty
+  return h.q(r.def.primaryAxis, h.mode(r)) - longContextPenaltyFor(s, h.model, h.format, r.contextLen) - r.difficulty
 }
 
 function violate(r: Request, cause: SloCause): void {
@@ -342,10 +349,10 @@ function clearRackDisplay(t: Tower): void {
 /**
  * §4.10 Router = capability-aware dispatch (RouteLLM / model gateways): every request in a
  * router's range is reserved for an in-range rack with a free slot. Among the racks whose
- * model answers it CORRECTLY (quality margin ≥ 0) it takes the one that would finish it
- * soonest — its answer, plus the hidden reasoning a thinking model spends first, at that
- * rack's per-user speed (ties → the larger margin) — so easy traffic goes to fast small
- * models and a strong thinker is kept for what needs it. When no rack in range answers it
+ * model answers it CORRECTLY (quality margin ≥ 0, in the mode that model answers it in) it
+ * takes the one that would finish it soonest — its answer, plus the hidden reasoning a model
+ * in thinking mode spends first, at that rack's per-user speed (ties → the larger margin) — so
+ * easy traffic goes to fast small models and a strong thinker is kept for what needs it. When no rack in range answers it
  * correctly it takes the best margin (ties → the sooner answer). A request no rack in range
  * can take stays unreserved (any rack may serve it) — routing never strands traffic.
  * Without a router, racks serve the requests nearest the core first.
@@ -427,9 +434,9 @@ function credit(r: Request, t: Tower, gen: number): void {
 
 /**
  * §6.4/R8 quality gate, TOKEN-WEIGHTED: each rack scores the tokens it generated with
- * its own margin (effQ = qBy[primaryAxis] − long-context penalty, minus the request's
- * difficulty), and the answer's margin is the weighted mean — the models that wrote the
- * answer decide its quality, not the best model that touched it.
+ * its own margin (effQ = its model's vector in the mode it answers in, on the primary axis,
+ * − long-context penalty − the request's difficulty), and the answer's margin is the weighted
+ * mean — the models that wrote the answer decide its quality, not the best model that touched it.
  */
 function scoreQuality(s: GameState, r: Request, h: Host, tokens: number): void {
   if (tokens <= 0) return
@@ -443,11 +450,13 @@ function scoreQuality(s: GameState, r: Request, h: Host, tokens: number): void {
  * The first output token exists (prefill done on this rack, or a prefix-cache hit covered
  * it): latch TTFT = queue wait + the prefill's wall time this tick + input guards + the
  * rack's admission delay (§0.4), judge the TTFT bound, then roll layer 1 with the model that
- * produced the token, and add the hidden reasoning that model thinks before it answers.
+ * produced the token, and add the hidden reasoning that model thinks before it answers — none
+ * in instant mode (§1.4: a hybrid answers interactive traffic with thinking switched off).
  */
 function firstToken(s: GameState, r: Request, h: Host, tDone: number): void {
   r.prefill = 0
   r.prefillDoneAt = s.time
+  r.thinkingMode = h.mode(r)
   r.ttftReal = r.queueSec + tDone + r.guardInSec + admissionDelaySec(s, h.lo, h.stepRef)
   r.e2elReal = r.ttftReal
   r.ttfatReal = r.ttftReal
@@ -468,7 +477,7 @@ function firstToken(s: GameState, r: Request, h: Host, tDone: number): void {
   }
   if (!r.selfHandled) applyLayer1(s, r, h)
   if (r.overRefused) return
-  // §1.4 a thinking model reasons before it answers: hidden tokens decode first, cost
+  // §1.4 a model answering in thinking mode reasons first: hidden tokens decode first, cost
   // time, KV and compute like any token, and are never billed
   const hidden = h.hidden(r)
   if (hidden > 0) {

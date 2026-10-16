@@ -11,6 +11,7 @@ import type {
   RequestTypeDef,
   ResearchDef,
   ServerHardwareDef,
+  ThinkingSupport,
   TowerDef,
   UpgradeDef,
   WaveDef,
@@ -24,7 +25,14 @@ import {
   type BenchInputs,
 } from './calibrate'
 import { MODEL_ARCH } from './roster.arch.generated'
-import { AA_BENCH, AA_BENCH_SOURCE, AA_META } from './roster.bench.generated'
+import {
+  AA_BENCH,
+  AA_BENCH_INSTANT,
+  AA_BENCH_INSTANT_SOURCE,
+  AA_BENCH_SOURCE,
+  AA_INSTANT_VIA,
+  AA_META,
+} from './roster.bench.generated'
 import { GENERATED_ROSTER } from './roster.generated'
 import { buildCampaign, CAMPAIGN_THEMES, themeIncidentId } from './campaign'
 
@@ -415,10 +423,12 @@ export const HARDWARE_TIERS = ['hw_edge', 'hw_standard', 'hw_perf', 'hw_frontier
  *      lane label, alignment, lineage, description;                    *
  *    · MODEL_ARCH (data/model-arch.json, from each Hugging Face        *
  *      config.json) — params, KV layout, native precision, window,     *
- *      licence;                                                        *
+ *      licence — plus the thinking support its chat template allows    *
+ *      (data/model-thinking.json: always / hybrid / never);            *
  *    · AA_BENCH / AA_META (Artificial Analysis) — the benchmark cells  *
  *      qualityBy is calibrated from, and the serving telemetry the     *
- *      thinking budget is derived from (calibrate.ts).                 *
+ *      thinking budget is derived from (calibrate.ts); a hybrid's      *
+ *      instant-mode cells (AA_BENCH_INSTANT) give qualityByInstant.    *
  *  Checkpoints you post-train in the Studio are derived the same way.  *
  * ------------------------------------------------------------------ */
 
@@ -445,8 +455,10 @@ export interface ModelArch {
   precision: string
   contextWindowK: number
   license: string
-  /** the model card's own word on thinking mode (used only when AA has no telemetry). */
-  thinkingEvidence?: boolean
+  /** what the released chat template allows (data/model-thinking.json). */
+  thinking: ThinkingSupport
+  /** how a serving stack switches thinking off (hybrid) or sets its effort (always). */
+  thinkingToggle?: string
   confidence: 'high' | 'medium' | 'low'
 }
 
@@ -877,7 +889,12 @@ for (const e of ROSTER) {
   // `bench`: AA is the source of truth where it has a number (measured or bridged).
   const bench: BenchInputs = { ...e.bench, ...AA_BENCH[e.id] }
   const qualityBy = qualityFromBenchmarks(bench, QUALITY_FLOOR[e.tier])
-  const thinking = thinkingOf(AA_META[e.id], arch.thinkingEvidence)
+  const thinking = thinkingOf(AA_META[e.id], arch.thinking)
+  // a hybrid is also judged in instant mode (thinking off): the same calibration, on its
+  // instant-mode cells (AA's Non-reasoning row of the checkpoint, or the pair fit)
+  const benchInstant = arch.thinking === 'hybrid' ? AA_BENCH_INSTANT[e.id] : undefined
+  if (arch.thinking === 'hybrid' && !benchInstant)
+    throw new Error(`roster ${e.id}: hybrid checkpoint '${e.hf}' has no instant cells — run node scripts/aa-sync.mjs build`)
   _candidates.push({
     id: e.id,
     name: e.name,
@@ -888,10 +905,12 @@ for (const e of ROSTER) {
     paramsTotalB: arch.paramsTotalB,
     paramsActiveB: arch.paramsActiveB,
     isMoE: arch.isMoE,
+    thinking: arch.thinking,
     isReasoning: thinking.isReasoning,
     thinkTokens: thinking.thinkTokens,
     quality: qualityBy[e.spec],
     qualityBy,
+    ...(benchInstant ? { qualityByInstant: qualityFromBenchmarks(benchInstant, QUALITY_FLOOR[e.tier]) } : {}),
     layers: arch.layers,
     kvLayers: arch.kvLayers,
     kvHeads: arch.kvHeads,
@@ -915,6 +934,14 @@ for (const e of ROSTER) {
       source: `https://huggingface.co/${e.hf}`,
       benchmarks: bench,
       benchmarkSource: AA_BENCH_SOURCE[e.id],
+      thinkingToggle: arch.thinkingToggle,
+      ...(benchInstant
+        ? {
+            benchmarksInstant: benchInstant,
+            benchmarkSourceInstant: AA_BENCH_INSTANT_SOURCE[e.id],
+            instantVia: AA_INSTANT_VIA[e.id] ?? '',
+          }
+        : {}),
     },
   })
 }

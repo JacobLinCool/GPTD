@@ -26,7 +26,11 @@ matches against the latest snapshot (raw, not equated; some show `—`).
 The `Serving —` line of every roster model is generated from its Hugging Face config.json
 (`data/model-arch.json`, `node scripts/arch-sync.mjs build`): the attention design, the KV cache
 per token over the KV-bearing layers (+ the constant per-request window / recurrent state), the
-release precision, and the hidden thinking budget. ★ marks the active in-game roster (the
+release precision, and the thinking support read off the released chat template
+(`data/model-thinking.json`, verified by `node scripts/thinking-sync.mjs verify`): a HYBRID's off
+switch and its thinking-off capability (calibrated from Artificial Analysis' Non-reasoning row of the
+same checkpoint, or the per-cell thinking→instant pair fit in `data/aa-bridges.json`), an
+always-thinker's hidden budget. ★ marks the active in-game roster (the
 frontier-tolerance gate, see PARETO.md); `node scripts/roster-report.mjs catalog` refreshes ★, the
 serving lines and the generated block at the end.
 
@@ -65,7 +69,7 @@ A 360M fully-open HuggingFace model trained from scratch on ~4T tokens, offering
 **Alibaba/Qwen** · 2025-04 · Apache 2.0 · 0.6B dense · reasoning · 32K ctx · spec: general · lineage: from-scratch · confidence: med
 [model card](https://huggingface.co/Qwen/Qwen3-0.6B)
 Benchmarks — GPQA-D 23.9 · IFBench 23.3 · LCR 0 · SciCode 2.8 · TB-Hard 0 · HLE 5.7  
-Serving — GQA · KV 112.0 KB/token on 28 of 28 layers · BF16 weights (2 B/param) · thinks ~1500 hidden tokens per answer  
+Serving — GQA · KV 112.0 KB/token on 28 of 28 layers · BF16 weights (2 B/param) · hybrid thinking (enable_thinking=False): instant on interactive traffic, judged 25 / 21 / 12 / 27 / 8 (from AA Qwen3 0.6B (Non-reasoning)); thinks ~1500 hidden tokens elsewhere  
 
 Smallest dense model in Alibaba's Qwen3 family, notable for still carrying the hybrid thinking/non-thinking switch at 0.6B. Targets extreme edge deployment, draft/speculative decoding and browser inference; 32K context. Per-model post-training benchmarks were not cleanly published.
 
@@ -88,7 +92,7 @@ Meta's smallest text-only Llama 3.2 model, a 1.23B dense decoder produced via pr
 **Alibaba/Qwen** · 2025-04 · Apache 2.0 · 1.7B dense · reasoning · 32K ctx · spec: reasoning · lineage: from-scratch · confidence: med
 [model card](https://huggingface.co/Qwen/Qwen3-1.7B)
 Benchmarks — GPQA-D 35.6 · IFBench 26.9 · LCR 0 · SciCode 4.3 · TB-Hard 0 · HLE 4.8  
-Serving — GQA · KV 112.0 KB/token on 28 of 28 layers · BF16 weights (2 B/param) · thinks ~1500 hidden tokens per answer  
+Serving — GQA · KV 112.0 KB/token on 28 of 28 layers · BF16 weights (2 B/param) · hybrid thinking (enable_thinking=False): instant on interactive traffic, judged 26 / 28 / 17 / 33 / 8 (from AA Qwen3 1.7B (Non-reasoning)); thinks ~1500 hidden tokens elsewhere  
 
 A 1.7B dense Qwen3 model (GQA, 28 layers) with the hybrid reasoning switch, roughly matching the older Qwen2.5-3B base. In thinking mode it is benchmarked against DeepSeek-R1-Distill-Qwen-1.5B; 32K context, tool-calling, 100+ languages. Per-size scores not published.
 
@@ -110,7 +114,7 @@ IBM's 2B dense enterprise model with optional structured reasoning via think/res
 **OpenBMB** · 2026-09 · Apache 2.0 · 2.52B dense · reasoning · 131K ctx · spec: reasoning · lineage: from-scratch (MiniCPM5-2B-Base) · confidence: high · AAII 12.5
 [model card](https://huggingface.co/openbmb/MiniCPM5-2B)
 Benchmarks — GPQA-D 70.2 · IFBench ≈51.2 (bridged) · LCR 53.1 · SciCode 25.3 · TB-Hard ≈8.9 (bridged) · HLE 8.6  
-Serving — GQA · KV 42.0 KB/token on 42 of 42 layers · BF16 weights (2 B/param) · thinks ~1500 hidden tokens per answer  
+Serving — GQA · KV 42.0 KB/token on 42 of 42 layers · BF16 weights (2 B/param) · hybrid thinking (enable_thinking=False): instant on interactive traffic, judged 80 / 82 / 59 / 87 / 42 (from the thinking→instant pair fit); thinks ~1500 hidden tokens elsewhere  
 
 OpenBMB's 2.5B dense hybrid-thinking model (thinking is switched by `enable_thinking`), released September 2026. Only 2 KV heads over 42 layers keep its cache to ~42 KB per token, and it leads the ≤2.5B class on GPQA (70) and LCR (59) — the strongest model that fits the smallest edge rack. Artificial Analysis publishes no IFBench or Terminal-Bench Hard for it, so those cells are bridged.
 
@@ -176,7 +180,7 @@ Microsoft's math-focused 3.8B reasoning model, fine-tuned from Phi-4-mini on ~15
 **NVIDIA** · 2026-03 · NVIDIA Nemotron Open Model License · 3.97B dense · reasoning · 262K ctx · spec: reasoning · lineage: derived from NVIDIA-Nemotron-Nano-9B-v2 (compressed via Nemotron Elastic framework) · confidence: med
 [model card](https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Nano-4B-BF16)
 Benchmarks — GPQA-D 51.3 · IFBench 58.2 · LCR 16.7 · SciCode 16.4 · TB-Hard 6.8 · HLE 4.8  
-Serving — hybrid-linear · KV 16.0 KB/token on 4 of 42 layers + 43 MB/request · BF16 weights (2 B/param) · answers without hidden reasoning  
+Serving — hybrid-linear · KV 16.0 KB/token on 4 of 42 layers + 43 MB/request · BF16 weights (2 B/param) · hybrid thinking (enable_thinking=False): instant on interactive traffic, judged 73 / 63 / 48 / 67 / 28 (from the thinking→instant pair fit); thinks ~1500 hidden tokens elsewhere  
 
 Nemotron 3 Nano 4B is the edge-class member of the family, a ~3.97B-parameter dense Mamba2-Transformer hybrid (primarily Mamba-2 and MLP layers with just four Attention layers, so not MoE) released March 2026 under the NVIDIA Nemotron Open Model License. Unlike the from-scratch Ultra/Super/30B tiers, this 4B is derived: it is compressed from NVIDIA-Nemotron-Nano-9B-v2 using NVIDIA's Nemotron Elastic framework. It is a unified reasoning/non-reasoning model with controllable reasoning via system prompts and a 262K-token context window. Reported model-card scores include AIME25 78.5 and GPQA 53.2; MMLU-Pro, LiveCodeBench, and SWE-bench Verified are not published on the card, so they carry no published score.
 
@@ -223,7 +227,7 @@ Smaller of Google's mobile-first multimodal Gemma 3n models, built on the MatFor
 **Institute of Foundation Models (MBZUAI)** · 2026-09 · Apache 2.0 · 5.06B dense · reasoning · 524K ctx · spec: reasoning · lineage: from-scratch · confidence: high · AAII 15.6
 [model card](https://huggingface.co/IFM/K2-Horizon-3.7B)
 Benchmarks — GPQA-D 69.2 · IFBench ≈53.5 (bridged) · LCR 55.8 · SciCode 20.9 · TB-Hard ≈18.3 (bridged) · HLE 13.2  
-Serving — GQA · KV 144.0 KB/token on 36 of 36 layers · BF16 weights (2 B/param) · thinks ~1500 hidden tokens per answer  
+Serving — GQA · KV 144.0 KB/token on 36 of 36 layers · BF16 weights (2 B/param) · always thinks (reasoning_effort (high / medium / low)): ~1500 hidden tokens per answer  
 
 The small end of IFM's fully open K2-Horizon fleet (weights, data, code and recipes all public), released September 2026. "3.7B" is the transformer core; the untied 250K-vocabulary embedding brings it to 5.06B. Plain full-attention GQA (144 KB of KV per token) on a 512K window, so long prompts fill an edge rack's cache fast.
 
@@ -280,7 +284,7 @@ The popular small-but-capable dense model of the Qwen2.5 generation, 7.6B params
 **InclusionAI (Ant Group)** · 2026-08 · MIT · 7.9B total / 1.3B active (MoE) · reasoning · 131K ctx · spec: reasoning · lineage: from-scratch · confidence: high · AAII 11.1
 [model card](https://huggingface.co/inclusionAI/Ling-3.0-tiny)
 Benchmarks — GPQA-D 73.4 · IFBench ≈52.4 (bridged) · LCR 54 · SciCode 23.1 · TB-Hard ≈17 (bridged) · HLE 9  
-Serving — hybrid-linear · KV 6.8 KB/token on 6 of 24 layers + 20 MB/request · BF16 weights (2 B/param) · thinks ~2000 hidden tokens per answer  
+Serving — hybrid-linear · KV 6.8 KB/token on 6 of 24 layers + 20 MB/request · BF16 weights (2 B/param) · hybrid thinking (enable_thinking=False (thinking_option "off")): instant on interactive traffic, judged 81 / 83 / 60 / 88 / 51 (from the thinking→instant pair fit); thinks ~2000 hidden tokens elsewhere  
 
 A 7.9B MoE with 1.3B active and Kimi Delta Attention on 3 of every 4 layers (18 KDA + 6 MLA): about 7 KB of KV per token plus a small constant recurrent state. The fastest decode of any capable model on an edge rack; validated on DGX Spark and Apple Silicon.
 
@@ -339,7 +343,7 @@ Popular small dense Qwen3 model with the hybrid thinking/non-thinking switch, a 
 **NVIDIA** · 2025-08 · NVIDIA Open Model License · 9B dense · reasoning · 128K ctx · spec: reasoning · lineage: from-scratch · confidence: high
 [model card](https://huggingface.co/nvidia/NVIDIA-Nemotron-Nano-9B-v2)
 Benchmarks — GPQA-D 57 · IFBench 27.6 · LCR 21 · SciCode 22 · TB-Hard 1.5 · HLE 4.6  
-Serving — hybrid-linear · KV 16.0 KB/token on 4 of 56 layers + 73 MB/request · BF16 weights (2 B/param) · thinks ~2000 hidden tokens per answer  
+Serving — hybrid-linear · KV 16.0 KB/token on 4 of 56 layers + 73 MB/request · BF16 weights (2 B/param) · hybrid thinking (enable_thinking=False (or /no_think)): instant on interactive traffic, judged 69 / 75 / 48 / 83 / 20 (from AA NVIDIA Nemotron Nano 9B V2 (Non-reasoning)); thinks ~2000 hidden tokens elsewhere  
 
 From-scratch hybrid Mamba-2/Transformer reasoning model (mostly Mamba-2 + MLP, four attention layers), Minitron-distilled from a 12B base pretrained on 20T tokens. Up to 6x higher throughput than similar Transformers, 128K context on a single A10G. Reasoning ON: GPQA 64, AIME-2025 72.1, LiveCodeBench 71.1.
 
@@ -354,7 +358,7 @@ Open 9B chat model from the GLM-4 generation by Zhipu AI, supporting 128K contex
 **Institute of Foundation Models (MBZUAI)** · 2026-09 · Apache 2.0 · 9B dense · reasoning · 524K ctx · spec: reasoning · lineage: from-scratch · confidence: high · AAII 20.6
 [model card](https://huggingface.co/IFM/K2-Horizon-7B)
 Benchmarks — GPQA-D 75.3 · IFBench ≈58.4 (bridged) · LCR 62.5 · SciCode 26.5 · TB-Hard ≈27.7 (bridged) · HLE 17.2  
-Serving — GQA · KV 144.0 KB/token on 36 of 36 layers · BF16 weights (2 B/param) · thinks ~1500 hidden tokens per answer  
+Serving — GQA · KV 144.0 KB/token on 36 of 36 layers · BF16 weights (2 B/param) · always thinks (reasoning_effort (high / medium / low)): ~1500 hidden tokens per answer  
 
 The 7B core (9B with its large vocabulary) of IFM's fully open fleet, and the strongest model of its size on the autumn 2026 snapshot: AAII 20.6 against Qwen3.5-9B's 11.2, Terminal-Bench 2.1 44%. Reasoning effort is set per request; plain GQA on a 512K window.
 
@@ -441,7 +445,7 @@ RL-enhanced variant of Phi-4-reasoning (CoT SFT plus a GRPO RL phase), generatin
 **Alibaba/Qwen** · 2025-04 · Apache 2.0 · 14.8B dense · reasoning · 131K ctx · spec: reasoning · lineage: from-scratch · confidence: low
 [model card](https://huggingface.co/Qwen/Qwen3-14B)
 Benchmarks — GPQA-D 60.4 · IFBench 40.5 · LCR 0 · SciCode 31.6 · TB-Hard 3.8 · HLE 4.3  
-Serving — GQA · KV 160.0 KB/token on 40 of 40 layers · BF16 weights (2 B/param) · thinks ~2000 hidden tokens per answer  
+Serving — GQA · KV 160.0 KB/token on 40 of 40 layers · BF16 weights (2 B/param) · hybrid thinking (enable_thinking=False): instant on interactive traffic, judged 43 / 55 / 59 / 54 / 14 (from AA Qwen3 14B (Non-reasoning)); thinks ~2000 hidden tokens elsewhere  
 
 Mid-size dense Qwen3 model with the hybrid thinking/non-thinking switch; Qwen noted Qwen3 dense models often match the prior-gen larger Qwen2.5 models. Native 32K context extendable to 128K. Clean per-model thinking-mode benchmarks were not published.
 
@@ -452,7 +456,7 @@ Mid-size dense Qwen3 model with the hybrid thinking/non-thinking switch; Qwen no
 **OpenAI** · 2025-08 · Apache 2.0 · 20.9B total / 3.6B active (MoE) · reasoning · 131K ctx · spec: reasoning · lineage: from-scratch · confidence: high
 [model card](https://huggingface.co/openai/gpt-oss-20b)
 Benchmarks — GPQA-D 68.8 · IFBench 65.1 · LCR 30.7 · SciCode 34.4 · TB-Hard 10.6 · HLE 9.8  
-Serving — hybrid-swa · KV 24.0 KB/token on 12 of 24 layers + 3 MB/request · MXFP4 weights (0.66 B/param) · thinks ~2000 hidden tokens per answer  
+Serving — hybrid-swa · KV 24.0 KB/token on 12 of 24 layers + 3 MB/request · MXFP4 weights (0.66 B/param) · always thinks (reasoning_effort (low / medium / high)): ~2000 hidden tokens per answer  
 
 The smaller of OpenAI's two open-weight gpt-oss MoE reasoning models, 20.9B total / 3.6B active with MXFP4 expert quantization that runs on ~16GB consumer/edge hardware. 131K context, configurable reasoning effort, tool use (GPQA 71.5, AIME-2025 91.7, SWE-bench 60.7). A capable lightweight reasoner. Apache 2.0.
 
@@ -519,7 +523,7 @@ Flagship of Google's Gemma 3 family, a dense multimodal (text+image) model train
 **Alibaba Qwen Team** · 2026-04 · Apache-2.0 · 27B dense · reasoning · 262K ctx · spec: coding · lineage: from-scratch · confidence: high · AAII 37
 [model card](https://huggingface.co/Qwen/Qwen3.6-27B)
 Benchmarks — GPQA-D 84.2 · IFBench 67.6 · LCR 68.7 · SciCode 39.8 · TB-Hard 34.8 · HLE 21.6  
-Serving — hybrid-linear · KV 64.0 KB/token on 16 of 64 layers + 154 MB/request · BF16 weights (2 B/param) · thinks ~4000 hidden tokens per answer  
+Serving — hybrid-linear · KV 64.0 KB/token on 16 of 64 layers + 154 MB/request · BF16 weights (2 B/param) · hybrid thinking (enable_thinking=False): instant on interactive traffic, judged 87 / 91 / 85 / 96 / 70 (from AA Qwen3.6 27B (Non-reasoning)); thinks ~4000 hidden tokens elsewhere  
 
 Qwen3.6-27B is Alibaba's first open-weight model in the Qwen3.6 generation, released April 2026 under Apache 2.0 as a dense 27B multimodal model with a hybrid Gated DeltaNet + Gated Attention architecture (64 layers) and Multi-Token Prediction for speculative decoding. It is a reasoning model (thinking mode on by default) with native 262K context extensible to ~1.01M tokens via YaRN. Notably, this dense 27B model matches or beats the much larger Qwen3.5-397B-A17B MoE on agentic coding benchmarks (SWE-bench Verified 77.2, Terminal-Bench 2.0 59.3). It scores 37 on the Artificial Analysis Intelligence Index, making it the open-weights leader under ~150B parameters at release.
 
@@ -534,7 +538,7 @@ Flagship of Google's Gemma 2 family, a dense text-only decoder pretrained from s
 **Alibaba/Qwen** · 2026-08 · Apache 2.0 · 27.8B dense · reasoning · 262K ctx · spec: agentic · lineage: from-scratch (the Qwen3.6-27B layout) · confidence: high · AAII 33.7
 [model card](https://huggingface.co/Qwen/Qwen3.8-27B)
 Benchmarks — GPQA-D 90.5 · IFBench ≈71.5 (bridged) · LCR 73.7 · SciCode 45.7 · TB-Hard ≈52 (bridged) · HLE 31.8  
-Serving — hybrid-linear · KV 64.0 KB/token on 16 of 64 layers + 154 MB/request · BF16 weights (2 B/param) · thinks ~2000 hidden tokens per answer  
+Serving — hybrid-linear · KV 64.0 KB/token on 16 of 64 layers + 154 MB/request · BF16 weights (2 B/param) · hybrid thinking (enable_thinking=False): instant on interactive traffic, judged 92 / 94 / 87 / 96 / 84 (from AA Qwen3.8 27B (Non-reasoning)); thinks ~2000 hidden tokens elsewhere  
 
 The dense 27B leader of late 2026: 48 Gated DeltaNet + 16 gated-attention layers (only those 16 keep KV, ~64 KB per token), Apache 2.0, released August 2026. Its Terminal-Bench 2.1 (79.8) rivals 750B MoEs, so the agentic lane — long the wall that did not compress — is cleared by a model that fits one H100 at FP8. Pinned on the Xhigh effort row; Low/Medium/Non-reasoning are effort settings of the same weights.
 
@@ -542,7 +546,7 @@ The dense 27B leader of late 2026: 48 Gated DeltaNet + 16 gated-attention layers
 **NVIDIA** · 2025-12 · NVIDIA Nemotron Open Model License · 30B total / 3.5B active (MoE) · reasoning · 1000K ctx · spec: reasoning · lineage: from-scratch · confidence: high
 [model card](https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16)
 Benchmarks — GPQA-D 75.7 · IFBench 71.1 · LCR 33.7 · SciCode 29.6 · TB-Hard 13.6 · HLE 10.2  
-Serving — hybrid-linear · KV 6.0 KB/token on 6 of 52 layers + 49 MB/request · BF16 weights (2 B/param) · thinks ~2000 hidden tokens per answer  
+Serving — hybrid-linear · KV 6.0 KB/token on 6 of 52 layers + 49 MB/request · BF16 weights (2 B/param) · hybrid thinking (enable_thinking=False): instant on interactive traffic, judged 69 / 54 / 64 / 55 / 34 (from AA NVIDIA Nemotron 3 Nano 30B A3B (Non-reasoning)); thinks ~2000 hidden tokens elsewhere  
 
 Nemotron 3 Nano 30B is the efficient agentic member of the Nemotron 3 family, a 30B-total / ~3.5B-active hybrid Mamba-2 + MoE model (23 Mamba-2/MoE layers plus 6 Attention layers; 128+1 experts, 5 active per token) trained from scratch on roughly 25T tokens. Released December 2025 under the NVIDIA Nemotron Open Model License as part of the open Nemotron 3 debut (open weights, data, and recipes), it supports up to 1M-token context (256k default) and a controllable reasoning mode. Model-card benchmarks include MMLU-Pro 78.3, GPQA 73.0 (no tools), AIME25 89.1 (no tools), LiveCodeBench v6 68.3, and SWE-bench Verified 38.8 (OpenHands). It is designed for fast, cost-efficient on-device and agentic deployment relative to the larger Super and Ultra tiers.
 
@@ -550,7 +554,7 @@ Nemotron 3 Nano 30B is the efficient agentic member of the Nemotron 3 family, a 
 **Alibaba/Qwen** · 2025-04 · Apache 2.0 · 30.5B total / 3.3B active (MoE) · reasoning · 131K ctx · spec: reasoning · lineage: from-scratch · confidence: med
 [model card](https://huggingface.co/Qwen/Qwen3-30B-A3B)
 Benchmarks — GPQA-D 70.7 · IFBench 50.7 · LCR 59 · SciCode 33.3 · TB-Hard 5.3 · HLE 9.8  
-Serving — GQA · KV 96.0 KB/token on 48 of 48 layers · BF16 weights (2 B/param) · thinks ~2000 hidden tokens per answer  
+Serving — GQA · KV 96.0 KB/token on 48 of 48 layers · BF16 weights (2 B/param) · always thinks (no off switch): ~2000 hidden tokens per answer  
 
 Small MoE of the original Qwen3 launch, 30.5B total / 3.3B active (128 experts, 8 active), delivering reasoning near the 32B dense model at a fraction of the compute. Hybrid thinking/non-thinking; native 32K extendable to 128K. A popular efficient choice. Later refreshed as Instruct/Thinking-2507.
 
@@ -623,7 +627,7 @@ Flagship code model of the Qwen2.5-Coder series, continued-pretrained from Qwen2
 **Alibaba/Qwen** · 2025-04 · Apache 2.0 · 32.8B dense · reasoning · 131K ctx · spec: reasoning · lineage: from-scratch · confidence: med
 [model card](https://huggingface.co/Qwen/Qwen3-32B)
 Benchmarks — GPQA-D 66.8 · IFBench 36.3 · LCR 0 · SciCode 35.4 · TB-Hard 3 · HLE 8.3  
-Serving — GQA · KV 256.0 KB/token on 64 of 64 layers · BF16 weights (2 B/param) · thinks ~2000 hidden tokens per answer  
+Serving — GQA · KV 256.0 KB/token on 64 of 64 layers · BF16 weights (2 B/param) · hybrid thinking (enable_thinking=False): instant on interactive traffic, judged 62 / 67 / 65 / 63 / 16 (from AA Qwen3 32B (Non-reasoning)); thinks ~2000 hidden tokens elsewhere  
 
 Largest dense model of the original Qwen3 launch, a hybrid that toggles between thinking and fast non-thinking modes. In thinking mode it scores MMLU-Pro ~82, GPQA 73.1 and AIME-2025 83.7, outperforming QwQ-32B. Native 32K context extendable to 128K. A strong single-GPU-class reasoner.
 
@@ -632,7 +636,7 @@ Largest dense model of the original Qwen3 launch, a hybrid that toggles between 
 **Institute of Foundation Models (MBZUAI)** · 2026-09 · Apache 2.0 · 37.4B total / 4B active (MoE) · reasoning · 524K ctx · spec: reasoning · lineage: from-scratch · confidence: high · AAII 25.3
 [model card](https://huggingface.co/IFM/K2-Horizon-MoVA-36B-A4B)
 Benchmarks — GPQA-D 82.2 · IFBench ≈62.9 (bridged) · LCR 64.3 · SciCode 39.1 · TB-Hard ≈37.1 (bridged) · HLE 22  
-Serving — GQA · KV 192.0 KB/token on 48 of 48 layers · BF16 weights (2 B/param) · thinks ~1500 hidden tokens per answer  
+Serving — GQA · KV 192.0 KB/token on 48 of 48 layers · BF16 weights (2 B/param) · always thinks (reasoning_effort (high / medium / low)): ~1500 hidden tokens per answer  
 
 A fully open 36B MoE with 4B active and Mixture-of-Values attention: routed value experts add capacity without adding cache — the KV still stores standard 8×128 K/V (192 KB per token). Cheap to serve on a mid rack; Terminal-Bench 2.1 57%.
 
@@ -663,7 +667,7 @@ Upgraded reasoning model NAS-compressed from Llama-3.3-70B-Instruct to a 49B den
 **NVIDIA** · 2025-03 · NVIDIA Open Model License + Llama 3.3 Community License · 49B dense · reasoning · 128K ctx · spec: reasoning · lineage: derived from Llama-3.3-70B-Instruct · confidence: high
 [model card](https://huggingface.co/nvidia/Llama-3_3-Nemotron-Super-49B-v1)
 Benchmarks — GPQA-D 64.3 · IFBench 38.1 · LCR 17 · SciCode 28.2 · TB-Hard 0 · HLE 6.5  
-Serving — GQA · KV 196.0 KB/token on 49 of 80 layers · BF16 weights (2 B/param) · thinks ~1500 hidden tokens per answer  
+Serving — GQA · KV 196.0 KB/token on 49 of 80 layers · BF16 weights (2 B/param) · hybrid thinking (system prompt "detailed thinking off"): instant on interactive traffic, judged 74 / 72 / 58 / 72 / 19 (from AA Llama 3.3 Nemotron Super 49B v1 (Non-reasoning)); thinks ~1500 hidden tokens elsewhere  
 
 Reasoning-capable model NAS-compressed from Llama-3.3-70B-Instruct to 49B so it fits a single H200, with toggleable reasoning and post-training for math, coding, RAG and tool calling (GPQA 66.7, AIME-2025 58.4, MATH500 96.6). Superseded by the stronger v1.5.
 
@@ -700,7 +704,7 @@ RLHF-aligned chat model from NVIDIA built on Llama-3.1-70B-Instruct, trained wit
 **DeepSeek** · 2025-01 · MIT (weights) / Llama 3.3 Community (base) · 70B dense · reasoning · 128K ctx · spec: reasoning · lineage: derived from Llama-3.3-70B-Instruct · confidence: high
 [model card](https://huggingface.co/deepseek-ai/DeepSeek-R1-Distill-Llama-70B)
 Benchmarks — GPQA-D 40.2 · IFBench 27.6 · LCR 11 · SciCode 31.3 · TB-Hard 1.5 · HLE 6.1  
-Serving — GQA · KV 320.0 KB/token on 80 of 80 layers · BF16 weights (2 B/param) · thinks ~2000 hidden tokens per answer  
+Serving — GQA · KV 320.0 KB/token on 80 of 80 layers · BF16 weights (2 B/param) · always thinks (no off switch): ~2000 hidden tokens per answer  
 
 Dense 70B reasoning model distilling DeepSeek-R1 onto Llama-3.3-70B-Instruct, pairing R1-style reasoning with Llama's strong knowledge base (AIME-2024 70, GPQA 65.2, LiveCodeBench 57.5). 128K context, R1-style long chain-of-thought.
 
@@ -722,7 +726,7 @@ Alibaba Qwen's next-gen ultra-sparse MoE, 80B total but only ~3B active across 5
 **Alibaba/Qwen** · 2025-09 · Apache 2.0 · 80B total / 3B active (MoE) · reasoning · 262K ctx · spec: reasoning · lineage: from-scratch · confidence: high
 [model card](https://huggingface.co/Qwen/Qwen3-Next-80B-A3B-Thinking)
 Benchmarks — GPQA-D 75.9 · IFBench 60.7 · LCR 60.3 · SciCode 38.8 · TB-Hard 9.8 · HLE 11.7  
-Serving — hybrid-linear · KV 24.0 KB/token on 12 of 48 layers + 40 MB/request · BF16 weights (2 B/param) · thinks ~2000 hidden tokens per answer  
+Serving — hybrid-linear · KV 24.0 KB/token on 12 of 48 layers + 40 MB/request · BF16 weights (2 B/param) · always thinks (no off switch): ~2000 hidden tokens per answer  
 
 Reasoning variant of Alibaba Qwen's next-gen ultra-sparse MoE, 80B total / ~3B active (512 experts), built on the hybrid Gated DeltaNet + Gated Attention architecture for cheap long-context reasoning (AIME-2025 87.8, MMLU-Pro 82.7, GPQA 77.2, LiveCodeBench 68.7). Native 262K context. Flagship-class reasoning at tiny active cost.
 
@@ -737,7 +741,7 @@ Cohere's 104B dense flagship of the R series, trained from scratch for advanced 
 **Zhipu AI (Z.ai)** · 2025-08 · MIT · 106B total / 12B active (MoE) · reasoning · 128K ctx · spec: agentic · lineage: from-scratch · confidence: high
 [model card](https://huggingface.co/zai-org/GLM-4.5-Air)
 Benchmarks — GPQA-D 73.3 · IFBench 37.6 · LCR 43.7 · SciCode 30.6 · TB-Hard 20.5 · HLE 6.8  
-Serving — GQA · KV 184.0 KB/token on 46 of 46 layers · BF16 weights (2 B/param) · thinks ~2000 hidden tokens per answer  
+Serving — GQA · KV 184.0 KB/token on 46 of 46 layers · BF16 weights (2 B/param) · hybrid thinking (enable_thinking=False): instant on interactive traffic, judged 76 / 82 / 68 / 87 / 49 (from the thinking→instant pair fit); thinks ~2000 hidden tokens elsewhere  
 
 Lighter from-scratch MoE sibling of GLM-4.5 (106B total / 12B active), designed for efficiency while retaining hybrid thinking/non-thinking reasoning and agentic ability (MMLU-Pro 81.4, AIME-2024 89.4, GPQA 73.3, LiveCodeBench 61.5, SWE-bench 57.6). MIT, 128K context. Cost-efficient agentic and coding model.
 
@@ -766,7 +770,7 @@ Reasoning-enabled variant of Command A, a 111B dense model fine-tuned with toggl
 **OpenAI** · 2025-08 · Apache 2.0 · 116.8B total / 5.1B active (MoE) · reasoning · 131K ctx · spec: reasoning · lineage: from-scratch · confidence: high
 [model card](https://huggingface.co/openai/gpt-oss-120b)
 Benchmarks — GPQA-D 78.2 · IFBench 69 · LCR 50.7 · SciCode 38.9 · TB-Hard 23.5 · HLE 18.5  
-Serving — hybrid-swa · KV 36.0 KB/token on 18 of 36 layers + 5 MB/request · MXFP4 weights (0.56 B/param) · thinks ~2000 hidden tokens per answer  
+Serving — hybrid-swa · KV 36.0 KB/token on 18 of 36 layers + 5 MB/request · MXFP4 weights (0.56 B/param) · always thinks (reasoning_effort (low / medium / high)): ~2000 hidden tokens per answer  
 
 OpenAI's first major open-weight model since GPT-2, a from-scratch MoE reasoning model (116.8B total / 5.1B active) with MXFP4-quantized experts that fit on a single 80GB GPU. Configurable reasoning effort, 131K context, tool use (MMLU-Pro 80.8, GPQA 80.1, AIME-2025 92.5, SWE-bench 62.4). Strong agentic reasoning and coding. Apache 2.0.
 
@@ -774,7 +778,7 @@ OpenAI's first major open-weight model since GPT-2, a from-scratch MoE reasoning
 **NVIDIA** · 2026-03 · NVIDIA Nemotron Open Model License · 120B total / 12B active (MoE) · reasoning · 1000K ctx · spec: reasoning · lineage: from-scratch · confidence: high · AAII 25
 [model card](https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16)
 Benchmarks — GPQA-D 80 · IFBench 71.5 · LCR 60 · SciCode 36 · TB-Hard 28.8 · HLE 19.2  
-Serving — hybrid-linear · KV 8.0 KB/token on 8 of 88 layers + 170 MB/request · BF16 weights (2 B/param) · thinks ~2000 hidden tokens per answer  
+Serving — hybrid-linear · KV 8.0 KB/token on 8 of 88 layers + 170 MB/request · BF16 weights (2 B/param) · hybrid thinking (enable_thinking=False): instant on interactive traffic, judged 84 / 86 / 82 / 90 / 67 (from the thinking→instant pair fit); thinks ~2000 hidden tokens elsewhere  
 
 Nemotron 3 Super is the mid-tier member of NVIDIA's Nemotron 3 line, a 120B-total / 12B-active Latent Mixture-of-Experts (Mamba-2 + MoE + Attention hybrid with Multi-Token Prediction) released March 2026 under the NVIDIA Nemotron Open Model License. It is post-trained from NVIDIA's own from-scratch base model (the line is not derived from Llama), pre-trained on 25T+ tokens and refined with multi-stage RL for agentic and reasoning use, supporting up to 1M-token context. Its model card reports MMLU-Pro 83.73, GPQA-Diamond 79.23 (no tools), AIME25 90.21, LiveCodeBench v5 81.19, and SWE-bench Verified 60.47 (OpenHands). The Artificial Analysis model page lists an Intelligence Index of 25 at ~$0.28 blended/Mtok and ~150 tok/s (note: an AA launch article cited a higher 36.0 under a different index version).
 
@@ -782,7 +786,7 @@ Nemotron 3 Super is the mid-tier member of NVIDIA's Nemotron 3 line, a 120B-tota
 **Alibaba Qwen Team** · 2026-02 · Apache-2.0 · 122B total / 10B active (MoE) · reasoning · 262K ctx · spec: general · lineage: from-scratch · confidence: high · AAII 32
 [model card](https://huggingface.co/Qwen/Qwen3.5-122B-A10B)
 Benchmarks — GPQA-D 85.7 · IFBench 75.7 · LCR 66.7 · SciCode 42 · TB-Hard 31.1 · HLE 23.4  
-Serving — hybrid-linear · KV 24.0 KB/token on 12 of 48 layers + 154 MB/request · BF16 weights (2 B/param) · thinks ~2000 hidden tokens per answer  
+Serving — hybrid-linear · KV 24.0 KB/token on 12 of 48 layers + 154 MB/request · BF16 weights (2 B/param) · hybrid thinking (enable_thinking=False): instant on interactive traffic, judged 88 / 92 / 86 / 97 / 80 (from AA Qwen3.5 122B A10B (Non-reasoning)); thinks ~2000 hidden tokens elsewhere  
 
 Qwen3.5-122B-A10B is Alibaba's mid-tier multimodal foundation model in the Qwen3.5 series, released February 2026 under Apache 2.0 as a sparse MoE with 122B total and 10B active parameters (256 experts, 8 routed + 1 shared per token). It is a reasoning vision-language model with thinking mode enabled by default, built on a hybrid Gated Delta Network + sparse MoE architecture with early-fusion multimodal training. Native context is 262K tokens, extensible to ~1.01M via YaRN. It reports MMLU-Pro 86.7, GPQA-Diamond 86.6, AIME 2026 91.3, LiveCodeBench v6 78.9, and SWE-bench Verified 72.0, scoring 32 on the Artificial Analysis Intelligence Index.
 
@@ -797,7 +801,7 @@ Mistral AI's flagship dense model, 123B with a 128K context and support for 80+ 
 **InclusionAI (Ant Group)** · 2026-08 · MIT · 124B total / 5.1B active (MoE) · reasoning · 262K ctx · spec: reasoning · lineage: from-scratch · confidence: high · AAII 20.1
 [model card](https://huggingface.co/inclusionAI/Ling-3.0-flash)
 Benchmarks — GPQA-D 85.5 · IFBench ≈64.2 (bridged) · LCR 65.5 · SciCode 41.1 · TB-Hard ≈37.1 (bridged) · HLE 22.3  
-Serving — hybrid-linear · KV 7.9 KB/token on 7 of 42 layers + 76 MB/request · BF16 weights (2 B/param) · thinks ~1500 hidden tokens per answer  
+Serving — hybrid-linear · KV 7.9 KB/token on 7 of 42 layers + 76 MB/request · BF16 weights (2 B/param) · hybrid thinking (enable_thinking=False (thinking_option "off")): instant on interactive traffic, judged 84 / 88 / 84 / 92 / 74 (from the thinking→instant pair fit); thinks ~1500 hidden tokens elsewhere  
 
 Qwen3.5-122B-class quality (GPQA 85.5, Terminal-Bench 2.1 55%) at half the active parameters and a fraction of the cache: Kimi Delta Attention on 5 of every 6 layers leaves 7 gated-MLA layers with ~8 KB of KV per token.
 
@@ -805,7 +809,7 @@ Qwen3.5-122B-class quality (GPQA 85.5, Terminal-Bench 2.1 55%) at half the activ
 **MiniMax** · 2026-03 · MiniMax Model License · 230B total / 10B active (MoE) · reasoning · 205K ctx · spec: agentic · lineage: derived from MiniMax-M2.5 · confidence: high · AAII 38
 [model card](https://huggingface.co/MiniMaxAI/MiniMax-M2.7)
 Benchmarks — GPQA-D 87.4 · IFBench 75.7 · LCR 68.7 · SciCode 47 · TB-Hard 39.4 · HLE 28.1  
-Serving — GQA · KV 248.0 KB/token on 62 of 62 layers · FP8 weights (1.01 B/param) · thinks ~2462 hidden tokens per answer  
+Serving — GQA · KV 248.0 KB/token on 62 of 62 layers · FP8 weights (1.01 B/param) · always thinks (no off switch): ~2462 hidden tokens per answer  
 
 MiniMax-M2.7, released March 18, 2026, is an open-weight Sparse Mixture-of-Experts reasoning model with ~230B total parameters and ~10B active parameters, 62 layers, and a ~205K-token (204,800) context window. It is notable as MiniMax's first model to deeply participate in its own evolution, having autonomously optimized a programming scaffold over 100+ rounds for a reported ~30% performance gain. Published benchmarks include GPQA-Diamond 87.4, SWE-bench Pro 56.22, Terminal-Bench 2 57.0, and HLE 28.1; MMLU-Pro, AIME, LiveCodeBench, and SWE-bench Verified were not officially reported. It scored 38 on the Artificial Analysis Intelligence Index.
 
@@ -837,7 +841,7 @@ The larger sparse MoE in the Mixtral line, 141B total / 39B active (8 experts, 2
 **Alibaba/Qwen** · 2026-08 · Qwen Community License 1.0 · 180B total / 6B active (MoE) · reasoning · 262K ctx · spec: agentic · lineage: from-scratch · confidence: high · AAII 39.8
 [model card](https://huggingface.co/Qwen/Qwen3.8-Flash-Next)
 Benchmarks — GPQA-D 92.3 · IFBench ≈73.2 (bridged) · LCR 71.5 · SciCode 49.8 · TB-Hard ≈56.8 (bridged) · HLE 35.6  
-Serving — hybrid-linear · KV 24.8 KB/token on 12 of 48 layers + 116 MB/request · BF16 weights (2 B/param) · thinks ~2000 hidden tokens per answer  
+Serving — hybrid-linear · KV 24.8 KB/token on 12 of 48 layers + 116 MB/request · BF16 weights (2 B/param) · hybrid thinking (enable_thinking=False): instant on interactive traffic, judged 86 / 91 / 90 / 95 / 93 (from the thinking→instant pair fit); thinks ~2000 hidden tokens elsewhere  
 
 The most extreme sparsity on the board: 180B resident (125B of MoE, a 51B n-gram embedding table and an MTP head) but only 6B active, over 36 Gated DeltaNet + 12 sparse full-attention layers. It beats Qwen3.5-397B on every Artificial Analysis cell — VRAM-hungry, compute-cheap. Commercial MaaS use needs a separate Qwen license.
 
@@ -845,7 +849,7 @@ The most extreme sparsity on the board: 180B resident (125B of MoE, a 51B n-gram
 **MiniMax** · 2025-10 · Modified MIT · 230B total / 10B active (MoE) · reasoning · 205K ctx · spec: agentic · lineage: from-scratch · confidence: high
 [model card](https://huggingface.co/MiniMaxAI/MiniMax-M2)
 Benchmarks — GPQA-D 77.7 · IFBench 72.3 · LCR 61 · SciCode 36.1 · TB-Hard 25.8 · HLE 12.5  
-Serving — GQA · KV 248.0 KB/token on 62 of 62 layers · FP8 weights (1.01 B/param) · thinks ~2000 hidden tokens per answer  
+Serving — GQA · KV 248.0 KB/token on 62 of 62 layers · FP8 weights (1.01 B/param) · always thinks (no off switch): ~2000 hidden tokens per answer  
 
 Compact, fast MoE with 230B total / only 10B active, built for coding and agentic workflows as an 'interleaved thinking' model. The tiny active footprint gives low latency and high throughput while posting frontier-class agentic scores (SWE-bench 69.4, LiveCodeBench 83, GPQA 78). One of the best price/performance open agentic coders.
 
@@ -867,7 +871,7 @@ July 2025 non-thinking refresh of Qwen3's flagship MoE (235B total / 22B active)
 **Alibaba/Qwen** · 2025-07 · Apache 2.0 · 235B total / 22B active (MoE) · reasoning · 262K ctx · spec: reasoning · lineage: from-scratch · confidence: high
 [model card](https://huggingface.co/Qwen/Qwen3-235B-A22B-Thinking-2507)
 Benchmarks — GPQA-D 79 · IFBench 51.2 · LCR 67 · SciCode 42.4 · TB-Hard 13.6 · HLE 15  
-Serving — GQA · KV 188.0 KB/token on 94 of 94 layers · BF16 weights (2 B/param) · thinks ~2000 hidden tokens per answer  
+Serving — GQA · KV 188.0 KB/token on 94 of 94 layers · BF16 weights (2 B/param) · always thinks (no off switch): ~2000 hidden tokens per answer  
 
 July 2025 dedicated-reasoning refresh of Qwen3's flagship MoE (235B total / 22B active, 128 experts), at release the strongest open reasoning model with SOTA open scores (AIME-2025 92.3, MMLU-Pro 84.4, GPQA 81.1, LiveCodeBench 74.1). Native 262K context extendable toward 1M. Thinking-only; rivals closed frontier reasoners.
 
@@ -889,7 +893,7 @@ Code-specialized MoE from DeepSeek, 236B total / 21B active, continued-pretraine
 **Upstage** · 2026-07 · Upstage Solar License · 250B total / 15B active (MoE) · reasoning · 1049K ctx · spec: reasoning · lineage: from-scratch (2.3% of weights transferred from Solar Open 100B) · confidence: high · AAII 24.7
 [model card](https://huggingface.co/upstage/Solar-Open2-250B)
 Benchmarks — GPQA-D 85.7 · IFBench ≈65.9 (bridged) · LCR 64.3 · SciCode 47.1 · TB-Hard ≈34.9 (bridged) · HLE 26.8  
-Serving — hybrid-linear · KV 48.0 KB/token on 12 of 48 layers + 156 MB/request · BF16 weights (2 B/param) · thinks ~1500 hidden tokens per answer  
+Serving — hybrid-linear · KV 48.0 KB/token on 12 of 48 layers + 156 MB/request · BF16 weights (2 B/param) · hybrid thinking (reasoning_effort="low"): instant on interactive traffic, judged 84 / 88 / 86 / 92 / 73 (from the thinking→instant pair fit); thinks ~1500 hidden tokens elsewhere  
 
 A NoPE hybrid laid out as [GQA, KDA×3]×12: only 12 of its 48 layers keep a KV cache (48 KB per token) and the rest are linear attention. Near the frontier on chat, general and coding at ≤250B; the card's IFBench 80.0 and TB-Hard 28.3 come from Upstage's own harness and are not used for calibration.
 
@@ -897,7 +901,7 @@ A NoPE hybrid laid out as [GQA, KDA×3]×12: only 12 of its 48 layers keep a KV 
 **NVIDIA** · 2025-04 · NVIDIA Open Model License + Llama 3.1 Community License · 253B dense · reasoning · 128K ctx · spec: reasoning · lineage: derived from Llama-3.1-405B-Instruct · confidence: high
 [model card](https://huggingface.co/nvidia/Llama-3_1-Nemotron-Ultra-253B-v1)
 Benchmarks — GPQA-D 72.8 · IFBench 38.2 · LCR 7.3 · SciCode 34.7 · TB-Hard 2.3 · HLE 8.1  
-Serving — GQA · KV 256.0 KB/token on 64 of 162 layers · BF16 weights (2 B/param) · thinks ~2000 hidden tokens per answer  
+Serving — GQA · KV 256.0 KB/token on 64 of 162 layers · BF16 weights (2 B/param) · hybrid thinking (system prompt "detailed thinking off"): instant on interactive traffic, judged 70 / 78 / 65 / 80 / 15 (from the thinking→instant pair fit); thinks ~2000 hidden tokens elsewhere  
 
 NVIDIA's flagship open reasoning model, NAS-compressed from Llama-3.1-405B-Instruct to 253B dense so it fits a single 8xH100 node, with toggleable reasoning (MMLU-Pro 82.5, GPQA 76, AIME-2025 72.5, LiveCodeBench 66.3). At launch the first open model to beat DeepSeek R1 on GPQA Diamond and LiveCodeBench at roughly half R1's size.
 
@@ -905,7 +909,7 @@ NVIDIA's flagship open reasoning model, NAS-compressed from Llama-3.1-405B-Instr
 **Thinking Machines Lab** · 2026-07 · Apache 2.0 · 276B total / 12B active (MoE) · reasoning · 1049K ctx · spec: reasoning · lineage: from-scratch · confidence: high · AAII 25.7
 [model card](https://huggingface.co/thinkingmachines/Inkling-Small)
 Benchmarks — GPQA-D 89.5 · IFBench ≈69.7 (bridged) · LCR 67.9 · SciCode 48.9 · TB-Hard ≈41.5 (bridged) · HLE 31.2  
-Serving — hybrid-swa · KV 28.0 KB/token on 7 of 42 layers + 74 MB/request · BF16 weights (2 B/param) · thinks ~2000 hidden tokens per answer  
+Serving — hybrid-swa · KV 28.0 KB/token on 7 of 42 layers + 74 MB/request · BF16 weights (2 B/param) · hybrid thinking (reasoning_effort="none" (effort 0)): instant on interactive traffic, judged 85 / 89 / 88 / 93 / 79 (from the thinking→instant pair fit); thinks ~2000 hidden tokens elsewhere  
 
 Five sliding-window (512-token) layers per global one give a 1M window on ~28 KB of growing KV per token, plus a ~74 MB constant window state. It beats its own 975B sibling Inkling on every axis; natively multimodal input with controllable thinking effort.
 
@@ -913,7 +917,7 @@ Five sliding-window (512-token) layers per global one give a 1M window on ~28 KB
 **DeepSeek** · 2026-07 · MIT · 284B total / 13B active (MoE) · reasoning · 1049K ctx · spec: reasoning · lineage: re-post-train of DeepSeek-V4-Flash (2026-04-24) · confidence: high · AAII 34.3
 [model card](https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash-0731)
 Benchmarks — GPQA-D 90.8 · IFBench ≈73 (bridged) · LCR 71.5 · SciCode 49.5 · TB-Hard ≈53.7 (bridged) · HLE 36.1  
-Serving — csa · KV 6.7 KB/token on 41 of 43 layers + 6 MB/request · FP4 weights (0.55 B/param) · thinks ~1500 hidden tokens per answer  
+Serving — csa · KV 6.7 KB/token on 41 of 43 layers + 6 MB/request · FP4 weights (0.55 B/param) · hybrid thinking (thinking_mode="chat"): instant on interactive traffic, judged 86 / 90 / 89 / 95 / 90 (from the thinking→instant pair fit); thinks ~1500 hidden tokens elsewhere  
 
 DeepSeek-V4-Flash-0731 is the July 31, 2026 re-post-train of the smaller V4 model (first released April 24, 2026): a 284B MoE with 13B active and a 1M-token window, open under MIT. It shares V4's compressed attention — CSA (ratio 4) and HCA (ratio 128) on one shared 512-d KV head plus a 128-token window — so its KV is ~7 KB per token, and FP4 experts with FP8 elsewhere put the weights at ~165 GB. The roster pins the open 0731 Max row (Artificial Analysis reassigned the bare `deepseek-v4-flash` slug from the April checkpoint to it). Max/High/Non-think are effort settings of the same weights.
 
@@ -928,7 +932,7 @@ Hy3-preview is Tencent Hunyuan's 295B-total / 21B-active Mixture-of-Experts mode
 **Tencent (Hy Team)** · 2026-07 · Apache 2.0 · 295B total / 21B active (MoE) · reasoning · 262K ctx · spec: reasoning · lineage: final release of the Hy3-preview line · confidence: high · AAII 25.3
 [model card](https://huggingface.co/tencent/Hy3)
 Benchmarks — GPQA-D 89.7 · IFBench ≈70.5 (bridged) · LCR 70.9 · SciCode 47.8 · TB-Hard ≈45.5 (bridged) · HLE 31.4  
-Serving — GQA · KV 320.0 KB/token on 80 of 80 layers · BF16 weights (2 B/param) · thinks ~2000 hidden tokens per answer  
+Serving — GQA · KV 320.0 KB/token on 80 of 80 layers · BF16 weights (2 B/param) · hybrid thinking (reasoning_effort="no_think"): instant on interactive traffic, judged 86 / 89 / 88 / 94 / 83 (from the thinking→instant pair fit); thinks ~2000 hidden tokens elsewhere  
 
 The final Apache-2.0 release of Tencent's Hy3 (the preview carried a regional license). Plain full-attention GQA over 80 layers: 320 KB of KV per token, 14× MiMo-V2.6-Flash at the same weight footprint — the high-KV foil that shows why the 2026 hybrids exist.
 
@@ -936,7 +940,7 @@ The final Apache-2.0 release of Tencent's Hy3 (the preview carried a regional li
 **Xiaomi (MiMo / LLM-Core team)** · 2026-09 · MIT · 309B total / 15B active (MoE) · reasoning · 1049K ctx · spec: reasoning · lineage: from-scratch (MiMo-V2 hybrid-attention backbone) · confidence: high · AAII 37.9
 [model card](https://huggingface.co/XiaomiMiMo/MiMo-V2.6-Flash-MOPD)
 Benchmarks — GPQA-D ≈90 (bridged) · IFBench ≈70.8 (bridged) · LCR 66.7 · SciCode 50.5 · TB-Hard ≈48.2 (bridged) · HLE 32.9  
-Serving — hybrid-swa · KV 22.5 KB/token on 9 of 48 layers + 26 MB/request · MXFP4 weights (0.56 B/param) · thinks ~2000 hidden tokens per answer  
+Serving — hybrid-swa · KV 22.5 KB/token on 9 of 48 layers + 26 MB/request · MXFP4 weights (0.56 B/param) · hybrid thinking (enable_thinking=False): instant on interactive traffic, judged 85 / 89 / 89 / 93 / 84 (from the thinking→instant pair fit); thinks ~2000 hidden tokens elsewhere  
 
 The best ~300B open model of autumn 2026: 39 of its 48 layers attend a 128-token sliding window, holding growing KV to ~22 KB per token; FP8 weights with MXFP4-stored experts (~0.56 bytes/param). Omni-modal; Artificial Analysis publishes no GPQA, IFBench or TB-Hard for it, so those cells are bridged.
 
@@ -944,7 +948,7 @@ The best ~300B open model of autumn 2026: 39 of its 48 layers attend a 128-token
 **Motif Technologies** · 2026-08 · MIT · 314B total / 13.2B active (MoE) · reasoning · 262K ctx · spec: agentic · lineage: from-scratch · confidence: high · AAII 33.6
 [model card](https://huggingface.co/Motif-Technologies/Motif-3)
 Benchmarks — GPQA-D 83.4 · IFBench ≈69.6 (bridged) · LCR 68.2 · SciCode 41.3 · TB-Hard ≈50.1 (bridged) · HLE 34.7  
-Serving — hybrid-swa · KV 15.8 KB/token on 14 of 53 layers + 6 MB/request · BF16 weights (2 B/param) · thinks ~1500 hidden tokens per answer  
+Serving — hybrid-swa · KV 15.8 KB/token on 14 of 53 layers + 6 MB/request · BF16 weights (2 B/param) · hybrid thinking (enable_thinking=False): instant on interactive traffic, judged 85 / 87 / 86 / 93 / 86 (from the thinking→instant pair fit); thinks ~1500 hidden tokens elsewhere  
 
 Grouped differential attention on an MLA latent, with 128-token sliding windows on 3 of every 4 layers: ~16 KB of KV per token, 20× less than Hy3 at the same size. Terminal-Bench 2.1 75% at 13B active; the card's calibrated-abstention score (OmniScience 71.6) is a real over-refusal-versus-hallucination signal.
 
@@ -952,7 +956,7 @@ Grouped differential attention on an MLA latent, with 128-token sliding windows 
 **Z AI (Zhipu AI)** · 2026-08 · MIT · 321B total / 18B active (MoE) · reasoning · 1049K ctx · spec: agentic · lineage: from-scratch · confidence: high · AAII 41.8
 [model card](https://huggingface.co/zai-org/GLM-5.3-Flash)
 Benchmarks — GPQA-D 91.2 · IFBench ≈73.8 (bridged) · LCR 71.8 · SciCode 50.8 · TB-Hard ≈56.8 (bridged) · HLE 37.3  
-Serving — hybrid-linear · KV 22.3 KB/token on 11 of 45 layers + 148 MB/request · FP8 weights (1.02 B/param) · thinks ~2000 hidden tokens per answer  
+Serving — hybrid-linear · KV 22.3 KB/token on 11 of 45 layers + 148 MB/request · FP8 weights (1.02 B/param) · always thinks (reasoning_effort (low / high / max)): ~2000 hidden tokens per answer  
 
 Above GLM-5.2 on almost every cell at less than half the size: 34 Kimi Delta Attention + 11 DeepSeek-Sparse-Attention (MLA) layers, FP8 weights, MIT-licensed. Z AI's claim of 4.4× less KV than GLM-5.3 matches its config within 5% (~22 KB per token).
 
@@ -981,7 +985,7 @@ GLM-4.6 is Z AI's (Zhipu) ~355B-total Mixture-of-Experts model released Septembe
 **Institute of Foundation Models (MBZUAI)** · 2026-09 · Apache 2.0 · 379.2B total / 23B active (MoE) · reasoning · 524K ctx · spec: agentic · lineage: from-scratch · confidence: high · AAII 30.5
 [model card](https://huggingface.co/IFM/K2-Horizon-375B-A23B)
 Benchmarks — GPQA-D 87.3 · IFBench ≈69.4 (bridged) · LCR 71.8 · SciCode 42 · TB-Hard ≈47.2 (bridged) · HLE 30  
-Serving — GQA · KV 244.0 KB/token on 61 of 61 layers · BF16 weights (2 B/param) · thinks ~2000 hidden tokens per answer  
+Serving — GQA · KV 244.0 KB/token on 61 of 61 layers · BF16 weights (2 B/param) · always thinks (reasoning_effort (high / medium / low)): ~2000 hidden tokens per answer  
 
 The largest fully open model (weights, data, code, intermediate and RL-expert checkpoints). Plain full-attention GQA keeps its cache heavy — 244 KB per token against single-digit KB for the compressed-attention frontier — the price of a transparent, standard architecture.
 
@@ -989,7 +993,7 @@ The largest fully open model (weights, data, code, intermediate and RL-expert ch
 **Alibaba Qwen Team** · 2026-02 · Apache-2.0 · 397B total / 17B active (MoE) · reasoning · 262K ctx · spec: reasoning · lineage: from-scratch · confidence: high · AAII 34
 [model card](https://huggingface.co/Qwen/Qwen3.5-397B-A17B)
 Benchmarks — GPQA-D 89.3 · IFBench 78.8 · LCR 65.7 · SciCode 42 · TB-Hard 40.9 · HLE 27.3  
-Serving — hybrid-linear · KV 30.0 KB/token on 15 of 60 layers + 192 MB/request · BF16 weights (2 B/param) · thinks ~3186 hidden tokens per answer  
+Serving — hybrid-linear · KV 30.0 KB/token on 15 of 60 layers + 192 MB/request · BF16 weights (2 B/param) · hybrid thinking (enable_thinking=False): instant on interactive traffic, judged 89 / 94 / 90 / 102 / 87 (from AA Qwen3.5 397B A17B (Non-reasoning)); thinks ~3186 hidden tokens elsewhere  
 
 Qwen3.5-397B-A17B is the flagship of Alibaba's Qwen3.5 series, released February 2026 under Apache 2.0 as a sparse Mixture-of-Experts model with 397B total and 17B active parameters (512 experts, 11 routed + 1 shared per token). It is a unified vision-language reasoning model (thinking mode by default) using an efficient hybrid architecture combining Gated Delta Networks with sparse MoE and early-fusion multimodal training, supporting 200+ languages. Native context is 262K tokens, extensible to ~1.01M via YaRN; the hosted Qwen3.5-Plus variant defaults to 1M context. It posts strong benchmarks (MMLU-Pro 87.8, GPQA-Diamond 88.4, AIME 2026 91.3, SWE-bench Verified 76.4) and scores 34 on the Artificial Analysis Intelligence Index.
 
@@ -1004,7 +1008,7 @@ Meta's flagship natively-multimodal MoE, 17B active across 128 experts (400B tot
 **MiniMax** · 2026-06 · MiniMax Community License · 428B total / 23B active (MoE) · reasoning · 1000K ctx · spec: agentic · lineage: derived from MiniMax-M2 · confidence: high · AAII 44
 [model card](https://huggingface.co/MiniMaxAI/MiniMax-M3)
 Benchmarks — GPQA-D 92.9 · IFBench 82.9 · LCR 74 · SciCode 45.4 · TB-Hard 42.4 · HLE 37.1  
-Serving — GQA · KV 120.0 KB/token on 60 of 60 layers · BF16 weights (2 B/param) · thinks ~2000 hidden tokens per answer  
+Serving — GQA · KV 120.0 KB/token on 60 of 60 layers · BF16 weights (2 B/param) · hybrid thinking (thinking_mode="disabled"): instant on interactive traffic, judged 88 / 92 / 87 / 96 / 83 (from the thinking→instant pair fit); thinks ~2000 hidden tokens elsewhere  
 
 MiniMax-M3, released June 1, 2026, is an open-weight frontier model built on the new MiniMax Sparse Attention (MSA) architecture, a 428B-total / 23B-active Mixture-of-Experts model with native multimodality and a 1M-token context window (512K guaranteed minimum). MSA delivers roughly 9.7x faster prefill and 15.6x faster decode at 1M context versus MiniMax M2. Published numbers include GPQA-Diamond ~92.9 and SWE-bench Pro 59.0 (surpassing GPT-5.5 and Gemini 3.1 Pro on that benchmark), plus Terminal-Bench 2.1 66.0 and BrowseComp 83.5; MMLU-Pro, AIME, LiveCodeBench, and SWE-bench Verified were not officially released. It scored 44 on the Artificial Analysis Intelligence Index, ranking #2 among tracked models.
 
@@ -1012,7 +1016,7 @@ MiniMax-M3, released June 1, 2026, is an open-weight frontier model built on the
 **MiniMax** · 2025-06 · Apache 2.0 · 456B total / 45.9B active (MoE) · reasoning · 1000K ctx · spec: reasoning · lineage: derived from MiniMax-Text-01 · confidence: high
 [model card](https://huggingface.co/MiniMaxAI/MiniMax-M1-80k)
 Benchmarks — GPQA-D 69.7 · IFBench 41.8 · LCR 54.3 · SciCode 37.4 · TB-Hard 3 · HLE 8.2  
-Serving — hybrid-linear · KV 40.0 KB/token on 10 of 80 layers + 294 MB/request · BF16 weights (2 B/param) · thinks ~1500 hidden tokens per answer  
+Serving — hybrid-linear · KV 40.0 KB/token on 10 of 80 layers + 294 MB/request · BF16 weights (2 B/param) · always thinks (no off switch): ~1500 hidden tokens per answer  
 
 Hybrid-MoE reasoning model from MiniMax, 456B total / 45.9B active, built on MiniMax-Text-01 and RL-trained (CISPO). Its lightning (linear) attention gives a native 1M-token context at ~25% the FLOPs of DeepSeek-R1 at 100K generation (AIME-2025 76.9, GPQA 70, LiveCodeBench 65, SWE-bench 56). Extremely efficient for long reasoning.
 
@@ -1028,7 +1032,7 @@ Alibaba Qwen's flagship agentic code model, a 480B total / 35B active MoE (160 e
 **NVIDIA** · 2026-06 · OpenMDW License Agreement v1.1 · 550B total / 55B active (MoE) · reasoning · 1000K ctx · spec: reasoning · lineage: from-scratch · confidence: high · AAII 38
 [model card](https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16)
 Benchmarks — GPQA-D 86.7 · IFBench 81.4 · LCR 67 · SciCode 39.9 · TB-Hard 36.4 · HLE 26.6  
-Serving — hybrid-linear · KV 12.0 KB/token on 12 of 108 layers + 408 MB/request · BF16 weights (2 B/param) · thinks ~2275 hidden tokens per answer  
+Serving — hybrid-linear · KV 12.0 KB/token on 12 of 108 layers + 408 MB/request · BF16 weights (2 B/param) · hybrid thinking (enable_thinking=False): instant on interactive traffic, judged 86 / 89 / 85 / 92 / 76 (from the thinking→instant pair fit); thinks ~2275 hidden tokens elsewhere  
 
 Nemotron 3 Ultra is NVIDIA's frontier-scale open-weight flagship, a 550B-total / 55B-active Latent Mixture-of-Experts model built on a hybrid Mamba-2 + MoE + Attention stack with Multi-Token Prediction, trained from scratch (not derived from Llama). Released June 2026 under the permissive OpenMDW v1.1 license, it targets demanding agentic, long-context (up to 1M tokens; ~262k as served by Artificial Analysis providers), and reasoning workloads. It scores 38 on the Artificial Analysis Intelligence Index at ~$0.58 blended/Mtok and ~153 tok/s, making it the strongest US open-weight model on that index at launch. Its own model card reports MMLU-Pro 86.8, GPQA 87.0, LiveCodeBench v6 89.0, and SWE-bench Verified 70.7, but uses IMOAnswerBench rather than AIME for math (so AIME is unverified).
 
@@ -1036,7 +1040,7 @@ Nemotron 3 Ultra is NVIDIA's frontier-scale open-weight flagship, a 550B-total /
 **InclusionAI (Ant Group)** · 2026-10 · MIT · 560B total / 25B active (MoE) · reasoning · 262K ctx · spec: agentic · lineage: from-scratch (the Ling-3.0-flash architecture, scaled) · confidence: high · AAII 41.1
 [model card](https://huggingface.co/inclusionAI/Ling-3.1-flash)
 Benchmarks — GPQA-D ≈94.4 (bridged) · IFBench ≈75.6 (bridged) · LCR 74.6 · SciCode 53.3 · TB-Hard ≈53.9 (bridged) · HLE 36.9  
-Serving — hybrid-linear · KV 10.1 KB/token on 9 of 72 layers + 274 MB/request · FP8 weights (1 B/param) · thinks ~2000 hidden tokens per answer  
+Serving — hybrid-linear · KV 10.1 KB/token on 9 of 72 layers + 274 MB/request · FP8 weights (1 B/param) · hybrid thinking (enable_thinking=False (thinking_option "off")): instant on interactive traffic, judged 87 / 92 / 91 / 96 / 91 (from the thinking→instant pair fit); thinks ~2000 hidden tokens elsewhere  
 
 Linear-attention hybrids at frontier scale: Kimi Delta Attention on 7 of every 8 layers leaves 9 gated-MLA layers with ~10 KB of KV per token at 560B, and FP8 weights fit one 8×H200 pod. The README advertises a 1M window; the shipped config serves 262K.
 
@@ -1044,7 +1048,7 @@ Linear-attention hybrids at frontier scale: Kimi Delta Attention on 7 of every 8
 **StepFun** · 2026-09 · StepFun Model License 1.0 · 600B total / 27B active (MoE) · reasoning · 1049K ctx · spec: agentic · lineage: from-scratch · confidence: high · AAII 43.7
 [model card](https://huggingface.co/stepfun-ai/Step-5-Preview)
 Benchmarks — GPQA-D ≈96.3 (bridged) · IFBench ≈81.2 (bridged) · LCR 79.4 · SciCode 58.1 · TB-Hard ≈61.5 (bridged) · HLE 43.5  
-Serving — hybrid-swa · KV 69.0 KB/token on 23 of 92 layers + 109 MB/request · FP8 weights (1.07 B/param) · thinks ~2000 hidden tokens per answer  
+Serving — hybrid-swa · KV 69.0 KB/token on 23 of 92 layers + 109 MB/request · FP8 weights (1.07 B/param) · always thinks (reasoning_effort (a system "Reasoning: …" line)): ~2000 hidden tokens per answer  
 
 A 600B frontier MoE in FP8 (one 8×H200 pod): 69 sliding-window (512) layers and 23 full layers behind a block-compressed sparse indexer. Its license charges MaaS businesses above $20M revenue and device makers — an operator constraint as real as VRAM. GPQA, IFBench and TB-Hard are bridged.
 
@@ -1067,7 +1071,7 @@ DeepSeek's first large-scale reasoning model, post-trained from DeepSeek-V3-Base
 **DeepSeek** · 2025-05 · MIT · 671B total / 37B active (MoE) · reasoning · 128K ctx · spec: reasoning · lineage: derived from DeepSeek-V3-Base · confidence: high
 [model card](https://huggingface.co/deepseek-ai/DeepSeek-R1-0528)
 Benchmarks — GPQA-D 81.3 · IFBench 39.6 · LCR 54.7 · SciCode 40.3 · TB-Hard 15.9 · HLE 14.9  
-Serving — MLA · KV 68.6 KB/token on 61 of 61 layers · FP8 weights (1.01 B/param) · thinks ~1500 hidden tokens per answer  
+Serving — MLA · KV 68.6 KB/token on 61 of 61 layers · FP8 weights (1.01 B/param) · always thinks (no off switch): ~1500 hidden tokens per answer  
 
 May 2025 refresh of DeepSeek-R1 with substantially deeper reasoning (average AIME token usage roughly doubled), pushing AIME-2025 to 87.5, GPQA to 81 and LiveCodeBench to 73.3, narrowing the gap to closed frontier reasoners (SWE-bench 57.6). Also reduced hallucination and improved tool/function calling. 671B/37B MoE, MIT.
 
@@ -1075,7 +1079,7 @@ May 2025 refresh of DeepSeek-R1 with substantially deeper reasoning (average AIM
 **DeepSeek** · 2025-08 · MIT · 671B total / 37B active (MoE) · reasoning · 128K ctx · spec: agentic · lineage: derived from DeepSeek-V3-Base · confidence: high
 [model card](https://huggingface.co/deepseek-ai/DeepSeek-V3.1)
 Benchmarks — GPQA-D 77.9 · IFBench 41.5 · LCR 53.3 · SciCode 39.1 · TB-Hard 25 · HLE 13  
-Serving — MLA · KV 68.6 KB/token on 61 of 61 layers · FP8 weights (1.01 B/param) · thinks ~1500 hidden tokens per answer  
+Serving — MLA · KV 68.6 KB/token on 61 of 61 layers · FP8 weights (1.01 B/param) · hybrid thinking (thinking=False): instant on interactive traffic, judged 82 / 86 / 84 / 90 / 67 (from AA DeepSeek V3.1 (Non-reasoning)); thinks ~1500 hidden tokens elsewhere  
 
 Hybrid model supporting both thinking and non-thinking modes in one checkpoint, post-trained on a long-context-extended V3.1-Base, sharing the 671B/37B MLA MoE and adding much stronger tool calling and agentic behavior (MMLU-Pro 84.8, GPQA 80.1, AIME-2025 88.4, LiveCodeBench 74.8, SWE-bench 66). The campaign's frontier dense-MoE workhorse. MIT.
 
@@ -1090,7 +1094,7 @@ September 2025 stability-and-agent refresh of DeepSeek-V3.1, keeping the 671B/37
 **DeepSeek** · 2025-09 · MIT · 685B total / 37B active (MoE) · reasoning · 128K ctx · spec: agentic · lineage: derived from DeepSeek-V3.1-Terminus · confidence: med
 [model card](https://huggingface.co/deepseek-ai/DeepSeek-V3.2-Exp)
 Benchmarks — GPQA-D 79.7 · IFBench 54.1 · LCR 69 · SciCode 37.7 · TB-Hard 31.1 · HLE 13.8  
-Serving — MLA · KV 83.9 KB/token on 61 of 61 layers · FP8 weights (1.01 B/param) · thinks ~1500 hidden tokens per answer  
+Serving — MLA · KV 83.9 KB/token on 61 of 61 layers · FP8 weights (1.01 B/param) · hybrid thinking (thinking=False): instant on interactive traffic, judged 84 / 87 / 87 / 90 / 68 (from AA DeepSeek V3.2 Exp (Non-reasoning)); thinks ~1500 hidden tokens elsewhere  
 
 Experimental release introducing DeepSeek Sparse Attention (DSA), the lab's first fine-grained sparse-attention mechanism, built on V3.1-Terminus to validate long-context efficiency. Keeps the ~685B/37B MoE shape while sharply cutting long-context cost at near-identical quality (AIME-2025 89.3, SWE-bench 67.8, LiveCodeBench 74.1). A step toward DeepSeek's next-gen architecture. MIT.
 
@@ -1098,7 +1102,7 @@ Experimental release introducing DeepSeek Sparse Attention (DSA), the lab's firs
 **Z AI (Zhipu AI)** · 2026-06 · MIT · 753B total / 40B active (MoE) · reasoning · 1000K ctx · spec: agentic · lineage: derived from GLM-5 / GLM-5.1 (744B MoE base, DeepSeek Sparse Attention) · confidence: med · AAII 51
 [model card](https://huggingface.co/blog/zai-org/glm-52-blog)
 Benchmarks — GPQA-D 89.5 · IFBench 73.3 · LCR 71.3 · SciCode 50.5 · TB-Hard 50.8 · HLE 40.1  
-Serving — MLA · KV 93.0 KB/token on 78 of 78 layers · BF16 weights (2 B/param) · thinks ~2000 hidden tokens per answer  
+Serving — MLA · KV 93.0 KB/token on 78 of 78 layers · BF16 weights (2 B/param) · hybrid thinking (enable_thinking=False): instant on interactive traffic, judged 84 / 85 / 85 / 89 / 73 (from AA GLM-5.2 (Non-reasoning)); thinks ~2000 hidden tokens elsewhere  
 
 GLM-5.2 is Z AI's (Zhipu) flagship open-weight Mixture-of-Experts model released June 2026, sharing the GLM-5 family's ~753B-total / 40B-active architecture with DeepSeek Sparse Attention but extending the context window to 1M tokens. It became the leading open-weight model on the Artificial Analysis Intelligence Index v4.1 (AAII 51), ranking 4th overall and trailing only top proprietary models. It is tuned for long-horizon agentic coding, scoring 62.1 on SWE-bench Pro and 81.0 on Terminal-Bench 2.1, plus AIME 2026 99.2 and GPQA-Diamond 91.2. Z AI did not publish standard SWE-bench Verified, MMLU-Pro, or LiveCodeBench numbers at launch, so those are left unverified.
 
@@ -1106,7 +1110,7 @@ GLM-5.2 is Z AI's (Zhipu) flagship open-weight Mixture-of-Experts model released
 **Z AI (Zhipu AI)** · 2026-08 · GLM-5.3 License (MIT-style) · 753B total / 40B active (MoE) · reasoning · 1049K ctx · spec: agentic · lineage: derived from GLM-5.2 (same pre-trained base; every gain is post-training) · confidence: high · AAII 44.8
 [model card](https://huggingface.co/zai-org/GLM-5.3)
 Benchmarks — GPQA-D 91.7 · IFBench ≈74.8 (bridged) · LCR 71.5 · SciCode 58.2 · TB-Hard ≈58.8 (bridged) · HLE 39.6  
-Serving — MLA · KV 93.0 KB/token on 78 of 78 layers · FP8 weights (1 B/param) · thinks ~2000 hidden tokens per answer  
+Serving — MLA · KV 93.0 KB/token on 78 of 78 layers · FP8 weights (1 B/param) · always thinks (reasoning_effort (low / high / max)): ~2000 hidden tokens per answer  
 
 GLM-5.2's base, re-post-trained — and released in FP8, so the same 753B MLA + DeepSeek-Sparse-Attention body that needs a SuperPod at BF16 fits one 8×H200 pod. Terminal-Bench 2.1 83.9; IFBench is not published (bridged). The license asks MaaS operators above $10B revenue for a Z AI security review.
 
@@ -1121,7 +1125,7 @@ GLM-5.1 is a post-training upgrade of Z AI's GLM-5 base, keeping the ~754B-total
 **DeepSeek** · 2026-09 · MIT · 763B total / 16B active (MoE) · reasoning · 1049K ctx · spec: reasoning · lineage: from-scratch (a new causal encoder–decoder) · confidence: med · AAII 39.5
 [model card](https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash)
 Benchmarks — GPQA-D ≈92.8 (bridged) · IFBench ≈75.3 (bridged) · LCR 75.5 · SciCode 51.1 · TB-Hard ≈53.2 (bridged) · HLE 36.7  
-Serving — csa · KV 3.3 KB/token on 40 of 40 layers + 5 MB/request · FP4 weights (0.66 B/param) · thinks ~2000 hidden tokens per answer  
+Serving — csa · KV 3.3 KB/token on 40 of 40 layers + 5 MB/request · FP4 weights (0.66 B/param) · hybrid thinking (enable_thinking=False (thinking_mode "chat")): instant on interactive traffic, judged 87 / 87 / 85 / 92 / 71 (from AA DeepSeek V4.1 Flash (Non-reasoning)); thinks ~2000 hidden tokens elsewhere  
 
 DeepSeek's current flagship — its API routes V4-Pro and V4-Flash traffic here: a causal encoder–decoder whose decoder reuses the encoder's compressed KV. The card publishes 890 bytes per token with FP4 KV, the smallest cache at the frontier. The 763B includes a 196B Engram n-gram memory; active parameters are 8B in prefill and 16B in decode. Artificial Analysis publishes no GPQA, IFBench, TB-Hard or TB-2.1, so four cells are bridged from HLE, LCR and SciCode.
 
@@ -1129,7 +1133,7 @@ DeepSeek's current flagship — its API routes V4-Pro and V4-Flash traffic here:
 **Meta** · 2026-10 · Muse Model License · 816B total / 42B active (MoE) · reasoning · 1049K ctx · spec: reasoning · lineage: shares the Muse Spark 1.3 pre-trained base; extra safety post-training for standalone use · confidence: med · AAII 38.9
 [model card](https://huggingface.co/meta-models/Muse-Spark-Open-816B-A42B)
 Benchmarks — GPQA-D 89 · IFBench ≈74.4 (bridged) · LCR 70.3 · SciCode 57.6 · TB-Hard ≈55.9 (bridged) · HLE 41.1  
-Serving — GQA · KV 248.0 KB/token on 62 of 62 layers · BF16 weights (2 B/param) · thinks ~2000 hidden tokens per answer  
+Serving — GQA · KV 248.0 KB/token on 62 of 62 layers · BF16 weights (2 B/param) · always thinks (reasoning_effort (low / medium / high / xhigh)): ~2000 hidden tokens per answer  
 
 The strongest US open-weight model (October 2026) and a deliberate contrast: full attention on all 62 layers — ~248 KB of KV per token, 10–60× the hybrids (the Hugging Face blog's 266 GB for one 1M-token context matches exactly). A gated download with manual approval; the config is gated, so the layout comes from the blog and card. A separate deal is required for MaaS above $20M revenue.
 
@@ -1144,7 +1148,7 @@ Moonshot AI's 1-trillion-total / 32B-active MoE (384 experts, 8 active + 1 share
 **Moonshot AI** · 2025-11 · Modified MIT · 1000B total / 32B active (MoE) · reasoning · 256K ctx · spec: agentic · lineage: derived from Kimi-K2-Base · confidence: high
 [model card](https://huggingface.co/moonshotai/Kimi-K2-Thinking)
 Benchmarks — GPQA-D 83.8 · IFBench 68.1 · LCR 66.3 · SciCode 42.4 · TB-Hard 31.1 · HLE 22.3  
-Serving — MLA · KV 68.6 KB/token on 61 of 61 layers · INT4 weights (0.58 B/param) · thinks ~2000 hidden tokens per answer  
+Serving — MLA · KV 68.6 KB/token on 61 of 61 layers · INT4 weights (0.58 B/param) · always thinks (no off switch): ~2000 hidden tokens per answer  
 
 Moonshot AI's reasoning + tool-orchestration flagship, sharing the 1T-total / 32B-active MoE (384 experts) but adding long step-by-step thinking interleaved with function calls, 256K context. One of the strongest open models on hard reasoning and agentic coding (GPQA 84.5, LiveCodeBench 83.1, SWE-bench 71.3, AIME-2025 94.5 no-tools). Trained natively in INT4 (quantization-aware), so its ~580 GB of weights fit one 8×H200 pod and its benchmarks are measured at that precision.
 
@@ -1166,7 +1170,7 @@ Kimi K2.7 Code, released June 12, 2026, is a coding-specialized upgrade built on
 **Xiaomi (MiMo / LLM-Core team)** · 2026-09 · MIT · 1020B total / 42B active (MoE) · reasoning · 1049K ctx · spec: agentic · lineage: from-scratch (MOPD post-train of MiMo-V2.6-Pro-RL) · confidence: high · AAII 46.3
 [model card](https://huggingface.co/XiaomiMiMo/MiMo-V2.6-Pro-MOPD)
 Benchmarks — GPQA-D ≈96.3 (bridged) · IFBench ≈82.5 (bridged) · LCR 77.6 · SciCode 60.2 · TB-Hard ≈63.7 (bridged) · HLE 46.2  
-Serving — hybrid-swa · KV 50.0 KB/token on 10 of 70 layers + 39 MB/request · MXFP4 weights (0.55 B/param) · thinks ~2000 hidden tokens per answer  
+Serving — hybrid-swa · KV 50.0 KB/token on 10 of 70 layers + 39 MB/request · MXFP4 weights (0.55 B/param) · hybrid thinking (enable_thinking=False): instant on interactive traffic, judged 88 / 93 / 98 / 99 / 105 (from the thinking→instant pair fit); thinks ~2000 hidden tokens elsewhere  
 
 The highest Artificial Analysis index among open weights on the October 2026 snapshot (46.3). Sixty 128-token sliding-window layers per ten global ones hold growing KV to ~50 KB per token at trillion scale, and MXFP4-stored experts put the weights at ~560 GB — one 8×H200 pod. GPQA, IFBench and TB-Hard are bridged.
 
@@ -1181,7 +1185,7 @@ MiMo-V2.5-Pro is Xiaomi's flagship open-weight Mixture-of-Experts LLM with ~1.02
 **DeepSeek** · 2026-08 · MIT · 1600B total / 49B active (MoE) · reasoning · 1049K ctx · spec: reasoning · lineage: re-post-train of DeepSeek-V4-Pro (2026-04-24) · confidence: high · AAII 36
 [model card](https://huggingface.co/deepseek-ai/DeepSeek-V4-Pro-0813)
 Benchmarks — GPQA-D 92.8 · IFBench ≈74.7 (bridged) · LCR 72.1 · SciCode 50.2 · TB-Hard ≈54.6 (bridged) · HLE 38.4  
-Serving — csa · KV 9.6 KB/token on 61 of 61 layers + 8 MB/request · FP4 weights (0.54 B/param) · thinks ~2000 hidden tokens per answer  
+Serving — csa · KV 9.6 KB/token on 61 of 61 layers + 8 MB/request · FP4 weights (0.54 B/param) · hybrid thinking (thinking_mode="chat"): instant on interactive traffic, judged 86 / 88 / 87 / 91 / 70 (from AA DeepSeek V4 Pro 0813 (Non-reasoning)); thinks ~2000 hidden tokens elsewhere  
 
 DeepSeek-V4-Pro-0813 is the August 13, 2026 re-post-train of DeepSeek's V4 flagship (first released April 24, 2026): a 1.6T-parameter MoE with 49B active and a 1M-token window, open under MIT. Its hybrid attention — Compressed Sparse Attention (ratio 4) on 30 layers and Heavily Compressed Attention (ratio 128) on 31, one shared 512-d KV head — keeps ~10 KB of KV per token, about 10% of DeepSeek-V3.2's, and FP4 experts with FP8 elsewhere put the weights at ~890 GB, inside one 8×H200 pod. The roster pins the open 0813 Max row (Artificial Analysis reassigned the bare `deepseek-v4-pro` slug to it); Max/High/Non-think are effort settings of the same weights.
 
@@ -1189,7 +1193,7 @@ DeepSeek-V4-Pro-0813 is the August 13, 2026 re-post-train of DeepSeek's V4 flags
 **Moonshot AI** · 2026-07 · Kimi K3 License · 2780B total / 104B active (MoE) · reasoning · 1049K ctx · spec: agentic · lineage: from-scratch · confidence: high · AAII 43.6
 [model card](https://huggingface.co/moonshotai/Kimi-K3)
 Benchmarks — GPQA-D 93.5 · IFBench ≈79 (bridged) · LCR 79.7 · SciCode 58.7 · TB-Hard ≈60.9 (bridged) · HLE 43.8  
-Serving — hybrid-linear · KV 27.0 KB/token on 24 of 93 layers + 449 MB/request · MXFP4 weights (0.56 B/param) · thinks ~2000 hidden tokens per answer  
+Serving — hybrid-linear · KV 27.0 KB/token on 24 of 93 layers + 449 MB/request · MXFP4 weights (0.56 B/param) · always thinks (reasoning_effort (low / high / max)): ~2000 hidden tokens per answer  
 
 The largest open model: 2.78T total / 104B active (896 experts, top-16), with Kimi Delta Attention on 69 of 93 layers and gated MLA on the rest (~27 KB of KV per token). Its weights are MXFP4 quantization-aware-trained — 1.56 TB, just over an 8×B200's HBM — so only the NVL72 holds it. The license requires a separate agreement for MaaS above $20M revenue.
 
@@ -1228,7 +1232,7 @@ Gemma 3 1B Instruct: 1B dense on a sliding-window hybrid — 4 of 26 layers keep
 **Institute of Foundation Models** · 2026-09 · Apache-2.0 · 1.08B dense · reasoning · 131K ctx · spec: general · lineage: — · confidence: high
 [model card](https://huggingface.co/IFM/K2-Horizon-0.9B)
 Benchmarks — GPQA-D 29.3 · IFBench ≈27.8 (bridged) · LCR 5.1 · SciCode 5.7 · TB-Hard ≈0.9 (bridged) · HLE 5.3  
-Serving — GQA · KV 56.0 KB/token on 28 of 28 layers · BF16 weights (2 B/param) · thinks ~1500 hidden tokens per answer  
+Serving — GQA · KV 56.0 KB/token on 28 of 28 layers · BF16 weights (2 B/param) · always thinks (reasoning_effort (high / medium / low)): ~1500 hidden tokens per answer  
 
 K2 Horizon 0.9B: 1.08B dense on full GQA attention (56 KB of KV per token).
 
@@ -1236,7 +1240,7 @@ K2 Horizon 0.9B: 1.08B dense on full GQA attention (56 KB of KV per token).
 **Liquid AI** · 2026-01 · LFM Open License v1.0 · 1.17B dense · reasoning · 33K ctx · spec: chat · lineage: — · confidence: high
 [model card](https://huggingface.co/LiquidAI/LFM2.5-1.2B-Thinking)
 Benchmarks — GPQA-D 33.9 · IFBench 41.8 · LCR 0 · SciCode 4.2 · TB-Hard 0 · HLE 6.1  
-Serving — hybrid-linear · KV 12.0 KB/token on 6 of 16 layers · BF16 weights (2 B/param) · thinks ~1500 hidden tokens per answer  
+Serving — hybrid-linear · KV 12.0 KB/token on 6 of 16 layers · BF16 weights (2 B/param) · always thinks (no off switch): ~1500 hidden tokens per answer  
 
 LFM2.5-1.2B-Thinking: 1.17B dense on a linear/SSM hybrid — 6 of 16 layers keep KV (12 KB per token).
 
@@ -1249,10 +1253,10 @@ Serving — hybrid-linear · KV 12.0 KB/token on 6 of 16 layers · BF16 weights 
 LFM2 1.2B: 1.17B dense on a linear/SSM hybrid — 6 of 16 layers keep KV (12 KB per token).
 
 ### Exaone 4.0 1.2B ★
-**LG AI Research** · 2025-07 · EXAONE AI Model License · 1.28B dense · reasoning · 66K ctx · spec: general · lineage: — · confidence: high
+**LG AI Research** · 2025-07 · EXAONE AI Model License · 1.28B dense · hybrid reasoning · 66K ctx · spec: general · lineage: — · confidence: high
 [model card](https://huggingface.co/LGAI-EXAONE/EXAONE-4.0-1.2B)
 Benchmarks — GPQA-D 51.5 · IFBench 23 · LCR 0 · SciCode 9.3 · TB-Hard 0 · HLE 5.8  
-Serving — GQA · KV 60.0 KB/token on 30 of 30 layers · BF16 weights (2 B/param) · thinks ~1500 hidden tokens per answer  
+Serving — GQA · KV 60.0 KB/token on 30 of 30 layers · BF16 weights (2 B/param) · hybrid thinking (enable_thinking=False): instant on interactive traffic, judged 43 / 49 / 20 / 54 / 8 (from AA Exaone 4.0 1.2B (Non-reasoning)); thinks ~1500 hidden tokens elsewhere  
 
 Exaone 4.0 1.2B: 1.28B dense on full GQA attention (60 KB of KV per token).
 
@@ -1273,10 +1277,10 @@ Serving — GQA · KV 80.0 KB/token on 40 of 40 layers · BF16 weights (2 B/para
 Granite 4.0 1B: 1.6B dense on full GQA attention (80 KB of KV per token).
 
 ### Qwen3.5 2B ★
-**Alibaba** · 2026-03 · Apache-2.0 · 2B dense · reasoning · 262K ctx · spec: general · lineage: — · confidence: high
+**Alibaba** · 2026-03 · Apache-2.0 · 2B dense · hybrid reasoning · 262K ctx · spec: general · lineage: — · confidence: high
 [model card](https://huggingface.co/Qwen/Qwen3.5-2B)
 Benchmarks — GPQA-D 45.6 · IFBench 31.5 · LCR 23.7 · SciCode 2.8 · TB-Hard 3.8 · HLE 2.1  
-Serving — hybrid-linear · KV 12.0 KB/token on 6 of 24 layers + 20 MB/request · BF16 weights (2 B/param) · thinks ~2000 hidden tokens per answer  
+Serving — hybrid-linear · KV 12.0 KB/token on 6 of 24 layers + 20 MB/request · BF16 weights (2 B/param) · hybrid thinking (enable_thinking=False): instant on interactive traffic, judged 60 / 59 / 25 / 71 / 21 (from AA Qwen3.5 2B (Non-reasoning)); thinks ~2000 hidden tokens elsewhere  
 
 Qwen3.5 2B: 2B dense on a linear/SSM hybrid — 6 of 24 layers keep KV (12 KB per token).
 
@@ -1292,7 +1296,7 @@ LFM2 2.6B: 2.57B dense on a linear/SSM hybrid — 8 of 30 layers keep KV (16 KB 
 **Liquid AI** · 2026-08 · LFM Open License v1.0 · 2.69B dense · reasoning · 131K ctx · spec: general · lineage: — · confidence: high
 [model card](https://huggingface.co/LiquidAI/LFM2.5-2.6B)
 Benchmarks — GPQA-D 55.8 · IFBench ≈35.4 (bridged) · LCR 4.5 · SciCode 13.3 · TB-Hard ≈4 (bridged) · HLE 6.1  
-Serving — hybrid-linear · KV 16.0 KB/token on 8 of 30 layers · BF16 weights (2 B/param) · thinks ~1500 hidden tokens per answer  
+Serving — hybrid-linear · KV 16.0 KB/token on 8 of 30 layers · BF16 weights (2 B/param) · always thinks (no off switch): ~1500 hidden tokens per answer  
 
 LFM2.5-2.6B: 2.69B dense on a linear/SSM hybrid — 8 of 30 layers keep KV (16 KB per token).
 
@@ -1300,7 +1304,7 @@ LFM2.5-2.6B: 2.69B dense on a linear/SSM hybrid — 8 of 30 layers keep KV (16 K
 **AI21 Labs** · 2025-10 · Apache-2.0 · 3B dense · reasoning · 262K ctx · spec: chat · lineage: — · confidence: high
 [model card](https://huggingface.co/ai21labs/AI21-Jamba-Reasoning-3B)
 Benchmarks — GPQA-D 33.3 · IFBench 52.4 · LCR 7 · SciCode 5.9 · TB-Hard 0.8 · HLE 4.6  
-Serving — hybrid-linear · KV 1.0 KB/token on 2 of 28 layers + 5 MB/request · BF16 weights (2 B/param) · thinks ~1500 hidden tokens per answer  
+Serving — hybrid-linear · KV 1.0 KB/token on 2 of 28 layers + 5 MB/request · BF16 weights (2 B/param) · always thinks (no off switch): ~1500 hidden tokens per answer  
 
 Jamba Reasoning 3B: 3B dense on a linear/SSM hybrid — 2 of 28 layers keep KV (1 KB per token).
 
@@ -1321,18 +1325,18 @@ Serving — GQA · KV 80.0 KB/token on 40 of 40 layers · BF16 weights (2 B/para
 Granite 4.1 3B: 3.4B dense on full GQA attention (80 KB of KV per token).
 
 ### Granite 4.2 3B
-**IBM** · 2026-08 · Apache-2.0 · 3.66B dense · reasoning · 131K ctx · spec: general · lineage: — · confidence: high
+**IBM** · 2026-08 · Apache-2.0 · 3.66B dense · hybrid reasoning · 131K ctx · spec: general · lineage: — · confidence: high
 [model card](https://huggingface.co/ibm-granite/granite-4.2-3b)
 Benchmarks — GPQA-D 55.9 · IFBench ≈39.3 (bridged) · LCR 21.4 · SciCode 24.3 · TB-Hard ≈10.2 (bridged) · HLE 6.5  
-Serving — GQA · KV 80.0 KB/token on 40 of 40 layers · BF16 weights (2 B/param) · thinks ~2000 hidden tokens per answer  
+Serving — GQA · KV 80.0 KB/token on 40 of 40 layers · BF16 weights (2 B/param) · hybrid thinking (enable_thinking=False): instant on interactive traffic, judged 69 / 67 / 55 / 76 / 30 (from the thinking→instant pair fit); thinks ~2000 hidden tokens elsewhere  
 
 Granite 4.2 3B: 3.66B dense on full GQA attention (80 KB of KV per token).
 
 ### Qwen3.5 4B ★
-**Alibaba** · 2026-03 · Apache-2.0 · 4B dense · reasoning · 262K ctx · spec: general · lineage: — · confidence: high
+**Alibaba** · 2026-03 · Apache-2.0 · 4B dense · hybrid reasoning · 262K ctx · spec: general · lineage: — · confidence: high
 [model card](https://huggingface.co/Qwen/Qwen3.5-4B)
 Benchmarks — GPQA-D 77.1 · IFBench 52 · LCR 55.7 · SciCode 16.1 · TB-Hard 18.2 · HLE 7.8  
-Serving — hybrid-linear · KV 32.0 KB/token on 8 of 32 layers + 52 MB/request · BF16 weights (2 B/param) · thinks ~2000 hidden tokens per answer  
+Serving — hybrid-linear · KV 32.0 KB/token on 8 of 32 layers + 52 MB/request · BF16 weights (2 B/param) · hybrid thinking (enable_thinking=False): instant on interactive traffic, judged 78 / 84 / 53 / 88 / 41 (from AA Qwen3.5 4B (Non-reasoning)); thinks ~2000 hidden tokens elsewhere  
 
 Qwen3.5 4B: 4B dense on a linear/SSM hybrid — 8 of 32 layers keep KV (32 KB per token).
 
@@ -1345,10 +1349,10 @@ Serving — hybrid-swa · KV 20.0 KB/token on 5 of 34 layers + 122 MB/request ·
 Gemma 3 4B Instruct: 4.3B dense on a sliding-window hybrid — 5 of 34 layers keep a growing KV (20 KB per token).
 
 ### Gemma 4 E2B
-**Google** · 2026-04 · Apache-2.0 · 5.1B dense · reasoning · 131K ctx · spec: general · lineage: — · confidence: high
+**Google** · 2026-04 · Apache-2.0 · 5.1B dense · hybrid reasoning · 131K ctx · spec: general · lineage: — · confidence: high
 [model card](https://huggingface.co/google/gemma-4-E2B-it)
 Benchmarks — GPQA-D 43.3 · IFBench 38 · LCR 15 · SciCode 20.9 · TB-Hard 3 · HLE 4.8  
-Serving — hybrid-swa · KV 6.0 KB/token on 3 of 35 layers + 6 MB/request · BF16 weights (2 B/param) · thinks ~1500 hidden tokens per answer  
+Serving — hybrid-swa · KV 6.0 KB/token on 3 of 35 layers + 6 MB/request · BF16 weights (2 B/param) · hybrid thinking (enable_thinking=False): instant on interactive traffic, judged 67 / 57 / 52 / 67 / 21 (from AA Gemma 4 E2B (Non-reasoning)); thinks ~1500 hidden tokens elsewhere  
 
 Gemma 4 E2B: 5.1B dense on a sliding-window hybrid — 3 of 35 layers keep a growing KV (6 KB per token).
 
@@ -1369,10 +1373,10 @@ Serving — hybrid-swa · KV 8.0 KB/token on 4 of 35 layers + 17 MB/request · B
 Gemma 3n E4B Instruct: 7.9B dense on a sliding-window hybrid — 4 of 35 layers keep a growing KV (8 KB per token).
 
 ### Gemma 4 E4B
-**Google** · 2026-04 · Apache-2.0 · 8B dense · reasoning · 131K ctx · spec: general · lineage: — · confidence: high
+**Google** · 2026-04 · Apache-2.0 · 8B dense · hybrid reasoning · 131K ctx · spec: general · lineage: — · confidence: high
 [model card](https://huggingface.co/google/gemma-4-E4B-it)
 Benchmarks — GPQA-D 57.6 · IFBench 44.2 · LCR 30.7 · SciCode 24.4 · TB-Hard 8.3 · HLE 3.7  
-Serving — hybrid-swa · KV 16.0 KB/token on 4 of 42 layers + 21 MB/request · BF16 weights (2 B/param) · thinks ~2000 hidden tokens per answer  
+Serving — hybrid-swa · KV 16.0 KB/token on 4 of 42 layers + 21 MB/request · BF16 weights (2 B/param) · hybrid thinking (enable_thinking=False): instant on interactive traffic, judged 77 / 76 / 28 / 81 / 34 (from AA Gemma 4 E4B (Non-reasoning)); thinks ~2000 hidden tokens elsewhere  
 
 Gemma 4 E4B: 8B dense on a sliding-window hybrid — 4 of 42 layers keep a growing KV (16 KB per token).
 
@@ -1396,7 +1400,7 @@ Granite 3.3 8B: 8.17B dense on full GQA attention (160 KB of KV per token).
 **DeepSeek** · 2025-05 · MIT · 8.19B dense · reasoning · 131K ctx · spec: general · lineage: derived from Qwen3 8B · confidence: high
 [model card](https://huggingface.co/deepseek-ai/DeepSeek-R1-0528-Qwen3-8B)
 Benchmarks — GPQA-D 61.2 · IFBench 19.9 · LCR 13 · SciCode 20.4 · TB-Hard 1.5 · HLE 5.6  
-Serving — GQA · KV 144.0 KB/token on 36 of 36 layers · BF16 weights (2 B/param) · thinks ~1500 hidden tokens per answer  
+Serving — GQA · KV 144.0 KB/token on 36 of 36 layers · BF16 weights (2 B/param) · always thinks (no off switch): ~1500 hidden tokens per answer  
 
 DeepSeek R1 0528 Qwen3 8B: 8.19B dense on full GQA attention (144 KB of KV per token).
 
@@ -1404,7 +1408,7 @@ DeepSeek R1 0528 Qwen3 8B: 8.19B dense on full GQA attention (144 KB of KV per t
 **Liquid AI** · 2026-05 · LFM Open License v1.0 · 8.3B total / 1.5B active (MoE) · reasoning · 128K ctx · spec: chat · lineage: — · confidence: high
 [model card](https://huggingface.co/LiquidAI/LFM2.5-8B-A1B)
 Benchmarks — GPQA-D 51.3 · IFBench 55.6 · LCR 0 · SciCode 7.8 · TB-Hard 4.5 · HLE 6.9  
-Serving — hybrid-linear · KV 12.0 KB/token on 6 of 24 layers · BF16 weights (2 B/param) · thinks ~2000 hidden tokens per answer  
+Serving — hybrid-linear · KV 12.0 KB/token on 6 of 24 layers · BF16 weights (2 B/param) · always thinks (no off switch): ~2000 hidden tokens per answer  
 
 LFM2.5-8B-A1B: a 8.3B MoE with 1.5B active on a linear/SSM hybrid — 6 of 24 layers keep KV (12 KB per token).
 
@@ -1433,26 +1437,26 @@ Serving — GQA · KV 160.0 KB/token on 40 of 40 layers · BF16 weights (2 B/par
 Granite 4.1 8B: 8.8B dense on full GQA attention (160 KB of KV per token).
 
 ### Granite 4.2 8B ★
-**IBM** · 2026-08 · Apache-2.0 · 8.8B dense · reasoning · 131K ctx · spec: general · lineage: — · confidence: high
+**IBM** · 2026-08 · Apache-2.0 · 8.8B dense · hybrid reasoning · 131K ctx · spec: general · lineage: — · confidence: high
 [model card](https://huggingface.co/ibm-granite/granite-4.2-8b)
 Benchmarks — GPQA-D 63.1 · IFBench ≈46.7 (bridged) · LCR 40.1 · SciCode 30.5 · TB-Hard ≈14.3 (bridged) · HLE 9.3  
-Serving — GQA · KV 160.0 KB/token on 40 of 40 layers · BF16 weights (2 B/param) · thinks ~2000 hidden tokens per answer  
+Serving — GQA · KV 160.0 KB/token on 40 of 40 layers · BF16 weights (2 B/param) · hybrid thinking (enable_thinking=False): instant on interactive traffic, judged 76 / 78 / 67 / 85 / 43 (from the thinking→instant pair fit); thinks ~2000 hidden tokens elsewhere  
 
 Granite 4.2 8B: 8.8B dense on full GQA attention (160 KB of KV per token).
 
 ### Qwen3.5 9B ★
-**Alibaba** · 2026-03 · Apache-2.0 · 9B dense · reasoning · 262K ctx · spec: general · lineage: — · confidence: high
+**Alibaba** · 2026-03 · Apache-2.0 · 9B dense · hybrid reasoning · 262K ctx · spec: general · lineage: — · confidence: high
 [model card](https://huggingface.co/Qwen/Qwen3.5-9B)
 Benchmarks — GPQA-D 80.6 · IFBench 66.7 · LCR 59 · SciCode 27.5 · TB-Hard 24.2 · HLE 13.3  
-Serving — hybrid-linear · KV 32.0 KB/token on 8 of 32 layers + 52 MB/request · BF16 weights (2 B/param) · thinks ~2000 hidden tokens per answer  
+Serving — hybrid-linear · KV 32.0 KB/token on 8 of 32 layers + 52 MB/request · BF16 weights (2 B/param) · hybrid thinking (enable_thinking=False): instant on interactive traffic, judged 82 / 87 / 76 / 90 / 57 (from AA Qwen3.5 9B (Non-reasoning)); thinks ~2000 hidden tokens elsewhere  
 
 Qwen3.5 9B: 9B dense on a linear/SSM hybrid — 8 of 32 layers keep KV (32 KB per token).
 
 ### Gemma 4 12B ★
-**Google** · 2026-06 · Apache-2.0 · 12B dense · reasoning · 262K ctx · spec: general · lineage: — · confidence: high
+**Google** · 2026-06 · Apache-2.0 · 12B dense · hybrid reasoning · 262K ctx · spec: general · lineage: — · confidence: high
 [model card](https://huggingface.co/google/gemma-4-12B-it)
 Benchmarks — GPQA-D 75.3 · IFBench 73.5 · LCR 55.3 · SciCode 38.2 · TB-Hard 18.2 · HLE 14.8  
-Serving — hybrid-swa · KV 16.0 KB/token on 8 of 48 layers + 336 MB/request · BF16 weights (2 B/param) · thinks ~2000 hidden tokens per answer  
+Serving — hybrid-swa · KV 16.0 KB/token on 8 of 48 layers + 336 MB/request · BF16 weights (2 B/param) · hybrid thinking (enable_thinking=False): instant on interactive traffic, judged 83 / 84 / 80 / 87 / 48 (from AA Gemma 4 12B (Non-reasoning)); thinks ~2000 hidden tokens elsewhere  
 
 Gemma 4 12B: 12B dense on a sliding-window hybrid — 8 of 48 layers keep a growing KV (16 KB per token).
 
@@ -1468,7 +1472,7 @@ Ministral 3 14B: 13.5B dense on full GQA attention (160 KB of KV per token), rel
 **ServiceNow** · 2025-11 · MIT · 15B dense · reasoning · 262K ctx · spec: general · lineage: — · confidence: high
 [model card](https://huggingface.co/ServiceNow-AI/Apriel-1.6-15b-Thinker)
 Benchmarks — GPQA-D 73.3 · IFBench 69.1 · LCR 50.3 · SciCode 37.3 · TB-Hard 14.4 · HLE 9.8  
-Serving — GQA · KV 192.0 KB/token on 48 of 48 layers · BF16 weights (2 B/param) · thinks ~1500 hidden tokens per answer  
+Serving — GQA · KV 192.0 KB/token on 48 of 48 layers · BF16 weights (2 B/param) · always thinks (no off switch): ~1500 hidden tokens per answer  
 
 Apriel-v1.6-15B-Thinker: 15B dense on full GQA attention (192 KB of KV per token).
 
@@ -1476,7 +1480,7 @@ Apriel-v1.6-15B-Thinker: 15B dense on full GQA attention (192 KB of KV per token
 **ServiceNow** · 2025-09 · MIT · 15B dense · reasoning · 262K ctx · spec: general · lineage: — · confidence: high
 [model card](https://huggingface.co/ServiceNow-AI/Apriel-1.5-15b-Thinker)
 Benchmarks — GPQA-D 71.3 · IFBench 61.7 · LCR 20 · SciCode 34.8 · TB-Hard 10.6 · HLE 12  
-Serving — GQA · KV 192.0 KB/token on 48 of 48 layers · BF16 weights (2 B/param) · thinks ~1500 hidden tokens per answer  
+Serving — GQA · KV 192.0 KB/token on 48 of 48 layers · BF16 weights (2 B/param) · always thinks (no off switch): ~1500 hidden tokens per answer  
 
 Apriel-v1.5-15B-Thinker: 15B dense on full GQA attention (192 KB of KV per token).
 
@@ -1489,18 +1493,18 @@ Serving — hybrid-linear · KV 20.0 KB/token on 10 of 40 layers · BF16 weights
 LFM2 24B A2B: a 24B MoE with 2.3B active on a linear/SSM hybrid — 10 of 40 layers keep KV (20 KB per token).
 
 ### Gemma 4 26B A4B ★
-**Google** · 2026-04 · Apache-2.0 · 25.2B total / 3.8B active (MoE) · reasoning · 262K ctx · spec: general · lineage: — · confidence: high
+**Google** · 2026-04 · Apache-2.0 · 25.2B total / 3.8B active (MoE) · hybrid reasoning · 262K ctx · spec: general · lineage: — · confidence: high
 [model card](https://huggingface.co/google/gemma-4-26B-A4B-it)
 Benchmarks — GPQA-D 79.2 · IFBench 72.4 · LCR 55.7 · SciCode 40 · TB-Hard 13.6 · HLE 18.3  
-Serving — hybrid-swa · KV 20.0 KB/token on 5 of 30 layers + 210 MB/request · BF16 weights (2 B/param) · thinks ~2000 hidden tokens per answer  
+Serving — hybrid-swa · KV 20.0 KB/token on 5 of 30 layers + 210 MB/request · BF16 weights (2 B/param) · hybrid thinking (enable_thinking=False): instant on interactive traffic, judged 84 / 86 / 86 / 91 / 68 (from AA Gemma 4 26B A4B (Non-reasoning)); thinks ~2000 hidden tokens elsewhere  
 
 Gemma 4 26B A4B: a 25.2B MoE with 3.8B active on a sliding-window hybrid — 5 of 30 layers keep a growing KV (20 KB per token).
 
 ### Qwen3.5 27B ★
-**Alibaba** · 2026-02 · Apache-2.0 · 27B dense · reasoning · 262K ctx · spec: general · lineage: — · confidence: high
+**Alibaba** · 2026-02 · Apache-2.0 · 27B dense · hybrid reasoning · 262K ctx · spec: general · lineage: — · confidence: high
 [model card](https://huggingface.co/Qwen/Qwen3.5-27B)
 Benchmarks — GPQA-D 85.8 · IFBench 75.6 · LCR 67.3 · SciCode 39.5 · TB-Hard 32.6 · HLE 22.2  
-Serving — hybrid-linear · KV 64.0 KB/token on 16 of 64 layers + 154 MB/request · BF16 weights (2 B/param) · thinks ~2000 hidden tokens per answer  
+Serving — hybrid-linear · KV 64.0 KB/token on 16 of 64 layers + 154 MB/request · BF16 weights (2 B/param) · hybrid thinking (enable_thinking=False): instant on interactive traffic, judged 87 / 92 / 87 / 96 / 81 (from AA Qwen3.5 27B (Non-reasoning)); thinks ~2000 hidden tokens elsewhere  
 
 Qwen3.5 27B: 27B dense on a linear/SSM hybrid — 16 of 64 layers keep KV (64 KB per token).
 
@@ -1513,10 +1517,10 @@ Serving — GQA · KV 256.0 KB/token on 64 of 64 layers · BF16 weights (2 B/par
 Granite 4.1 30B: 28.9B dense on full GQA attention (256 KB of KV per token).
 
 ### Granite 4.2 30B
-**IBM** · 2026-08 · Apache-2.0 · 29.3B dense · reasoning · 131K ctx · spec: general · lineage: — · confidence: high
+**IBM** · 2026-08 · Apache-2.0 · 29.3B dense · hybrid reasoning · 131K ctx · spec: general · lineage: — · confidence: high
 [model card](https://huggingface.co/ibm-granite/granite-4.2-30b)
 Benchmarks — GPQA-D 64.4 · IFBench ≈48.5 (bridged) · LCR 43.8 · SciCode 36.9 · TB-Hard ≈19.6 (bridged) · HLE 10.7  
-Serving — GQA · KV 256.0 KB/token on 64 of 64 layers · BF16 weights (2 B/param) · thinks ~2000 hidden tokens per answer  
+Serving — GQA · KV 256.0 KB/token on 64 of 64 layers · BF16 weights (2 B/param) · hybrid thinking (enable_thinking=False): instant on interactive traffic, judged 77 / 80 / 78 / 86 / 50 (from the thinking→instant pair fit); thinks ~2000 hidden tokens elsewhere  
 
 Granite 4.2 30B: 29.3B dense on full GQA attention (256 KB of KV per token).
 
@@ -1524,87 +1528,87 @@ Granite 4.2 30B: 29.3B dense on full GQA attention (256 KB of KV per token).
 **Meta** · 2026-08 · Apache-2.0 · 29.8B dense · reasoning · 131K ctx · spec: general · lineage: — · confidence: high
 [model card](https://huggingface.co/meta-models/Muse-Glimmer-30B)
 Benchmarks — GPQA-D 83.5 · IFBench ≈65 (bridged) · LCR 74.9 · SciCode 44 · TB-Hard ≈35.4 (bridged) · HLE 20.7  
-Serving — hybrid-swa · KV 13.0 KB/token on 13 of 52 layers + 82 MB/request · BF16 weights (2 B/param) · thinks ~2000 hidden tokens per answer  
+Serving — hybrid-swa · KV 13.0 KB/token on 13 of 52 layers + 82 MB/request · BF16 weights (2 B/param) · always thinks (reasoning strength (low / medium / high / xhigh)): ~2000 hidden tokens per answer  
 
 Muse Glimmer: 29.8B dense on a sliding-window hybrid — 13 of 52 layers keep a growing KV (13 KB per token).
 
 ### Gemma 4 31B ★
-**Google** · 2026-04 · Apache-2.0 · 30.7B dense · reasoning · 262K ctx · spec: general · lineage: — · confidence: high
+**Google** · 2026-04 · Apache-2.0 · 30.7B dense · hybrid reasoning · 262K ctx · spec: general · lineage: — · confidence: high
 [model card](https://huggingface.co/google/gemma-4-31B-it)
 Benchmarks — GPQA-D 85.7 · IFBench 75.6 · LCR 62 · SciCode 43.4 · TB-Hard 36.4 · HLE 22.7  
-Serving — hybrid-swa · KV 80.0 KB/token on 10 of 60 layers + 839 MB/request · BF16 weights (2 B/param) · thinks ~1736 hidden tokens per answer  
+Serving — hybrid-swa · KV 80.0 KB/token on 10 of 60 layers + 839 MB/request · BF16 weights (2 B/param) · hybrid thinking (enable_thinking=False): instant on interactive traffic, judged 86 / 88 / 89 / 91 / 75 (from AA Gemma 4 31B (Non-reasoning)); thinks ~1736 hidden tokens elsewhere  
 
 Gemma 4 31B: 30.7B dense on a sliding-window hybrid — 10 of 60 layers keep a growing KV (80 KB per token).
 
 ### Nemotron Cascade 2 30B A3B ★
-**NVIDIA** · 2026-03 · NVIDIA Open Model License · 31.6B total / 3.2B active (MoE) · reasoning · 262K ctx · spec: chat · lineage: — · confidence: high
+**NVIDIA** · 2026-03 · NVIDIA Open Model License · 31.6B total / 3.2B active (MoE) · hybrid reasoning · 262K ctx · spec: chat · lineage: — · confidence: high
 [model card](https://huggingface.co/nvidia/Nemotron-Cascade-2-30B-A3B)
 Benchmarks — GPQA-D 75.8 · IFBench 80.4 · LCR 34 · SciCode 34.8 · TB-Hard 21.2 · HLE 11.4  
-Serving — hybrid-linear · KV 6.0 KB/token on 6 of 52 layers + 49 MB/request · BF16 weights (2 B/param) · thinks ~1500 hidden tokens per answer  
+Serving — hybrid-linear · KV 6.0 KB/token on 6 of 52 layers + 49 MB/request · BF16 weights (2 B/param) · hybrid thinking (enable_thinking=False): instant on interactive traffic, judged 83 / 83 / 81 / 86 / 54 (from the thinking→instant pair fit); thinks ~1500 hidden tokens elsewhere  
 
 Nemotron Cascade 2 30B A3B: a 31.6B MoE with 3.2B active on a linear/SSM hybrid — 6 of 52 layers keep KV (6 KB per token).
 
 ### Nemotron 3.5 Lightning
-**NVIDIA** · 2026-08 · OpenMDW-1.1 · 31.6B total / 3.2B active (MoE) · reasoning · 262K ctx · spec: general · lineage: — · confidence: high
+**NVIDIA** · 2026-08 · OpenMDW-1.1 · 31.6B total / 3.2B active (MoE) · hybrid reasoning · 262K ctx · spec: general · lineage: — · confidence: high
 [model card](https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16)
 Benchmarks — GPQA-D 74.3 · IFBench ≈53.2 (bridged) · LCR 54 · SciCode 31.1 · TB-Hard ≈17.4 (bridged) · HLE 10.2  
-Serving — hybrid-linear · KV 6.0 KB/token on 6 of 52 layers + 49 MB/request · BF16 weights (2 B/param) · thinks ~2000 hidden tokens per answer  
+Serving — hybrid-linear · KV 6.0 KB/token on 6 of 52 layers + 49 MB/request · BF16 weights (2 B/param) · hybrid thinking (enable_thinking=False): instant on interactive traffic, judged 81 / 83 / 71 / 88 / 52 (from the thinking→instant pair fit); thinks ~2000 hidden tokens elsewhere  
 
 Nemotron 3.5 Lightning: a 31.6B MoE with 3.2B active on a linear/SSM hybrid — 6 of 52 layers keep KV (6 KB per token).
 
 ### EXAONE 4.0 32B
-**LG AI Research** · 2025-07 · EXAONE AI Model License · 32B dense · reasoning · 131K ctx · spec: general · lineage: — · confidence: high
+**LG AI Research** · 2025-07 · EXAONE AI Model License · 32B dense · hybrid reasoning · 131K ctx · spec: general · lineage: — · confidence: high
 [model card](https://huggingface.co/LGAI-EXAONE/EXAONE-4.0-32B)
 Benchmarks — GPQA-D 73.9 · IFBench 36.3 · LCR 14 · SciCode 34.4 · TB-Hard 3.8 · HLE 10.5  
-Serving — hybrid-swa · KV 64.0 KB/token on 16 of 64 layers + 805 MB/request · BF16 weights (2 B/param) · thinks ~1500 hidden tokens per answer  
+Serving — hybrid-swa · KV 64.0 KB/token on 16 of 64 layers + 805 MB/request · BF16 weights (2 B/param) · hybrid thinking (enable_thinking=False): instant on interactive traffic, judged 72 / 78 / 60 / 80 / 17 (from AA EXAONE 4.0 32B (Non-reasoning)); thinks ~1500 hidden tokens elsewhere  
 
 EXAONE 4.0 32B: 32B dense on a sliding-window hybrid — 16 of 64 layers keep a growing KV (64 KB per token).
 
 ### EXAONE 4.5 33B
-**LG AI Research** · 2026-04 · EXAONE AI Model License · 33B dense · reasoning · 262K ctx · spec: general · lineage: — · confidence: high
+**LG AI Research** · 2026-04 · EXAONE AI Model License · 33B dense · hybrid reasoning · 262K ctx · spec: general · lineage: — · confidence: high
 [model card](https://huggingface.co/LGAI-EXAONE/EXAONE-4.5-33B)
 Benchmarks — GPQA-D 79.4 · IFBench 58 · LCR 49.3 · SciCode 28 · TB-Hard 20.5 · HLE 11.6  
-Serving — hybrid-swa · KV 64.0 KB/token on 16 of 64 layers + 805 MB/request · BF16 weights (2 B/param) · thinks ~1500 hidden tokens per answer  
+Serving — hybrid-swa · KV 64.0 KB/token on 16 of 64 layers + 805 MB/request · BF16 weights (2 B/param) · hybrid thinking (enable_thinking=False): instant on interactive traffic, judged 82 / 85 / 69 / 88 / 54 (from the thinking→instant pair fit); thinks ~1500 hidden tokens elsewhere  
 
 EXAONE 4.5 33B: 33B dense on a sliding-window hybrid — 16 of 64 layers keep a growing KV (64 KB per token).
 
 ### Qwen3.5 35B A3B ★
-**Alibaba** · 2026-02 · Apache-2.0 · 35B total / 3B active (MoE) · reasoning · 262K ctx · spec: general · lineage: — · confidence: high
+**Alibaba** · 2026-02 · Apache-2.0 · 35B total / 3B active (MoE) · hybrid reasoning · 262K ctx · spec: general · lineage: — · confidence: high
 [model card](https://huggingface.co/Qwen/Qwen3.5-35B-A3B)
 Benchmarks — GPQA-D 84.5 · IFBench 72.5 · LCR 62.7 · SciCode 37.7 · TB-Hard 26.5 · HLE 19.7  
-Serving — hybrid-linear · KV 20.0 KB/token on 10 of 40 layers + 64 MB/request · BF16 weights (2 B/param) · thinks ~2000 hidden tokens per answer  
+Serving — hybrid-linear · KV 20.0 KB/token on 10 of 40 layers + 64 MB/request · BF16 weights (2 B/param) · hybrid thinking (enable_thinking=False): instant on interactive traffic, judged 86 / 91 / 79 / 95 / 57 (from AA Qwen3.5 35B A3B (Non-reasoning)); thinks ~2000 hidden tokens elsewhere  
 
 Qwen3.5 35B A3B: a 35B MoE with 3B active on a linear/SSM hybrid — 10 of 40 layers keep KV (20 KB per token).
 
 ### Qwen3.6 35B A3B ★
-**Alibaba** · 2026-04 · Apache-2.0 · 35B total / 3B active (MoE) · reasoning · 262K ctx · spec: general · lineage: — · confidence: high
+**Alibaba** · 2026-04 · Apache-2.0 · 35B total / 3B active (MoE) · hybrid reasoning · 262K ctx · spec: general · lineage: — · confidence: high
 [model card](https://huggingface.co/Qwen/Qwen3.6-35B-A3B)
 Benchmarks — GPQA-D 84.1 · IFBench 64.4 · LCR 63.7 · SciCode 35.8 · TB-Hard 34.8 · HLE 20.2  
-Serving — hybrid-linear · KV 20.0 KB/token on 10 of 40 layers + 64 MB/request · BF16 weights (2 B/param) · thinks ~4000 hidden tokens per answer  
+Serving — hybrid-linear · KV 20.0 KB/token on 10 of 40 layers + 64 MB/request · BF16 weights (2 B/param) · hybrid thinking (enable_thinking=False): instant on interactive traffic, judged 84 / 90 / 32 / 95 / 72 (from AA Qwen3.6 35B A3B (Non-reasoning)); thinks ~4000 hidden tokens elsewhere  
 
 Qwen3.6 35B A3B: a 35B MoE with 3B active on a linear/SSM hybrid — 10 of 40 layers keep KV (20 KB per token).
 
 ### G9v3-39A5B
-**AI9Stars** · 2026-08 · Apache-2.0 · 39B total / 5B active (MoE) · reasoning · 131K ctx · spec: general · lineage: — · confidence: high
+**AI9Stars** · 2026-08 · Apache-2.0 · 39B total / 5B active (MoE) · hybrid reasoning · 131K ctx · spec: general · lineage: — · confidence: high
 [model card](https://huggingface.co/ai9stars/G9v3-39A5B)
 Benchmarks — GPQA-D 80.5 · IFBench ≈58.8 (bridged) · LCR 58.6 · SciCode 35.9 · TB-Hard ≈24.1 (bridged) · HLE 16.6  
-Serving — GQA · KV 38.0 KB/token on 38 of 38 layers · BF16 weights (2 B/param) · thinks ~1500 hidden tokens per answer  
+Serving — GQA · KV 38.0 KB/token on 38 of 38 layers · BF16 weights (2 B/param) · hybrid thinking (enable_thinking=False): instant on interactive traffic, judged 83 / 85 / 80 / 90 / 61 (from the thinking→instant pair fit); thinks ~1500 hidden tokens elsewhere  
 
 G9v3-39A5B: a 39B MoE with 5B active on full GQA attention (38 KB of KV per token).
 
 ### Llama Nemotron Super 49B v1.5
-**NVIDIA** · 2025-07 · NVIDIA Open Model License · 49B dense · reasoning · 131K ctx · spec: general · lineage: derived from Llama 3.3 70B Instruct · confidence: high
+**NVIDIA** · 2025-07 · NVIDIA Open Model License · 49B dense · hybrid reasoning · 131K ctx · spec: general · lineage: derived from Llama 3.3 70B Instruct · confidence: high
 [model card](https://huggingface.co/nvidia/Llama-3_3-Nemotron-Super-49B-v1_5)
 Benchmarks — GPQA-D 74.8 · IFBench 37 · LCR 34 · SciCode 34.8 · TB-Hard 5.3 · HLE 6.8  
-Serving — GQA · KV 196.0 KB/token on 49 of 80 layers · BF16 weights (2 B/param) · thinks ~2000 hidden tokens per answer  
+Serving — GQA · KV 196.0 KB/token on 49 of 80 layers · BF16 weights (2 B/param) · hybrid thinking (enable_thinking=False (or /no_think)): instant on interactive traffic, judged 71 / 70 / 58 / 78 / 27 (from AA Llama Nemotron Super 49B v1.5 (Non-reasoning)); thinks ~2000 hidden tokens elsewhere  
 
 Llama Nemotron Super 49B v1.5: 49B dense on full GQA attention (196 KB of KV per token).
 
 ### Hermes 4 - Llama-3.1 70B
-**Nous Research** · 2025-08 · Llama 3 Community · 70B dense · reasoning · 131K ctx · spec: general · lineage: — · confidence: high
+**Nous Research** · 2025-08 · Llama 3 Community · 70B dense · hybrid reasoning · 131K ctx · spec: general · lineage: — · confidence: high
 [model card](https://huggingface.co/NousResearch/Hermes-4-70B)
 Benchmarks — GPQA-D 69.9 · IFBench 31.3 · LCR 6.7 · SciCode 34.1 · TB-Hard 4.5 · HLE 7.9  
-Serving — GQA · KV 320.0 KB/token on 80 of 80 layers · BF16 weights (2 B/param) · thinks ~2000 hidden tokens per answer  
+Serving — GQA · KV 320.0 KB/token on 80 of 80 layers · BF16 weights (2 B/param) · hybrid thinking (thinking=False): instant on interactive traffic, judged 56 / 61 / 61 / 57 / 9 (from AA Hermes 4 - Llama-3.1 70B (Non-reasoning)); thinks ~2000 hidden tokens elsewhere  
 
 Hermes 4 - Llama-3.1 70B: 70B dense on full GQA attention (320 KB of KV per token).
 
@@ -1641,18 +1645,18 @@ Serving — GQA · KV 320.0 KB/token on 80 of 80 layers · BF16 weights (2 B/par
 Qwen2.5 Instruct 72B: 72.7B dense on full GQA attention (320 KB of KV per token).
 
 ### Nemotron 3.5 Bolt 74B-A9B
-**NVIDIA** · 2026-10 · OpenMDW-1.1 · 74.9B total / 9B active (MoE) · reasoning · 262K ctx · spec: general · lineage: — · confidence: high
+**NVIDIA** · 2026-10 · OpenMDW-1.1 · 74.9B total / 9B active (MoE) · hybrid reasoning · 262K ctx · spec: general · lineage: — · confidence: high
 [model card](https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Bolt-74B-A9B-BF16)
 Benchmarks — GPQA-D ≈78.8 (bridged) · IFBench ≈62.4 (bridged) · LCR 62.5 · SciCode 38.8 · TB-Hard ≈36.1 (bridged) · HLE 23.2  
-Serving — hybrid-linear · KV 8.0 KB/token on 8 of 88 layers + 170 MB/request · BF16 weights (2 B/param) · thinks ~1500 hidden tokens per answer  
+Serving — hybrid-linear · KV 8.0 KB/token on 8 of 88 layers + 170 MB/request · BF16 weights (2 B/param) · hybrid thinking (enable_thinking=False): instant on interactive traffic, judged 83 / 85 / 83 / 91 / 73 (from the thinking→instant pair fit); thinks ~1500 hidden tokens elsewhere  
 
 Nemotron 3.5 Bolt 74B-A9B: a 74.9B MoE with 9B active on a linear/SSM hybrid — 8 of 88 layers keep KV (8 KB per token).
 
 ### Solar Open 100B
-**Upstage** · 2025-12 · Upstage Solar License · 102.6B total / 12B active (MoE) · reasoning · 131K ctx · spec: general · lineage: — · confidence: high
+**Upstage** · 2025-12 · Upstage Solar License · 102.6B total / 12B active (MoE) · hybrid reasoning · 131K ctx · spec: general · lineage: — · confidence: high
 [model card](https://huggingface.co/upstage/Solar-Open-100B)
 Benchmarks — GPQA-D 65.7 · IFBench 57.7 · LCR 36 · SciCode 26.9 · TB-Hard 2.3 · HLE 9.2  
-Serving — GQA · KV 192.0 KB/token on 48 of 48 layers · BF16 weights (2 B/param) · thinks ~1500 hidden tokens per answer  
+Serving — GQA · KV 192.0 KB/token on 48 of 48 layers · BF16 weights (2 B/param) · hybrid thinking (reasoning_effort="low"): instant on interactive traffic, judged 79 / 80 / 60 / 85 / 29 (from the thinking→instant pair fit); thinks ~1500 hidden tokens elsewhere  
 
 Solar Open 100B: a 102.6B MoE with 12B active on full GQA attention (192 KB of KV per token).
 
@@ -1665,18 +1669,18 @@ Serving — GQA · KV 216.0 KB/token on 54 of 54 layers · BF16 weights (2 B/par
 ERNIE 4.5 300B A47B: a 300B MoE with 47B active on full GQA attention (216 KB of KV per token).
 
 ### Nex-N2-Pro ★
-**Nex AGI** · 2026-06 · Apache-2.0 · 397B total / 17B active (MoE) · reasoning · 262K ctx · spec: general · lineage: derived from Qwen3.5-397B-A17B · confidence: high
+**Nex AGI** · 2026-06 · Apache-2.0 · 397B total / 17B active (MoE) · hybrid reasoning · 262K ctx · spec: general · lineage: derived from Qwen3.5-397B-A17B · confidence: high
 [model card](https://huggingface.co/nex-agi/Nex-N2-Pro)
 Benchmarks — GPQA-D 89.2 · IFBench 66.2 · LCR 73.4 · SciCode 42.4 · TB-Hard ≈46.1 (bridged) · HLE 31.6  
-Serving — hybrid-linear · KV 30.0 KB/token on 15 of 60 layers + 192 MB/request · BF16 weights (2 B/param) · thinks ~1500 hidden tokens per answer  
+Serving — hybrid-linear · KV 30.0 KB/token on 15 of 60 layers + 192 MB/request · BF16 weights (2 B/param) · hybrid thinking (enable_thinking=False): instant on interactive traffic, judged 85 / 89 / 86 / 94 / 84 (from the thinking→instant pair fit); thinks ~1500 hidden tokens elsewhere  
 
 Nex-N2-Pro: a 397B MoE with 17B active on a linear/SSM hybrid — 15 of 60 layers keep KV (30 KB per token).
 
 ### Hermes 4 - Llama-3.1 405B
-**Nous Research** · 2025-08 · Llama 3 Community · 405B dense · reasoning · 131K ctx · spec: general · lineage: — · confidence: high
+**Nous Research** · 2025-08 · Llama 3 Community · 405B dense · hybrid reasoning · 131K ctx · spec: general · lineage: — · confidence: high
 [model card](https://huggingface.co/NousResearch/Hermes-4-405B)
 Benchmarks — GPQA-D 72.7 · IFBench 32.7 · LCR 20.7 · SciCode 25.2 · TB-Hard 11.4 · HLE 10.3  
-Serving — GQA · KV 504.0 KB/token on 126 of 126 layers · BF16 weights (2 B/param) · thinks ~2000 hidden tokens per answer  
+Serving — GQA · KV 504.0 KB/token on 126 of 126 layers · BF16 weights (2 B/param) · hybrid thinking (thinking=False): instant on interactive traffic, judged 73 / 74 / 80 / 80 / 36 (from AA Hermes 4 - Llama-3.1 405B (Non-reasoning)); thinks ~2000 hidden tokens elsewhere  
 
 Hermes 4 - Llama-3.1 405B: 405B dense on full GQA attention (504 KB of KV per token).
 
@@ -1689,34 +1693,34 @@ Serving — GQA · KV 504.0 KB/token on 126 of 126 layers · BF16 weights (2 B/p
 Llama 3.1 Instruct 405B: 405B dense on full GQA attention (504 KB of KV per token).
 
 ### A.X-K2
-**SK Telecom** · 2026-08 · Apache-2.0 · 688B total / 33B active (MoE) · reasoning · 262K ctx · spec: general · lineage: — · confidence: high
+**SK Telecom** · 2026-08 · Apache-2.0 · 688B total / 33B active (MoE) · hybrid reasoning · 262K ctx · spec: general · lineage: — · confidence: high
 [model card](https://huggingface.co/skt/A.X-K2)
 Benchmarks — GPQA-D 85.7 · IFBench ≈66 (bridged) · LCR 62.8 · SciCode 40.1 · TB-Hard ≈31.6 (bridged) · HLE 27.8  
-Serving — MLA · KV 83.9 KB/token on 61 of 61 layers · FP8 weights (1 B/param) · thinks ~1500 hidden tokens per answer  
+Serving — MLA · KV 83.9 KB/token on 61 of 61 layers · FP8 weights (1 B/param) · hybrid thinking (enable_thinking=False): instant on interactive traffic, judged 84 / 87 / 83 / 92 / 70 (from the thinking→instant pair fit); thinks ~1500 hidden tokens elsewhere  
 
 A.X-K2: a 688B MoE with 33B active on MLA latent attention (84 KB of KV per token), released in FP8.
 
 ### K-EXAONE 2.0 0803
-**LG AI Research** · 2026-08 · Apache-2.0 · 750B total / 37B active (MoE) · reasoning · 262K ctx · spec: general · lineage: — · confidence: high
+**LG AI Research** · 2026-08 · Apache-2.0 · 750B total / 37B active (MoE) · hybrid reasoning · 262K ctx · spec: general · lineage: — · confidence: high
 [model card](https://huggingface.co/LGAI-EXAONE/K-EXAONE-2.0-750B-A37B)
 Benchmarks — GPQA-D 82.9 · IFBench ≈58.8 (bridged) · LCR 53.7 · SciCode 41.1 · TB-Hard ≈28.9 (bridged) · HLE 17.6  
-Serving — hybrid-swa · KV 80.0 KB/token on 20 of 78 layers + 47 MB/request · BF16 weights (2 B/param) · thinks ~1500 hidden tokens per answer  
+Serving — hybrid-swa · KV 80.0 KB/token on 20 of 78 layers + 47 MB/request · BF16 weights (2 B/param) · hybrid thinking (enable_thinking=False): instant on interactive traffic, judged 83 / 86 / 83 / 90 / 64 (from the thinking→instant pair fit); thinks ~1500 hidden tokens elsewhere  
 
 K-EXAONE 2.0 0803: a 750B MoE with 37B active on a sliding-window hybrid — 20 of 78 layers keep a growing KV (80 KB per token).
 
 ### Inkling
-**Thinking Machines** · 2026-07 · Apache-2.0 · 975B total / 41B active (MoE) · reasoning · 1049K ctx · spec: general · lineage: — · confidence: high
+**Thinking Machines** · 2026-07 · Apache-2.0 · 975B total / 41B active (MoE) · hybrid reasoning · 1049K ctx · spec: general · lineage: — · confidence: high
 [model card](https://huggingface.co/thinkingmachines/Inkling)
 Benchmarks — GPQA-D 87.2 · IFBench ≈68.9 (bridged) · LCR 69.4 · SciCode 46.1 · TB-Hard ≈40.6 (bridged) · HLE 29.9  
-Serving — hybrid-swa · KV 44.0 KB/token on 11 of 66 layers + 233 MB/request · BF16 weights (2 B/param) · thinks ~2000 hidden tokens per answer  
+Serving — hybrid-swa · KV 44.0 KB/token on 11 of 66 layers + 233 MB/request · BF16 weights (2 B/param) · hybrid thinking (reasoning_effort="none" (effort 0)): instant on interactive traffic, judged 85 / 88 / 87 / 93 / 79 (from the thinking→instant pair fit); thinks ~2000 hidden tokens elsewhere  
 
 Inkling: a 975B MoE with 41B active on a sliding-window hybrid — 11 of 66 layers keep a growing KV (44 KB per token).
 
 ### LongCat 2.0
-**LongCat** · 2026-06 · MIT · 1600B total / 48B active (MoE) · reasoning · 262K ctx · spec: general · lineage: — · confidence: medium
+**LongCat** · 2026-06 · MIT · 1600B total / 48B active (MoE) · hybrid reasoning · 262K ctx · spec: general · lineage: — · confidence: medium
 [model card](https://huggingface.co/meituan-longcat/LongCat-2.0)
 Benchmarks — GPQA-D 78 · IFBench ≈64.6 (bridged) · LCR 58.3 · SciCode 35.3 · TB-Hard ≈37.1 (bridged) · HLE 31.6  
-Serving — MLA · KV 95.0 KB/token on 76 of 76 layers · BF16 weights (2 B/param) · thinks ~2000 hidden tokens per answer  
+Serving — MLA · KV 95.0 KB/token on 76 of 76 layers · BF16 weights (2 B/param) · hybrid thinking (enable_thinking=False (/think_off)): instant on interactive traffic, judged 83 / 85 / 82 / 91 / 73 (from the thinking→instant pair fit); thinks ~2000 hidden tokens elsewhere  
 
 LongCat 2.0: a 1600B MoE with 48B active on MLA latent attention (95 KB of KV per token).
 
@@ -1724,7 +1728,7 @@ LongCat 2.0: a 1600B MoE with 48B active on MLA latent attention (95 KB of KV pe
 **Alibaba** · 2026-08 · Qwen3.8 Max License · 2446B total / 95B active (MoE) · reasoning · 262K ctx · spec: general · lineage: — · confidence: high
 [model card](https://huggingface.co/Qwen/Qwen3.8-2.4T-A95B)
 Benchmarks — GPQA-D 93.5 · IFBench ≈75.5 (bridged) · LCR 72.1 · SciCode 53.3 · TB-Hard ≈57.1 (bridged) · HLE 39.7  
-Serving — hybrid-linear · KV 92.0 KB/token on 23 of 92 layers + 587 MB/request · BF16 weights (2 B/param) · thinks ~2000 hidden tokens per answer  
+Serving — hybrid-linear · KV 92.0 KB/token on 23 of 92 layers + 587 MB/request · BF16 weights (2 B/param) · always thinks (reasoning_effort (xhigh / medium / low)): ~2000 hidden tokens per answer  
 
 Qwen3.8 2.4T A95B: a 2446B MoE with 95B active on a linear/SSM hybrid — 23 of 92 layers keep KV (92 KB per token).
 

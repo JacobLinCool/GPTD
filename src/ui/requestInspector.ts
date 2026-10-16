@@ -21,7 +21,7 @@ import { BUILDBAR_H, COLORS, DESIGN_H } from '../config'
 import type { GameState, Outcome, Request, SafetyHazard } from '../core/types'
 import { isExpert } from '../mode'
 import { OUTCOME_STYLE, outcomeColor } from '../outcomes'
-import { loadoutOf } from '../sim/effects'
+import { hiddenTokensFor, loadoutOf } from '../sim/effects'
 import { HARDWARE_DEFS } from '../sim/content'
 import { diagnoseRequest, fmtLatencyMs, fmtTokens, type HazardVerdict, type RequestDiagnosis } from './metrics'
 import { OUTCOME_CHAR } from './charts'
@@ -189,6 +189,22 @@ export class RequestInspector {
     }
   }
 
+  /**
+   * §1.4 the mode it is answered in: latched at its first token (instant, or thinking with the
+   * hidden tokens it carries), else the mode its current rack's model would use. A request
+   * that generates no text (an embedding) has no mode to show.
+   */
+  private modeLine(s: GameState, r: Request, d: RequestDiagnosis, plain: boolean): Line | null {
+    if (!d.mode || r.def.outputTokens <= 0) return null
+    if (d.mode === 'instant') {
+      return { text: t(plain ? 'reqi.n.mode.instant' : d.modeFinal ? 'reqi.mode.instant' : 'reqi.mode.will.instant'), fill: COLORS.data }
+    }
+    const rack = d.rack ? loadoutOf(s, d.rack) : null
+    const n = d.modeFinal ? d.thinkTokens : rack?.model ? hiddenTokensFor(rack.model, r.def) : 0
+    const key = plain ? 'reqi.n.mode.thinking' : d.modeFinal ? (n > 0 ? 'reqi.mode.thinking' : 'reqi.mode.thinking0') : 'reqi.mode.will.thinking'
+    return { text: t(key, { n: fmtTokens(n) }), fill: COLORS.data }
+  }
+
   private hazardLines(d: RequestDiagnosis, plain: boolean): Line[] {
     const fill: Record<HazardVerdict, number> = {
       cleared: COLORS.good,
@@ -226,7 +242,8 @@ export class RequestInspector {
     if (Number.isFinite(d.bounds.e2elMs)) {
       out.push({ text: t('reqi.e2elNow', { v: fmtLatencyMs(d.e2elMs), b: bound(d.bounds.e2elMs) }), fill: latFill(d.e2elMs, d.bounds.e2elMs) })
     }
-    if (d.thinkTokens > 0) out.push({ text: t('reqi.think', { n: fmtTokens(d.thinkTokens) }), fill: COLORS.data })
+    const mode = this.modeLine(s, r, d, false)
+    if (mode) out.push(mode)
     if (d.guardsPassed > 0) out.push({ text: t('reqi.guards', { n: d.guardsPassed, ms: fmtLatencyMs(d.guardMs) }), fill: COLORS.sla })
     const rack = this.rackName(s, d)
     out.push(rack ? { text: t('reqi.rack', rack), fill: COLORS.text } : { text: t('reqi.noRack'), fill: COLORS.textDim })
@@ -266,7 +283,8 @@ export class RequestInspector {
       text: t('reqi.n.fast', { ok: slow ? '✗' : '✓', v: fmtLatencyMs(d.ttftMs) }),
       fill: slow ? COLORS.danger : COLORS.good,
     })
-    if (d.thinkTokens > 0) out.push({ text: t('reqi.n.think', { n: fmtTokens(d.thinkTokens) }), fill: COLORS.data })
+    const mode = this.modeLine(s, r, d, true)
+    if (mode) out.push(mode)
     out.push(...this.hazardLines(d, true))
     const rack = this.rackName(s, d)
     out.push(rack ? { text: t('reqi.n.by', rack), fill: COLORS.textDim } : { text: t('reqi.noRack'), fill: COLORS.textDim })

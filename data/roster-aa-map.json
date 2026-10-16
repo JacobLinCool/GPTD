@@ -1,5 +1,5 @@
 {
-  "_comment": "Curated join map: our roster id -> the Artificial Analysis model it is calibrated on, pinned by AA UUID (`aaId`). The `slug` is a readable hint only — AA recycles bare slugs for newer checkpoints (deepseek-v4-flash, deepseek-v4-pro, hy3), so every build checks that the slug still names the pinned UUID (scripts/aa-cells.mjs pinProblem). Cells resolve reference snapshot -> latest snapshot (equated) -> bridge; see scripts/aa-cells.mjs. Refresh: `node scripts/aa-sync.mjs snapshot && node scripts/aa-sync.mjs bridges && node scripts/aa-sync.mjs build`; inspect with `node scripts/aa-sync.mjs report`.",
+  "_comment": "Curated join map: our roster id -> the Artificial Analysis model it is calibrated on, pinned by AA UUID (`aaId`). The `slug` is a readable hint only — AA recycles bare slugs for newer checkpoints (deepseek-v4-flash, deepseek-v4-pro, hy3), so every build checks that the slug still names the pinned UUID (scripts/aa-cells.mjs pinProblem). A HYBRID checkpoint (data/model-thinking.json mode 'hybrid') may also pin `instant` = {slug, aaId}: AA's Non-reasoning row of the SAME checkpoint (same name, same release), from which its instant-mode vector qualityByInstant is calibrated through the same cell resolution; a hybrid without such a row gets its instant cells from the per-cell pair fit in data/aa-bridges.json (`instant`). Cells resolve reference snapshot -> latest snapshot (equated) -> bridge; see scripts/aa-cells.mjs. Refresh: `node scripts/aa-sync.mjs snapshot && node scripts/aa-sync.mjs bridges && node scripts/aa-sync.mjs build`; inspect with `node scripts/aa-sync.mjs report`.",
   "referenceSnapshot": "data/aa-reference-2026-06-21.json",
   "benchmarkCells": {
     "_comment": "BenchInputs field -> Artificial Analysis eval key: the six canonical cells calibrate.ts blends per axis, all on the REFERENCE scale (the 2026-06-21 snapshot the CURVES were fitted on). A cell AA re-scored is mapped back by same-UUID equating; a cell AA no longer publishes is bridged from measured cells (data/aa-bridges.json). `aa-sync.mjs build` emits them (×100, 0.1 rounding) into src/sim/roster.bench.generated.ts with per-cell provenance.",
@@ -55,7 +55,11 @@
     },
     "qwen3_32b": {
       "slug": "qwen3-32b-instruct-reasoning",
-      "aaId": "b00ecd62-a53f-4aed-b833-3e9d6b0170ba"
+      "aaId": "b00ecd62-a53f-4aed-b833-3e9d6b0170ba",
+      "instant": {
+        "slug": "qwen3-32b-instruct",
+        "aaId": "bf60740e-6aa5-422f-ba49-ef6e9d171205"
+      }
     },
     "qwen3_30b_a3b": {
       "slug": "qwen3-30b-a3b-2507-reasoning",
@@ -79,7 +83,11 @@
     },
     "deepseek_v31": {
       "slug": "deepseek-v3-1-reasoning",
-      "aaId": "198b717f-42c8-4ab7-a699-ae9373d669d3"
+      "aaId": "198b717f-42c8-4ab7-a699-ae9373d669d3",
+      "instant": {
+        "slug": "deepseek-v3-1",
+        "aaId": "fb65266f-5a7d-403c-85d5-ccdf0d1ca838"
+      }
     },
     "nemotron_super": {
       "slug": "nvidia-nemotron-3-super-120b-a12b",
@@ -99,7 +107,11 @@
     },
     "nemotron_nano_9b": {
       "slug": "nvidia-nemotron-nano-9b-v2-reasoning",
-      "aaId": "f1d52583-9d20-4099-99ac-b5df9430c3b6"
+      "aaId": "f1d52583-9d20-4099-99ac-b5df9430c3b6",
+      "instant": {
+        "slug": "nvidia-nemotron-nano-9b-v2",
+        "aaId": "2e8694f9-7782-47a6-a6ba-fdce89d939c8"
+      }
     },
     "gemma3_12b": {
       "slug": "gemma-3-12b",
@@ -111,11 +123,19 @@
     },
     "nemotron3_nano_30b": {
       "slug": "nvidia-nemotron-3-nano-30b-a3b-reasoning",
-      "aaId": "76dcf6ef-39ea-4be0-b693-b88da25b4caf"
+      "aaId": "76dcf6ef-39ea-4be0-b693-b88da25b4caf",
+      "instant": {
+        "slug": "nvidia-nemotron-3-nano-30b-a3b",
+        "aaId": "23b379f7-18df-492a-9fc1-a56c5a5b9cfc"
+      }
     },
     "qwen36_27b": {
       "slug": "qwen3-6-27b",
-      "aaId": "8c29d66d-bf98-4ea3-8572-5409353ecc66"
+      "aaId": "8c29d66d-bf98-4ea3-8572-5409353ecc66",
+      "instant": {
+        "slug": "qwen3-6-27b-non-reasoning",
+        "aaId": "3b156101-b0d7-4438-b350-2d1f1168f40a"
+      }
     },
     "qwen3_next_80b": {
       "slug": "qwen3-next-80b-a3b-reasoning",
@@ -123,15 +143,27 @@
     },
     "qwen35_122b": {
       "slug": "qwen3-5-122b-a10b",
-      "aaId": "2236df45-0699-40d1-b5cc-69ee345d2257"
+      "aaId": "2236df45-0699-40d1-b5cc-69ee345d2257",
+      "instant": {
+        "slug": "qwen3-5-122b-a10b-non-reasoning",
+        "aaId": "021b1b31-d2fc-4653-ab74-c10bd2f41c8e"
+      }
     },
     "glm_5_2": {
       "slug": "glm-5-2",
-      "aaId": "f7a4ea75-e548-4069-80d4-9be8bc7c009b"
+      "aaId": "f7a4ea75-e548-4069-80d4-9be8bc7c009b",
+      "instant": {
+        "slug": "glm-5-2-non-reasoning",
+        "aaId": "e8aa417f-18fe-46b0-ba62-ef99785a9585"
+      }
     },
     "deepseek_v4_pro": {
       "slug": "deepseek-v4-pro",
-      "aaId": "83173329-c09a-41f1-a028-a282a5f908d7"
+      "aaId": "83173329-c09a-41f1-a028-a282a5f908d7",
+      "instant": {
+        "slug": "deepseek-v4-pro-non-reasoning",
+        "aaId": "d4f5b250-be37-4801-85e6-32fda4179337"
+      }
     },
     "minimax_m3": {
       "slug": "minimax-m3",
@@ -139,7 +171,11 @@
     },
     "qwen35_397b": {
       "slug": "qwen3-5-397b-a17b",
-      "aaId": "0e66bae9-41f1-42fc-9276-ce8cb6f72919"
+      "aaId": "0e66bae9-41f1-42fc-9276-ce8cb6f72919",
+      "instant": {
+        "slug": "qwen3-5-397b-a17b-non-reasoning",
+        "aaId": "30ef2a79-e800-4165-9f13-2a338f120db7"
+      }
     },
     "nemotron3_ultra_550b": {
       "slug": "nvidia-nemotron-3-ultra-550b-a55b",
@@ -147,11 +183,19 @@
     },
     "g_qwen3_5_4b_2": {
       "slug": "qwen3-5-4b",
-      "aaId": "651ef7ae-9a8f-477e-9c8e-460aa156ba02"
+      "aaId": "651ef7ae-9a8f-477e-9c8e-460aa156ba02",
+      "instant": {
+        "slug": "qwen3-5-4b-non-reasoning",
+        "aaId": "30c9ba61-d0a1-4794-938e-35865f379d15"
+      }
     },
     "g_gemma_4_e4b_2": {
       "slug": "gemma-4-e4b",
-      "aaId": "d80eb0f1-f62e-4d31-99d2-7a925eb126b0"
+      "aaId": "d80eb0f1-f62e-4d31-99d2-7a925eb126b0",
+      "instant": {
+        "slug": "gemma-4-e4b-non-reasoning",
+        "aaId": "5303601c-8133-4f52-bc4e-5241ee6b3c10"
+      }
     },
     "g_nvidia_nemotron_3_nano_4b_2": {
       "slug": "nvidia-nemotron-3-nano-4b",
@@ -159,7 +203,11 @@
     },
     "g_gemma_4_e2b_2": {
       "slug": "gemma-4-e2b",
-      "aaId": "b07aef0a-b192-46a1-b1c9-40b06d1b9061"
+      "aaId": "b07aef0a-b192-46a1-b1c9-40b06d1b9061",
+      "instant": {
+        "slug": "gemma-4-e2b-non-reasoning",
+        "aaId": "755d7281-2ed8-48c7-808f-709ec4cbfb71"
+      }
     },
     "g_jamba_reasoning_3b": {
       "slug": "jamba-reasoning-3b",
@@ -167,7 +215,11 @@
     },
     "g_qwen3_5_2b": {
       "slug": "qwen3-5-2b",
-      "aaId": "5d4acc80-7a88-4e84-bfe7-99071b84e6a4"
+      "aaId": "5d4acc80-7a88-4e84-bfe7-99071b84e6a4",
+      "instant": {
+        "slug": "qwen3-5-2b-non-reasoning",
+        "aaId": "0985ada8-2ed8-404d-bd8b-7357666ce40f"
+      }
     },
     "g_lfm2_5_1_2b_thinking": {
       "slug": "lfm2-5-1-2b-thinking",
@@ -179,7 +231,11 @@
     },
     "g_exaone_4_0_1_2b_reasoning_2": {
       "slug": "exaone-4-0-1-2b-reasoning",
-      "aaId": "d734e2ce-5cf8-467f-8148-586d02671333"
+      "aaId": "d734e2ce-5cf8-467f-8148-586d02671333",
+      "instant": {
+        "slug": "exaone-4-0-1-2b",
+        "aaId": "8273650d-40e5-45ee-aeda-df71de784164"
+      }
     },
     "g_granite_4_1_3b_2": {
       "slug": "granite-4-1-3b",
@@ -195,7 +251,11 @@
     },
     "g_qwen3_1_7b_instruct_reasonin": {
       "slug": "qwen3-1.7b-instruct-reasoning",
-      "aaId": "5962d643-0a6f-4630-bb08-ab5720d80056"
+      "aaId": "5962d643-0a6f-4630-bb08-ab5720d80056",
+      "instant": {
+        "slug": "qwen3-1.7b-instruct",
+        "aaId": "2bb84433-f38e-4edc-9b65-4d7b1f473db9"
+      }
     },
     "g_granite_4_0_h_nano_1b": {
       "slug": "granite-4-0-h-nano-1b",
@@ -207,7 +267,11 @@
     },
     "g_qwen3_0_6b_instruct_reasonin": {
       "slug": "qwen3-0.6b-instruct-reasoning",
-      "aaId": "4ae6c88d-9e4a-4850-89fe-18a1c04a66cc"
+      "aaId": "4ae6c88d-9e4a-4850-89fe-18a1c04a66cc",
+      "instant": {
+        "slug": "qwen3-0.6b-instruct",
+        "aaId": "0e5f6140-1154-4583-a3e0-8c032a338892"
+      }
     },
     "g_lfm2_1_2b_2": {
       "slug": "lfm2-1-2b",
@@ -219,11 +283,19 @@
     },
     "g_gemma_4_12b_2": {
       "slug": "gemma-4-12b",
-      "aaId": "feb02d3b-ff8d-4ed4-b165-13f8d4a7192c"
+      "aaId": "feb02d3b-ff8d-4ed4-b165-13f8d4a7192c",
+      "instant": {
+        "slug": "gemma-4-12b-non-reasoning",
+        "aaId": "025ec6b6-df4a-449f-9a03-24e4388d6863"
+      }
     },
     "g_qwen3_5_9b_2": {
       "slug": "qwen3-5-9b",
-      "aaId": "2d28a13a-096e-475a-beb8-26bbd1c7d51c"
+      "aaId": "2d28a13a-096e-475a-beb8-26bbd1c7d51c",
+      "instant": {
+        "slug": "qwen3-5-9b-non-reasoning",
+        "aaId": "20da3b31-fc0a-4359-abec-d59367bf1d9f"
+      }
     },
     "g_apriel_v1_6_15b_thinker_2": {
       "slug": "apriel-v1-6-15b-thinker",
@@ -239,7 +311,11 @@
     },
     "g_qwen3_14b_instruct_reasoning_2": {
       "slug": "qwen3-14b-instruct-reasoning",
-      "aaId": "4559e9f0-8aad-4681-89fb-68cb915e0f16"
+      "aaId": "4559e9f0-8aad-4681-89fb-68cb915e0f16",
+      "instant": {
+        "slug": "qwen3-14b-instruct",
+        "aaId": "ecc6524a-d521-458a-8327-5009e8ce6549"
+      }
     },
     "g_lfm2_5_8b_a1b_2": {
       "slug": "lfm2-5-8b-a1b",
@@ -291,23 +367,43 @@
     },
     "g_gemma_4_31b_2": {
       "slug": "gemma-4-31b",
-      "aaId": "cd26a386-4873-46ff-b853-d239050025a2"
+      "aaId": "cd26a386-4873-46ff-b853-d239050025a2",
+      "instant": {
+        "slug": "gemma-4-31b-non-reasoning",
+        "aaId": "d0aa27aa-4705-4184-9a1d-483b78c9331c"
+      }
     },
     "g_qwen3_5_27b_2": {
       "slug": "qwen3-5-27b",
-      "aaId": "169e47f5-3d4d-4ad4-8f8b-ab46f0c73f67"
+      "aaId": "169e47f5-3d4d-4ad4-8f8b-ab46f0c73f67",
+      "instant": {
+        "slug": "qwen3-5-27b-non-reasoning",
+        "aaId": "509e94e3-f1cb-43fb-98ff-e0e9872cfd1f"
+      }
     },
     "g_qwen3_5_35b_a3b_2": {
       "slug": "qwen3-5-35b-a3b",
-      "aaId": "46d8315e-1630-463f-ab62-84185fa0faab"
+      "aaId": "46d8315e-1630-463f-ab62-84185fa0faab",
+      "instant": {
+        "slug": "qwen3-5-35b-a3b-non-reasoning",
+        "aaId": "eebfef01-709e-4ffe-b72f-0db75ef2434b"
+      }
     },
     "g_qwen3_6_35b_a3b_2": {
       "slug": "qwen3-6-35b-a3b",
-      "aaId": "8665ca00-c687-44c7-875c-22618cb31c4f"
+      "aaId": "8665ca00-c687-44c7-875c-22618cb31c4f",
+      "instant": {
+        "slug": "qwen3-6-35b-a3b-non-reasoning",
+        "aaId": "66938aab-78fa-49d7-8461-b48b6833e837"
+      }
     },
     "g_gemma_4_26b_a4b_2": {
       "slug": "gemma-4-26b-a4b",
-      "aaId": "6e1b44ff-c227-496b-aef4-19b70cd18c76"
+      "aaId": "6e1b44ff-c227-496b-aef4-19b70cd18c76",
+      "instant": {
+        "slug": "gemma-4-26b-a4b-non-reasoning",
+        "aaId": "70882ec6-914c-41f0-9754-5e8f75005f77"
+      }
     },
     "g_nemotron_cascade_2_30b_a3b_2": {
       "slug": "nemotron-cascade-2-30b-a3b",
@@ -319,7 +415,11 @@
     },
     "g_exaone_4_0_32b_reasoning_2": {
       "slug": "exaone-4-0-32b-reasoning",
-      "aaId": "44b19b51-5367-4ef9-a2ff-2f90b89a0867"
+      "aaId": "44b19b51-5367-4ef9-a2ff-2f90b89a0867",
+      "instant": {
+        "slug": "exaone-4-0-32b",
+        "aaId": "2f60d80d-c3d3-4a43-bded-0557898c4618"
+      }
     },
     "g_granite_4_1_30b": {
       "slug": "granite-4-1-30b",
@@ -339,15 +439,27 @@
     },
     "g_llama_nemotron_super_49b_v1__2": {
       "slug": "llama-nemotron-super-49b-v1-5-reasoning",
-      "aaId": "e1cfa926-9e2b-4a0d-8c31-48366a5041c5"
+      "aaId": "e1cfa926-9e2b-4a0d-8c31-48366a5041c5",
+      "instant": {
+        "slug": "llama-nemotron-super-49b-v1-5",
+        "aaId": "26c0b5df-efa7-470f-a65e-2d883329e493"
+      }
     },
     "g_llama_3_3_nemotron_super_49b_2": {
       "slug": "llama-3-3-nemotron-super-49b-reasoning",
-      "aaId": "1a8ba535-df18-459b-ad40-3199191296d7"
+      "aaId": "1a8ba535-df18-459b-ad40-3199191296d7",
+      "instant": {
+        "slug": "llama-3-3-nemotron-super-49b",
+        "aaId": "c4c3b42f-e0f0-48ca-b6f9-b296e7697806"
+      }
     },
     "g_hermes_4_llama_3_1_70b_reaso_2": {
       "slug": "hermes-4-llama-3-1-70b-reasoning",
-      "aaId": "6ba9e8eb-8124-436d-842f-dbe36df80c27"
+      "aaId": "6ba9e8eb-8124-436d-842f-dbe36df80c27",
+      "instant": {
+        "slug": "hermes-4-llama-3-1-70b",
+        "aaId": "235060f4-057d-4bd1-8b8e-4a92908c770e"
+      }
     },
     "g_qwen2_5_72b_instruct_2": {
       "slug": "qwen2-5-72b-instruct",
@@ -391,7 +503,11 @@
     },
     "g_deepseek_v3_2_reasoning_0925_2": {
       "slug": "deepseek-v3-2-reasoning-0925",
-      "aaId": "af134350-8ba3-4629-b56b-00bd6dcf60c4"
+      "aaId": "af134350-8ba3-4629-b56b-00bd6dcf60c4",
+      "instant": {
+        "slug": "deepseek-v3-2-0925",
+        "aaId": "07c35e00-2b12-44c8-91cc-408629cd569e"
+      }
     },
     "g_deepseek_r1_2": {
       "slug": "deepseek-r1",
@@ -407,7 +523,11 @@
     },
     "g_hermes_4_llama_3_1_405b_reas": {
       "slug": "hermes-4-llama-3-1-405b-reasoning",
-      "aaId": "82b207dd-d285-4a52-b2fc-2cbd27543899"
+      "aaId": "82b207dd-d285-4a52-b2fc-2cbd27543899",
+      "instant": {
+        "slug": "hermes-4-llama-3-1-405b",
+        "aaId": "d3968fd3-97d8-4693-8d26-19cefc6f5d5f"
+      }
     },
     "g_deepseek_v3": {
       "slug": "deepseek-v3",
@@ -435,11 +555,19 @@
     },
     "qwen38_27b": {
       "slug": "qwen3-8-27b",
-      "aaId": "b01dee41-c62b-48ed-8d16-984adc405e5c"
+      "aaId": "b01dee41-c62b-48ed-8d16-984adc405e5c",
+      "instant": {
+        "slug": "qwen3-8-27b-non-reasoning",
+        "aaId": "353c92f3-2148-4c2d-9231-aa7e1322a1fd"
+      }
     },
     "deepseek_v41_flash": {
       "slug": "deepseek-v4-1-flash",
-      "aaId": "dbe7c625-3100-4463-b479-a228c41f75dd"
+      "aaId": "dbe7c625-3100-4463-b479-a228c41f75dd",
+      "instant": {
+        "slug": "deepseek-v4-1-flash-non-reasoning",
+        "aaId": "73c96f99-0de3-4668-a4bd-b106a0fe18f2"
+      }
     },
     "muse_spark_open": {
       "slug": "muse-spark-open",

@@ -21,6 +21,19 @@ export type CapabilityAxis = ServerSpec
 export type AttnVariant = 'MHA' | 'MQA' | 'GQA' | 'MLA' | 'hybrid-linear' | 'hybrid-swa' | 'csa'
 /** §1.3 latency class → real-ms SLO bucket. IN=interactive, NR=near-real-time, TO=throughput/offline. */
 export type LatencyClass = 'IN' | 'NR' | 'TO'
+/**
+ * §1.4 whether a checkpoint thinks, read off its released chat template (data/model-thinking.json):
+ * 'always' — every answer reasons first (a toggle only sets the effort); 'hybrid' — the serving
+ * stack can switch thinking off per request (enable_thinking=False, thinking_mode="chat", …);
+ * 'never' — an instruct deployment that answers at once.
+ */
+export type ThinkingSupport = 'always' | 'hybrid' | 'never'
+/**
+ * §1.4 the mode one answer runs in — the engine's per-request policy (effects.ts `answerMode`):
+ * a hybrid answers interactive traffic (latency class IN) in 'instant' mode, everything else
+ * 'thinking'; an 'always' model always thinks, a 'never' model never does.
+ */
+export type AnswerMode = 'instant' | 'thinking'
 
 /**
  * §3.4 the four serving-layer threat categories (OWASP Top 10 for LLM Apps).
@@ -212,6 +225,16 @@ export interface RealModelMeta {
    * measured cells — show it as ≈). Absent = measured on the reference snapshot.
    */
   benchmarkSource?: Partial<Record<BenchmarkCell, string>>
+  /** how a serving stack switches this checkpoint's thinking off (hybrid) or sets its effort (always), from its chat template. */
+  thinkingToggle?: string
+  /**
+   * a hybrid's INSTANT-mode cells (thinking off) its `qualityByInstant` was calibrated from, their
+   * provenance (as `benchmarkSource`, plus 'pairfit sd=<x>' for a cell estimated from the
+   * thinking/instant pair fit) and the AA row they were measured on ('' = the pair fit).
+   */
+  benchmarksInstant?: Partial<Record<BenchmarkCell, number>>
+  benchmarkSourceInstant?: Partial<Record<BenchmarkCell, string>>
+  instantVia?: string
   /** native release precision of the open weights ('BF16', 'FP8', 'MXFP4', 'INT4', 'FP4'). */
   precision?: string
   confidence: 'high' | 'medium' | 'low'
@@ -258,15 +281,20 @@ export interface ModelDef {
   /** sparse mixture-of-experts: all experts resident (VRAM), only active params serve. */
   isMoE: boolean
   /**
-   * test-time "thinking" model: its `qualityBy` was measured in thinking mode. Evidence,
-   * in order: AA's time-to-first-ANSWER-token exceeding time-to-first-token by > 1 s on
-   * the pinned variant, then the model card, then the variant name (calibrate.ts).
+   * §1.4 thinking support from the checkpoint's chat template (data/model-thinking.json):
+   * 'always' / 'hybrid' / 'never'. The engine picks the mode of every answer from it
+   * (effects.ts `answerMode`): a hybrid answers interactive traffic instantly.
+   */
+  thinking: ThinkingSupport
+  /**
+   * the checkpoint can think (`thinking` ≠ 'never'), so its `qualityBy` is its THINKING-mode
+   * capability (the roster pins the thinking variant on Artificial Analysis).
    */
   isReasoning: boolean
   /**
    * hidden reasoning tokens a thinking model emits per answer before the first answer
    * token: clamp((ttfat − ttft) × tok/s, 300, 4000) from AA's telemetry, 1500 when a
-   * thinking model has none measured, 0 for instruct models (calibrate.ts).
+   * thinking model has none measured, 0 for a 'never' model (calibrate.ts).
    */
   thinkTokens: number
   /** Peak correctness score (the model's best axis) — display & sorting. */
@@ -278,6 +306,13 @@ export interface ModelDef {
    * Terminal-Bench Hard→agentic, each blended with two secondaries); see `sim/calibrate.ts`.
    */
   qualityBy: Record<CapabilityAxis, number>
+  /**
+   * a HYBRID's capability with thinking switched off — the vector its instant-mode answers are
+   * judged with. Calibrated through the same curves as `qualityBy`, from AA's Non-reasoning row of
+   * the same checkpoint or, without one, the per-cell thinking→instant pair fit. Absent for
+   * 'always' / 'never' models (they have one mode, so `qualityBy` is all there is).
+   */
+  qualityByInstant?: Record<CapabilityAxis, number>
   // --- real architecture (from config.json, data/model-arch.json; feeds §5.6 KV / §6.2 roofline) ---
   /** transformer layers (all of them, whatever their mixer). */
   layers: number
@@ -778,8 +813,10 @@ export interface Request {
   sloCause?: SloCause
   /** overRefused: who refused it. */
   refusedBy?: RefusedBy
-  /** hidden reasoning tokens this answer carries (0/undefined = an instruct model answered). */
+  /** hidden reasoning tokens this answer carries (0/undefined = it was answered without thinking). */
   thinkTokens?: number
+  /** the mode the rack that produced the first token answered in (latched then; undefined before it). */
+  thinkingMode?: AnswerMode
   /** the tower that generated most of the answer so far. */
   answeredBy?: number
   /** the model deployed on `answeredBy` when it generated those tokens (survives a later sell/swap). */
@@ -1001,6 +1038,9 @@ export type GameEvent =
       modelId?: string
       /** true when a prefix-cache hit skipped (part of) the prefill. */
       cached?: boolean
+      /** the mode the answer ran in (instant / thinking) and the hidden reasoning tokens it carried. */
+      thinkingMode?: AnswerMode
+      hiddenTokens?: number
     }
   | {
       type: 'guard'

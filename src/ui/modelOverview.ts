@@ -31,9 +31,7 @@ import {
   AXES,
   fmtDollarsPerMtoken,
   fmtGb,
-  fmtTokens,
   fmtTokS,
-  modelThinkTokens,
   rackDollarsPerMtoken,
   rolloutTargets,
   smallestRackFor,
@@ -42,6 +40,7 @@ import { QualitySparks, qualityScale } from './charts'
 import { getLang, modelName, t } from '../i18n'
 import { drawPanel, label, UIButton } from './theme'
 import { DragScroll, fitLabel, setButton, setUiPref, uiPref } from './panelKit'
+import { instantSourceLine, thinkingLine } from './thinkingCopy'
 
 const MODAL_PAD = 24
 const TABLE_W = 760
@@ -766,7 +765,7 @@ export class ModelOverview {
       this.drawMiniSparks(this.rowG, COLS[4].x + 4, y + 9, m.qualityBy, scale)
       setT(
         5,
-        row.speed > 0 ? fmtTokS(row.speed) + (m.isReasoning || modelThinkTokens(m) > 0 ? ' ◷' : '') : '—',
+        row.speed > 0 ? fmtTokS(row.speed) + (m.thinking === 'always' ? ' ◷' : m.thinking === 'hybrid' ? ' ◐' : '') : '—',
         10,
         row.speed > 0 ? tpotColor(row.tpotMs) : COLORS.textDim,
       )
@@ -826,7 +825,8 @@ export class ModelOverview {
     lines.push({ text: t('models.detail.arch', { layers: m.layers, kv: m.kvHeads, head: m.headDim, attn: t(`attn.${m.attn}`, undefined, m.attn) }), fill: COLORS.text })
     lines.push({ text: t('models.detail.kv', { kvb: (m.kvBytesPerToken / 1024).toFixed(1), kvLayers: m.kvLayers, layers: m.layers, state: m.kvStateMbPerReq.toFixed(0) }), fill: COLORS.text })
     lines.push({ text: t('models.detail.window', { win: m.contextWindowK, bytes: m.nativeWeightBytes }), fill: COLORS.text })
-    lines.push({ text: m.isReasoning ? t('models.detail.thinking', { tokens: m.thinkTokens }) : t('models.detail.instant'), fill: COLORS.textDim })
+    // §1.4 thinking support: which traffic it answers instantly, which it thinks about first
+    lines.push({ text: thinkingLine(m), fill: m.thinking === 'always' ? COLORS.warn : COLORS.data })
     lines.push({ text: t('models.detail.vram', { fp16: fmtGb(m.paramsTotalB * 2), fp8: fmtGb(m.paramsTotalB) }), fill: COLORS.cooling })
     // serve speed / cost on the smallest rack that holds it
     const home = homeSpeed(s, m)
@@ -843,10 +843,9 @@ export class ModelOverview {
     } else {
       lines.push({ text: t('models.detail.serveNoFit'), fill: COLORS.warn })
     }
-    const think = modelThinkTokens(m)
-    if (m.isReasoning || think > 0) {
-      lines.push({ text: t('models.detail.think', { n: think > 0 ? fmtTokens(think) : '?' }), fill: COLORS.data })
-    }
+    // a hybrid's second vector (thinking off) rides on the bars below: where it comes from
+    const instantSrc = instantSourceLine(m)
+    if (instantSrc) lines.push({ text: instantSrc, fill: COLORS.data })
     lines.push({
       text: t('models.detail.align', {
         safety: m.alignment.safety.toFixed(0),
@@ -909,7 +908,7 @@ export class ModelOverview {
     // qualityBy bars (scaled to the roster's strongest score), then the deploy action
     this.detailSparks.visible = true
     this.detailSparks.y = Math.min(this.PH - DETAIL_H_PAD - 124, y + 8)
-    this.detailSparks.draw(m.qualityBy, { max: qualityScale() })
+    this.detailSparks.draw(m.qualityBy, { max: qualityScale(), alt: m.qualityByInstant })
     this.deployBtn.visible = true
     const building = s.phase === 'build'
     setButton(

@@ -40,9 +40,11 @@ import {
   TRTLLM_KERNEL_GAIN,
 } from '../config'
 import type {
+  AnswerMode,
   CapabilityAxis,
   GameState,
   ModelDef,
+  RequestTypeDef,
   ServerHardwareDef,
   ServerSpec,
   Tower,
@@ -474,14 +476,42 @@ export function ptqTax(s: GameState, lo: Loadout): number {
   return formatQualityTax(lo.model, fmt).flat
 }
 
+/* ------------------------------------------------------------------ *
+ *  THINKING MODE (§1.4) — the engine's per-request policy. A hybrid    *
+ *  checkpoint has thinking switched off for interactive traffic (the   *
+ *  serving stack's enable_thinking=False): it answers chat, code       *
+ *  completion and the jailbreak probes riding that traffic at once,    *
+ *  with its instant-mode capability; everything else it thinks about.  *
+ * ------------------------------------------------------------------ */
+
 /**
- * Correctness on one traffic axis: the checkpoint's benchmarked aptitude, minus the PTQ
- * tax of the rack's weight format and the §3.2 alignment tax (an aligned model trades
- * capability for safety; a safe-completion model pays less — the §3.1 Pareto point).
+ * The mode a model answers one request of this archetype in: a 'never' model and a prompt-only
+ * request (an embedding generates no text) are instant, an 'always' model thinks, and a hybrid
+ * answers interactive traffic (latency class IN) instantly and thinks about everything else.
  */
-export function serverQualityVs(s: GameState, lo: Loadout, axis: ServerSpec): number {
+export function answerMode(model: ModelDef, def: Pick<RequestTypeDef, 'latClass' | 'outputTokens'>): AnswerMode {
+  if (model.thinking === 'never' || def.outputTokens <= 0) return 'instant'
+  if (model.thinking === 'always') return 'thinking'
+  return def.latClass === 'IN' ? 'instant' : 'thinking'
+}
+
+/**
+ * The capability vector an answer in this mode is judged with: a hybrid's instant answers use
+ * its instant-mode vector; every other answer (and every single-mode model) its `qualityBy`.
+ */
+export function qualityIn(model: ModelDef, mode: AnswerMode): Record<CapabilityAxis, number> {
+  return mode === 'instant' && model.qualityByInstant ? model.qualityByInstant : model.qualityBy
+}
+
+/**
+ * Correctness on one traffic axis: the checkpoint's benchmarked aptitude in the answer's mode
+ * (`qualityBy` — thinking capability for a thinker — unless `mode` asks for a hybrid's instant
+ * one), minus the PTQ tax of the rack's weight format and the §3.2 alignment tax (an aligned
+ * model trades capability for safety; a safe-completion model pays less — the §3.1 Pareto point).
+ */
+export function serverQualityVs(s: GameState, lo: Loadout, axis: ServerSpec, mode: AnswerMode = 'thinking'): number {
   if (!lo.model) return 0
-  return lo.model.qualityBy[axis] - ptqTax(s, lo) - alignmentTax(lo.model)
+  return qualityIn(lo.model, mode)[axis] - ptqTax(s, lo) - alignmentTax(lo.model)
 }
 
 /** Peak correctness (the model's specialty axis) — what the dashboards show. */
@@ -1042,9 +1072,17 @@ export function serverTargets(s: GameState, lo: Loadout): number {
   return p.lanes * spritesPerLane(s)
 }
 
-/** The hidden reasoning tokens a model spends on one request of an archetype (0 = an instruct model). */
-export function hiddenTokensFor(model: ModelDef | null | undefined, thinkMul: number): number {
-  return model ? Math.round(model.thinkTokens * Math.max(0, thinkMul)) : 0
+/**
+ * The hidden reasoning tokens a model spends on one request of an archetype: its thinking budget ×
+ * the archetype's thinkMul in thinking mode, 0 in instant mode (an instruct model, or a hybrid on
+ * interactive traffic).
+ */
+export function hiddenTokensFor(
+  model: ModelDef | null | undefined,
+  def: Pick<RequestTypeDef, 'latClass' | 'outputTokens' | 'thinkMul'>,
+): number {
+  if (!model || answerMode(model, def) === 'instant') return 0
+  return Math.round(model.thinkTokens * Math.max(0, def.thinkMul))
 }
 
 /* ------------------------------------------------------------------ *
@@ -1193,6 +1231,7 @@ export function guardLoadout(spec: NonNullable<TowerDef['guardrail']>): Loadout 
     paramsTotalB: spec.guardParamsActiveB,
     paramsActiveB: spec.guardParamsActiveB,
     isMoE: false,
+    thinking: 'never',
     isReasoning: false,
     thinkTokens: 0,
     quality: 80,

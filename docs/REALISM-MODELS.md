@@ -93,6 +93,18 @@ The in-game roster spans small→large (≈1B → 1.6T): edge (Llama-3.2-1B, Qwe
 
 ---
 
+## 4b. Thinking support: hybrid, always, never
+
+Whether a checkpoint thinks is a fact of its released chat template, recorded per Hugging Face repo in `data/model-thinking.json` with a verbatim evidence quote (`node scripts/thinking-sync.mjs fetch && … verify`):
+
+- **hybrid** — the serving stack can switch thinking off per request (`enable_thinking=False` for Qwen3.5/3.6/3.8, GLM-5.2, Gemma 4, Nemotron 3, MiMo; `thinking_mode="chat"` for DeepSeek V4; `thinking_mode="disabled"` for MiniMax-M3; `reasoning_effort="no_think"` for Hy3; …).
+- **always** — every answer reasons first; a knob only sets the effort (gpt-oss, Kimi K3, MiniMax-M2.x, GLM-5.3, Step 5, Qwen3.8-2.4T, the dedicated Thinking/Thinker checkpoints).
+- **never** — an instruct deployment. A hybrid template whose roster entry is pinned on AA's Non-reasoning row is served thinking-off and counts here.
+
+The engine's policy (`answerMode`, `src/sim/effects.ts`): a hybrid answers interactive traffic (latency class IN — chat, code completion) in **instant** mode, with no hidden tokens and judged on `qualityByInstant`; everything else it answers in **thinking** mode, hidden tokens first and judged on `qualityBy`. `qualityByInstant` goes through the same blends and curves as `qualityBy`, from AA's Non-reasoning row of the SAME checkpoint (pinned by UUID as `instant` in `data/roster-aa-map.json`; same name and release date, so Hy3 is not paired with its April preview) or, for a hybrid AA timed only in thinking mode, from the per-cell thinking→instant pair fit (`instant = a + b·thinking`, fitted on every pinned pair, clamped to the thinking cell; `data/aa-bridges.json` `instant`). Switching thinking off costs the most on HLE and IFBench and least on GPQA and SciCode, so a hybrid keeps its knowledge on chat but loses the instruction-following and hard-reasoning edge thinking bought.
+
+---
+
 ## 5. Capability compression and the top-end wall
 
 With real 2025–26 benchmarks, a 32B thinking model clears every *reasoning/knowledge* line a 671B frontier model does — top-end benchmarks have converged, and capability tracks post-training (reasoning RL / instruct) more than parameter count. This is correct realism, and it flattens the "scale up" progression. Two mechanics restore the top-end wall:

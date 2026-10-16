@@ -1,5 +1,5 @@
 import { GRID_COLS, GRID_ROWS, LAT_CLASS_SLO, RACK_UTILIZATION, SIM_DT } from '../config'
-import type { CapabilityAxis, GameState, Tower } from '../core/types'
+import type { CapabilityAxis, GameState, ModelDef, Tower } from '../core/types'
 import {
   continueEndless,
   cycleRackRole,
@@ -21,8 +21,10 @@ import {
   WAVES,
 } from './content'
 import {
+  answerMode,
   hiddenTokensFor,
   loadout,
+  qualityIn,
   serverDeployable,
   serverFitsMemory,
   serverPerUserDecodeTokS,
@@ -75,14 +77,22 @@ function buildSlots(): { lane: Slot[]; back: Slot[]; core: Slot[] } {
 
 const SLOTS = buildSlots()
 
-const CLEAR_LINES: { axis: CapabilityAxis; at: number }[] = [
-  { axis: 'chat', at: 18 },
-  { axis: 'general', at: 38 },
+const CLEAR_LINES: { axis: CapabilityAxis; at: number; interactive?: boolean }[] = [
+  { axis: 'chat', at: 18, interactive: true }, // chat
+  { axis: 'general', at: 38, interactive: true }, // jailbreak probes on the chat lanes
   { axis: 'general', at: 50 },
-  { axis: 'coding', at: 56 },
+  { axis: 'coding', at: 56, interactive: true }, // code completion
   { axis: 'reasoning', at: 82 },
   { axis: 'agentic', at: 82 },
 ]
+/** An interactive / a background archetype shape for the answer-mode policy (§1.4). */
+const IN_TRAFFIC = { latClass: 'IN', outputTokens: 1 } as const
+const BG_TRAFFIC = { latClass: 'NR', outputTokens: 1 } as const
+
+/** The vector a model is judged with on one clear line (a hybrid answers interactive lanes instantly). */
+function lineVector(m: ModelDef, l: (typeof CLEAR_LINES)[number]): Record<CapabilityAxis, number> {
+  return qualityIn(m, answerMode(m, l.interactive ? IN_TRAFFIC : BG_TRAFFIC))
+}
 
 const RESEARCH_PRIORITY = [
   'inf_batching',
@@ -216,15 +226,16 @@ function showcaseReserve(s: GameState, waveAbout: number): number {
 }
 
 function lanesCleared(s: GameState, id: string): number {
-  const q = resolveModel(s, id)?.qualityBy
-  if (!q) return 0
-  return CLEAR_LINES.reduce((n, l) => n + (q[l.axis] >= l.at ? 1 : 0), 0)
+  const m = resolveModel(s, id)
+  if (!m) return 0
+  return CLEAR_LINES.reduce((n, l) => n + (lineVector(m, l)[l.axis] >= l.at ? 1 : 0), 0)
 }
 
 function minAxis(s: GameState, id: string): number {
-  const q = resolveModel(s, id)?.qualityBy
-  if (!q) return 0
-  return Math.min(q.chat, q.coding, q.reasoning, q.general)
+  const m = resolveModel(s, id)
+  if (!m) return 0
+  const instant = qualityIn(m, answerMode(m, IN_TRAFFIC))
+  return Math.min(instant.chat, instant.coding, m.qualityBy.reasoning, m.qualityBy.general)
 }
 
 /**
@@ -235,9 +246,8 @@ function minAxis(s: GameState, id: string): number {
  * so the hardest late-tier lanes stop shipping `bad` answers (the trust drain).
  */
 function capabilityMargin(m: NonNullable<ReturnType<typeof resolveModel>>): number {
-  const q = m.qualityBy
   let n = 0
-  for (const l of CLEAR_LINES) n += Math.max(0, q[l.axis] - l.at)
+  for (const l of CLEAR_LINES) n += Math.max(0, lineVector(m, l)[l.axis] - l.at)
   return n
 }
 
@@ -295,14 +305,19 @@ function isChatRack(hwId: string | undefined): boolean {
   return rackCapWeight(hwId) < 0.5
 }
 
+/** A chat rack's b=1 TPOT must sit this far inside the IN bound to stay interactive under a busy batch. */
+const CHAT_TPOT_HEADROOM = 0.6
+
 function modelScoreOn(s: GameState, hwId: string | undefined, id: string, chatRack = false): number {
   const lo = loadout(s, hwId, id)
   const tpotMs = 1000 / Math.max(1e-6, serverPerUserDecodeTokS(s, lo, 1))
-  // interactive-ready: the per-token bound — and on a chat rack also the hidden reasoning a
-  // thinking model spends before the first answer token, inside chat's TTFAT bound
+  // interactive-ready: the per-token bound — on a chat rack with headroom for the busy batch
+  // and its prompt stalls (hybrids answer chat instantly, so many more bodies qualify than the
+  // b=1 speed can tell apart), and inside chat's TTFAT bound for the hidden reasoning a model
+  // answering in thinking mode spends before the first answer token
   const chat = REQUEST_TYPES.chat
-  const ttfatOk = !chatRack || tpotMs * hiddenTokensFor(lo.model, chat.thinkMul) <= (chat.ttfatSloMs ?? Infinity)
-  const interactive = tpotMs <= LAT_CLASS_SLO.IN.tpotMs && ttfatOk
+  const ttfatOk = !chatRack || tpotMs * hiddenTokensFor(lo.model, chat) <= (chat.ttfatSloMs ?? Infinity)
+  const interactive = tpotMs <= LAT_CLASS_SLO.IN.tpotMs * (chatRack ? CHAT_TPOT_HEADROOM : 1) && ttfatOk
   return modelScore(s, id, rackCapWeight(hwId)) + (interactive ? 100_000 : 0) - tpotMs * 0.5
 }
 
@@ -397,9 +412,9 @@ function fp8Bases(s: GameState, hwId: string) {
     .filter((m) => serverFitsMemory(fp8, loadout(fp8, hwId, m.id)))
 }
 
-/** Lanes a base's qualityBy clears (the CLEAR_LINES count). */
+/** Lanes a base clears (the CLEAR_LINES count, each judged in the mode the base answers it in). */
 function baseLanesCleared(m: NonNullable<ReturnType<typeof resolveModel>>): number {
-  return CLEAR_LINES.reduce((n, l) => n + (m.qualityBy[l.axis] >= l.at ? 1 : 0), 0)
+  return CLEAR_LINES.reduce((n, l) => n + (lineVector(m, l)[l.axis] >= l.at ? 1 : 0), 0)
 }
 
 type DM = NonNullable<ReturnType<typeof resolveModel>>
@@ -413,7 +428,7 @@ function projTrain(
 ): DM {
   const f = computeDerivedFields(base, METHOD_RECIPES[method], target, effort, null)
   // a synthetic ModelDef carrying the projected snapshot (for scoring only).
-  return { ...base, ...f, origin: 'derived' } as DM
+  return { ...base, ...f, qualityByInstant: f.qualityByInstant, origin: 'derived' } as DM
 }
 
 /** Owned derived checkpoints matching a method (and optional target). */

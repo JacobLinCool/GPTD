@@ -629,7 +629,10 @@ export class StudioTab {
         fill: COLORS.trust,
       })
     }
-    if (prev.fields.isReasoning && !prev.base.isReasoning) lines.push({ text: t('studio.prev.thinker'), fill: COLORS.data })
+    // §1.4 a reasoning run teaches an instruct model to think (always); a merge of a thinker and
+    // an instruct sibling can do both (hybrid)
+    if (prev.fields.thinking !== prev.base.thinking && prev.fields.thinking !== 'never')
+      lines.push({ text: t(prev.fields.thinking === 'always' ? 'studio.prev.thinker' : 'studio.prev.hybrid'), fill: COLORS.data })
     lines.push({ text: '', fill: COLORS.text })
     lines.push({ text: t('studio.prev.deltaHead'), fill: COLORS.textBright })
 

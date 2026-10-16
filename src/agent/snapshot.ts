@@ -87,6 +87,16 @@ export interface AgentModelView {
   paramsActiveB: number
   isMoE: boolean
   isReasoning: boolean
+  /**
+   * thinking support: 'hybrid' answers interactive traffic (chat, completion) with thinking off,
+   * judged on `qualityByInstant`, and thinks about the rest; 'always' thinks on every answer;
+   * 'never' answers at once.
+   */
+  thinking: string
+  /** a hybrid's capability with thinking off (absent for single-mode models). */
+  qualityByInstant?: Record<string, number>
+  /** hidden reasoning tokens per thinking-mode answer at full effort (× the archetype's thinkMul). */
+  thinkTokens: number
   /** layer-1 alignment: intrinsic safety 0..100, refusal style, borderline over-refusal rate. */
   alignment: { safety: number; refusalStyle: string; overRefusal: number }
   /** quality points the alignment costs on every axis at serve time. */
@@ -263,8 +273,12 @@ function roundLedger<K extends string>(l: Partial<Record<K, number>> | undefined
 function modelView(s: GameState, id: string): AgentModelView | null {
   const m = resolveModel(s, id)
   if (!m) return null
-  const qualityBy: Record<string, number> = {}
-  for (const [axis, q] of Object.entries(m.qualityBy)) qualityBy[axis] = Math.round(q * 10) / 10
+  const round1 = (v: Record<string, number>): Record<string, number> => {
+    const out: Record<string, number> = {}
+    for (const [axis, q] of Object.entries(v)) out[axis] = Math.round(q * 10) / 10
+    return out
+  }
+  const qualityBy = round1(m.qualityBy)
   return {
     id: m.id,
     name: m.name,
@@ -276,6 +290,9 @@ function modelView(s: GameState, id: string): AgentModelView | null {
     paramsActiveB: m.paramsActiveB,
     isMoE: m.isMoE,
     isReasoning: m.isReasoning,
+    thinking: m.thinking,
+    ...(m.qualityByInstant ? { qualityByInstant: round1(m.qualityByInstant) } : {}),
+    thinkTokens: m.thinkTokens,
     alignment: {
       safety: Math.round(m.alignment.safety),
       refusalStyle: m.alignment.refusalStyle,

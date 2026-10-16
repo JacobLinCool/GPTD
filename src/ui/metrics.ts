@@ -13,6 +13,7 @@
  */
 import { FRAMEWORK_GB, LAT_CLASS_SLO, TILE } from '../config'
 import type {
+  AnswerMode,
   CapabilityAxis,
   GameState,
   GuardrailSpec,
@@ -23,11 +24,13 @@ import type {
   SafetyHazard,
   ServerHardwareDef,
   SloCause,
+  ThinkingSupport,
   Tower,
   WeightFormat,
 } from '../core/types'
 import {
   admissionDelaySec,
+  answerMode,
   availableFormats,
   computeRoofTokS,
   decodeTokSb1,
@@ -47,6 +50,7 @@ import {
   loraSiblings,
   type ParallelPlan,
   ptqTax,
+  qualityIn,
   rackLoadEstimate,
   rackPlan,
   resolveModel,
@@ -595,6 +599,60 @@ export function modelThinkTokens(m: ModelDef | null | undefined): number {
   return m?.thinkTokens ?? 0
 }
 
+/** The archetypes that generate an answer a model is judged on (attacks are judged on safety, embeddings emit no text). */
+const JUDGED_TYPES = Object.values(REQUEST_TYPES).filter((d) => !d.adversarial && d.outputTokens > 0)
+
+/**
+ * §1.4 how a model splits the traffic between its modes: the judged archetypes it answers
+ * instantly and the ones it thinks about first (a hybrid: interactive vs the rest).
+ */
+export function modeSplit(m: ModelDef): { instant: RequestTypeDef[]; thinking: RequestTypeDef[] } {
+  const instant: RequestTypeDef[] = []
+  const thinking: RequestTypeDef[] = []
+  for (const d of JUDGED_TYPES) (answerMode(m, d) === 'instant' ? instant : thinking).push(d)
+  return { instant, thinking }
+}
+
+/**
+ * The mode a model is judged in on each capability axis — the mode it answers the archetypes
+ * judged on that axis in (instant only when every one of them is answered instantly).
+ */
+export function axisModes(m: ModelDef): Record<CapabilityAxis, AnswerMode> {
+  const out = {} as Record<CapabilityAxis, AnswerMode>
+  for (const a of AXES) {
+    const defs = JUDGED_TYPES.filter((d) => d.primaryAxis === a)
+    out[a] = defs.length > 0 && defs.every((d) => answerMode(m, d) === 'instant') ? 'instant' : 'thinking'
+  }
+  return out
+}
+
+/** A rack's effective quality per axis as its traffic is judged: each axis in the mode its model answers that axis's archetypes in. */
+export function judgedAxisQuality(s: GameState, lo: Loadout): Record<CapabilityAxis, number> {
+  const out = {} as Record<CapabilityAxis, number>
+  const modes = lo.model ? axisModes(lo.model) : null
+  for (const a of AXES) out[a] = modes ? serverQualityVs(s, lo, a, modes[a]) : 0
+  return out
+}
+
+/**
+ * The OTHER mode's effective quality per axis for a hybrid (the vector the axis is NOT judged
+ * with: thinking for the instant axes, instant for the rest) — the second vector the Expert
+ * bars mark. null for a single-mode model.
+ */
+export function otherModeAxisQuality(s: GameState, lo: Loadout): Record<CapabilityAxis, number> | null {
+  const m = lo.model
+  if (!m || m.thinking !== 'hybrid' || !m.qualityByInstant) return null
+  const modes = axisModes(m)
+  const out = {} as Record<CapabilityAxis, number>
+  for (const a of AXES) out[a] = serverQualityVs(s, lo, a, modes[a] === 'instant' ? 'thinking' : 'instant')
+  return out
+}
+
+/** A model's raw capability in one mode (display: both vectors of a hybrid). */
+export function modeVector(m: ModelDef, mode: AnswerMode): Record<CapabilityAxis, number> {
+  return qualityIn(m, mode)
+}
+
 /** Every latency bound a request class is judged against (ms; Infinity = no bound). */
 export interface SloBounds {
   ttftMs: number
@@ -628,7 +686,9 @@ export interface TypeFit {
   /** prompt + hidden reasoning + answer fit the context window and one model copy's KV (else unservable). */
   window: boolean
   lat: LatencyMetrics
-  /** hidden reasoning tokens this rack's model thinks before answering it (0 = instruct). */
+  /** the mode this rack's model answers it in (§1.4: a hybrid answers interactive traffic instantly). */
+  mode: AnswerMode
+  /** hidden reasoning tokens this rack's model thinks before answering it (0 in instant mode). */
   thinkTokens: number
   /** time to the first answer token (ms): TTFT plus the hidden thinking. */
   ttfatMs: number
@@ -638,9 +698,10 @@ export interface TypeFit {
 
 /**
  * Would this rack serve one request of an archetype cleanly? The same gates combat applies,
- * on a busy rack: the latency bounds of its class (TTFT, time to first ANSWER token with a
- * thinking model's hidden reasoning, TPOT over every generated token, E2E), the judged-axis
- * quality margin (qualityBy − the format and alignment taxes − the long-context penalty at the
+ * on a busy rack, in the mode its model answers the archetype in (combat's `answerMode`): the
+ * latency bounds of its class (TTFT, time to first ANSWER token with the hidden reasoning of a
+ * thinking-mode answer, TPOT over every generated token, E2E), the judged-axis quality margin
+ * (that mode's vector − the format and alignment taxes − the long-context penalty at the
  * answer's mean sequence), and the hard capacity gates (the full sequence inside the window,
  * one stream's KV inside one model copy).
  */
@@ -652,7 +713,8 @@ export function rackFit(
   outputTokens: number,
   difficulty: number,
 ): TypeFit {
-  const think = outputTokens > 0 ? hiddenTokensFor(lo.model, def.thinkMul) : 0
+  const mode: AnswerMode = lo.model ? answerMode(lo.model, def) : 'instant'
+  const think = outputTokens > 0 ? hiddenTokensFor(lo.model, def) : 0
   const generated = outputTokens + think
   const lat = latencyOf(s, lo, inputTokens, generated, def.primaryAxis)
   const thinkMs = think > 0 ? (Number.isFinite(lat.tpotMs) ? think * lat.tpotMs : Infinity) : 0
@@ -664,7 +726,7 @@ export function rackFit(
   else if (generated > 1 && lat.tpotMs > b.tpotMs) slowBy = 'tpot'
   else if (lat.e2elMs > b.e2elMs) slowBy = 'e2el'
   const effQ = lo.model
-    ? serverQualityVs(s, lo, def.primaryAxis) - longContextPenalty(s, lo, midDecodeContext(inputTokens, generated))
+    ? serverQualityVs(s, lo, def.primaryAxis, mode) - longContextPenalty(s, lo, midDecodeContext(inputTokens, generated))
     : 0
   const margin = effQ - difficulty
   const seq = inputTokens + generated
@@ -679,6 +741,7 @@ export function rackFit(
     effQ,
     window: fits,
     lat,
+    mode,
     thinkTokens: think,
     ttfatMs,
     e2elMs: lat.e2elMs,
@@ -730,9 +793,10 @@ export interface DeployCandidate {
   score: number
   safety: number
   overRefusal: number
-  /** hidden reasoning tokens per answer (0 = instruct). */
+  /** hidden reasoning tokens per thinking-mode answer (0 = it never thinks). */
   thinkTokens: number
-  thinking: boolean
+  /** §1.4 its thinking support (a hybrid answers interactive traffic without thinking). */
+  thinking: ThinkingSupport
   /** ★ the best fit for the upcoming traffic on this rack. */
   recommended: boolean
   /** per-archetype verdicts (same order as the traffic entries); empty when it does not fit. */
@@ -775,7 +839,7 @@ export function deployCandidates(s: GameState, tw: Tower, traffic: UpcomingTraff
       safety: m.alignment.safety,
       overRefusal: m.alignment.overRefusal,
       thinkTokens: think,
-      thinking: m.isReasoning || think > 0,
+      thinking: m.thinking,
       recommended: false,
       fit: [],
     }
@@ -954,6 +1018,10 @@ export interface RequestDiagnosis {
   guardsPassed: number
   guardMs: number
   thinkTokens: number
+  /** the mode it is answered in: latched at its first token, else the mode its current rack would use (null = no rack). */
+  mode: AnswerMode | null
+  /** true once the mode is latched (the first token exists). */
+  modeFinal: boolean
   rack: Tower | null
   hazards: { hazard: SafetyHazard; severity: number; verdict: HazardVerdict }[]
   /** the outcome it is heading for if nothing changes. */
@@ -1010,9 +1078,11 @@ export function diagnoseRequest(s: GameState, r: Request): RequestDiagnosis {
   }
   let rackQ: number | null = null
   let ctxPenalty = 0
-  if (lo && fits) {
+  // the mode the request is answered in (combat judges each rack in its own model's mode)
+  const rackMode = lo?.model ? answerMode(lo.model, r.def) : null
+  if (lo && fits && rackMode) {
     ctxPenalty = longContextPenalty(s, lo, r.contextLen)
-    rackQ = serverQualityVs(s, lo, r.def.primaryAxis) - ctxPenalty
+    rackQ = serverQualityVs(s, lo, r.def.primaryAxis, rackMode) - ctxPenalty
   }
   const judged = r.bestQuality > -900
   const margin = judged ? r.bestQuality : rackQ !== null ? rackQ - r.difficulty : null
@@ -1070,6 +1140,8 @@ export function diagnoseRequest(s: GameState, r: Request): RequestDiagnosis {
     guardsPassed: seen?.size ?? 0,
     guardMs,
     thinkTokens: r.thinkTokens ?? 0,
+    mode: r.thinkingMode ?? rackMode,
+    modeFinal: r.thinkingMode !== undefined,
     rack,
     hazards,
     forecast,

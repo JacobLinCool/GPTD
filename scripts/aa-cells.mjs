@@ -23,6 +23,12 @@
 //
 // The successor cells (Terminal-Bench 2.1 / 4.0, tau-banking) are display + bridge predictors
 // only — they never enter a blend.
+//
+// INSTANT MODE. A HYBRID checkpoint (data/model-thinking.json) is served thinking-off on
+// interactive traffic, so it carries a second vector calibrated through the same resolution:
+// its `instant` pin (AA's Non-reasoning row of the same checkpoint) resolves like any pin; a
+// hybrid without one gets its instant cells from the per-cell PAIR FIT (instant = a + b·thinking,
+// fitted on every pinned thinking/instant pair, clamped to [0, thinking]; `fitInstant`).
 
 import { readFileSync, existsSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
@@ -32,6 +38,8 @@ export const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 export const MAP_PATH = join(ROOT, 'data', 'roster-aa-map.json')
 export const BRIDGES_PATH = join(ROOT, 'data', 'aa-bridges.json')
 export const LATEST_PATH = join(ROOT, 'data', 'aa-snapshot.json')
+export const ARCH_PATH = join(ROOT, 'data', 'model-arch.json')
+export const THINKING_PATH = join(ROOT, 'data', 'model-thinking.json')
 
 /** The six canonical AA eval keys (reference scale) — the calibration blend inputs. */
 export const CANONICAL = ['gpqa', 'ifbench', 'lcr', 'scicode', 'terminalbench_hard', 'hle']
@@ -205,7 +213,40 @@ export function fitBridges(snaps) {
   for (const [t, prefs] of Object.entries(BRIDGE_PREF)) bridges[t] = prefs.map((ps) => fitOLS(rows, t, ps))
   const eraRows = rows.filter((r) => release(r.id) >= TB21_ERA)
   const tb21 = TB21_PREF.map((ps) => fitOLS(eraRows, 'terminalbench_v2_1', ps))
-  return { equating, ranges, bridges, tb21Era: { since: TB21_ERA, fits: tb21 }, minN: MIN_N }
+  return { equating, ranges, bridges, tb21Era: { since: TB21_ERA, fits: tb21 }, minN: MIN_N, instant: fitInstant(snaps, equating) }
+}
+
+/**
+ * The instant-mode PAIR FIT: per canonical cell, an OLS line instant = a + b·thinking over every
+ * pinned hybrid's (thinking row, instant row) pair, both cells MEASURED on the reference scale.
+ * It estimates what switching thinking off costs a hybrid that AA timed in thinking mode only.
+ */
+export function fitInstant(snaps, equating) {
+  const pairs = instantPins(snaps.map)
+  const fits = {}
+  for (const k of CANONICAL) {
+    const pts = []
+    for (const [, inst, pin] of pairs) {
+      const t = measuredRow(snaps, equating, pin.aaId).row[k]
+      const i = measuredRow(snaps, equating, inst.aaId).row[k]
+      if (t != null && i != null) pts.push([t, i])
+    }
+    const f = fitOLS(pts.map(([t, i]) => ({ t, i })), 'i', ['t'])
+    fits[k] = { a: f.beta?.[0] ?? 0, b: f.beta?.[1] ?? 1, n: f.n, R: f.R, sd: f.sd, range: [round(Math.min(...pts.map((p) => p[0])), 2), round(Math.max(...pts.map((p) => p[0])), 2)] }
+  }
+  return { pairs: pairs.length, fits }
+}
+
+/** Instant cells of a hybrid with no instant pin: the pair fit applied to its thinking cells, never above them. */
+export function instantFromThinking(fit, cells) {
+  const out = {}
+  for (const k of CANONICAL) {
+    const t = cells[k]
+    if (t == null || !fit.fits[k]) continue
+    const f = fit.fits[k]
+    out[k] = Math.min(t, Math.max(0, f.a + f.b * t))
+  }
+  return out
 }
 
 /** Load the committed fits (data/aa-bridges.json). */
@@ -281,20 +322,59 @@ export function perfOf(snaps, aaId) {
   return null
 }
 
-/** The pinned roster map: id → { slug, aaId } (comment keys skipped). */
+/** The pinned roster map: id → { slug, aaId, instant? } (comment keys skipped). */
 export function pinnedModels(map) {
   return Object.entries(map.models).filter(([id]) => !id.startsWith('_'))
 }
 
-/**
- * Recycled-slug guard: the slug hint must still name the pinned UUID in the latest snapshot.
- * Returns null when consistent, else a human-readable problem.
- */
-export function pinProblem(snaps, id, pin) {
+/** The instant pins of hybrid checkpoints: [id, instant { slug, aaId }, the main pin]. */
+export function instantPins(map) {
+  return pinnedModels(map)
+    .filter(([, p]) => p.instant)
+    .map(([id, p]) => [id, p.instant, p])
+}
+
+/** AA's display name without its trailing mode tag: 'Qwen3.5 27B (Non-reasoning)' → 'Qwen3.5 27B'. */
+const checkpointName = (name) => name.replace(/\s*\([^)]*\)\s*$/, '').trim()
+
+function slugProblem(snaps, label, pin) {
   const bySlug = snaps.latest.bySlug.get(pin.slug)
   const byId = recordOf(snaps, pin.aaId)
-  if (!byId) return `${id}: AA id ${pin.aaId} is in neither snapshot`
-  if (bySlug && bySlug.id !== pin.aaId) return `${id}: slug '${pin.slug}' now names a different AA model ('${bySlug.name}', ${bySlug.id}) — recycled slug; the pinned model is '${byId.name}' (now slug '${byId.slug}')`
-  if (!bySlug && snaps.latest.byId.has(pin.aaId)) return `${id}: AA renamed the pinned model's slug '${pin.slug}' → '${snaps.latest.byId.get(pin.aaId).slug}' — update the hint`
+  if (!byId) return `${label}: AA id ${pin.aaId} is in neither snapshot`
+  if (bySlug && bySlug.id !== pin.aaId) return `${label}: slug '${pin.slug}' now names a different AA model ('${bySlug.name}', ${bySlug.id}) — recycled slug; the pinned model is '${byId.name}' (now slug '${byId.slug}')`
+  if (!bySlug && snaps.latest.byId.has(pin.aaId)) return `${label}: AA renamed the pinned model's slug '${pin.slug}' → '${snaps.latest.byId.get(pin.aaId).slug}' — update the hint`
   return null
+}
+
+/**
+ * Recycled-slug guard: every slug hint must still name its pinned UUID in the latest snapshot,
+ * and an instant pin must be the SAME checkpoint as the main pin (AA name without the mode tag
+ * and release date match — 'Hy3' is not its April preview). Null when consistent.
+ */
+export function pinProblem(snaps, id, pin) {
+  const main = slugProblem(snaps, id, pin)
+  if (main || !pin.instant) return main
+  const inst = slugProblem(snaps, `${id} (instant)`, pin.instant)
+  if (inst) return inst
+  const a = recordOf(snaps, pin.aaId)
+  const b = recordOf(snaps, pin.instant.aaId)
+  if (checkpointName(a.name) !== checkpointName(b.name) || (a.release_date ?? '') !== (b.release_date ?? ''))
+    return `${id}: instant pin '${b.name}' (${b.release_date}) is not the same checkpoint as '${a.name}' (${a.release_date})`
+  return null
+}
+
+/**
+ * Thinking support per AA UUID: the checkpoint (data/model-arch.json `aa`) and its mode from
+ * data/model-thinking.json. Map aaId → { repo, mode }.
+ */
+export function thinkingByAaId() {
+  const arch = JSON.parse(readFileSync(ARCH_PATH, 'utf8')).models
+  const thinking = JSON.parse(readFileSync(THINKING_PATH, 'utf8')).models
+  const out = new Map()
+  for (const [repo, e] of Object.entries(arch)) {
+    const mode = thinking[repo]?.mode
+    if (!mode) throw new Error(`${repo}: no data/model-thinking.json entry`)
+    for (const aaId of Object.values(e.aa ?? {})) out.set(aaId, { repo, mode })
+  }
+  return out
 }

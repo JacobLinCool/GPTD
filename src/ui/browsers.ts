@@ -450,7 +450,8 @@ export class CodexBrowser extends ContentPanel {
     const rx = this.bodyW - 430
     for (const m of MODEL_LIST) {
       this.swatch(m.real ? COLORS.data : COLORS.textDim, y)
-      const flags = [m.isMoE ? t('codex.row.moe') : '', m.isReasoning ? t('codex.row.reasoning') : '']
+      const thinks = m.thinking === 'always' ? t('codex.row.reasoning') : m.thinking === 'hybrid' ? t('codex.row.hybrid') : ''
+      const flags = [m.isMoE ? t('codex.row.moe') : '', thinks]
         .filter(Boolean)
         .join(' · ')
       const size = m.isMoE

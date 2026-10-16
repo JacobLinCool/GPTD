@@ -52,7 +52,6 @@ import {
   hwNeedsLiquid,
   hasLiquidLoop,
   serverPower,
-  serverQualityVs,
   towerRangeTiles,
 } from '../sim/effects'
 import {
@@ -66,9 +65,11 @@ import {
   guardStats,
   honestGoodputPct,
   hwUpgradeDelta,
+  judgedAxisQuality,
   latencyOf,
-  modelThinkTokens,
+  modeSplit,
   nextFormatChoice,
+  otherModeAxisQuality,
   parallelSummary,
   rackDollarsPerMtoken,
   rackFormatChoices,
@@ -105,6 +106,7 @@ import {
   waveName,
 } from '../i18n'
 import { drawPanel, FocusList, label, UIButton } from './theme'
+import { thinkingLine, thinkingPlain, thinkingToggle } from './thinkingCopy'
 import { addTooltip, type TooltipSpec } from './tooltip'
 import { DragScroll, fitLabel, INSPECT_MARGIN, INSPECT_W, setButton, setUiPref, uiPref } from './panelKit'
 
@@ -296,9 +298,11 @@ class DeployRow extends Container {
     // line 1: ★ name · size · THINKS (· ✓ loaded), with ALL ×N pinned right
     this.sizeT.text = c.current ? `${size}  ${t('inspect.dep.loaded')}` : size
     this.sizeT.style.fill = c.current ? COLORS.good : COLORS.textDim
-    this.badgeT.text = c.thinking ? t('inspect.dep.think') : ''
+    // §1.4 THINKS = always thinks (slow on chat); HYBRID = instant on interactive traffic
+    this.badgeT.text = c.thinking === 'always' ? t('inspect.dep.think') : c.thinking === 'hybrid' ? t('inspect.dep.hybrid') : ''
+    this.badgeT.style.fill = c.thinking === 'always' ? COLORS.warn : COLORS.data
     const right = this.allBtn.visible ? this.allBtn.x - 8 : BODY_W - 8
-    const tail = this.sizeT.width + (c.thinking ? this.badgeT.width + 6 : 0) + 8
+    const tail = this.sizeT.width + (this.badgeT.text ? this.badgeT.width + 6 : 0) + 8
     fitLabel(this.nameT, `${c.recommended ? '★ ' : ''}${modelName(m)}`, Math.max(60, right - 10 - tail), 12, 10)
     this.nameT.style.fill = c.recommended ? COLORS.cash : c.fits ? COLORS.text : COLORS.textDim
     this.sizeT.x = this.nameT.x + this.nameT.width + 8
@@ -397,7 +401,7 @@ export class InspectPanel {
   private sparks = new QualitySparks(BODY_W - 16, 13)
   // expert cards
   private cardHw = new Card(BODY_W, 4, COLORS.power)
-  private cardModel = new Card(BODY_W, 5, COLORS.data)
+  private cardModel = new Card(BODY_W, 7, COLORS.data)
   private cardRoof = new Card(BODY_W, 0, COLORS.cooling)
   private cardLive = new Card(BODY_W, 7, COLORS.good)
   private roofBars = new RooflineBars(BODY_W - 16)
@@ -984,6 +988,7 @@ export class InspectPanel {
     }
     out.push(...this.fitRows(s, tw, lo))
     if (m) {
+      out.push({ text: thinkingPlain(m), fill: m.thinking === 'always' ? COLORS.warn : COLORS.data })
       out.push({
         text: t('inspect.n.refuses', { p: Math.round(m.alignment.overRefusal * 100) }),
         fill: m.alignment.overRefusal <= 0.05 ? COLORS.good : COLORS.trust,
@@ -1003,7 +1008,7 @@ export class InspectPanel {
       y += this.sparksHead.height + 4
       this.sparks.x = BODY_X
       this.sparks.y = y
-      this.sparks.draw(axisQuality(s, lo), { ticks: this.axisTicks(), max: qualityScale(), highlight: null })
+      this.sparks.draw(judgedAxisQuality(s, lo), { ticks: this.axisTicks(), max: qualityScale(), highlight: null })
       y += this.sparks.height2 + 6
     } else {
       this.sparks.visible = false
@@ -1063,11 +1068,9 @@ export class InspectPanel {
           moe: sp.isMoE ? t('rack.model.moe') : t('rack.model.dense'),
         }),
       )
-      const think = modelThinkTokens(model)
       this.cardModel.set(
         2,
-        t('rack.model.arch', { win: model.contextWindowK.toFixed(0), bytes: model.nativeWeightBytes, attn: t(`attn.${model.attn}`, undefined, model.attn) }) +
-          (model.isReasoning || think > 0 ? '  ' + t('rack.model.thinks', { n: think > 0 ? fmtTokens(think) : '?' }) : ''),
+        t('rack.model.arch', { win: model.contextWindowK.toFixed(0), bytes: model.nativeWeightBytes, attn: t(`attn.${model.attn}`, undefined, model.attn) }),
       )
       this.cardModel.set(
         3,
@@ -1089,11 +1092,20 @@ export class InspectPanel {
         }),
         COLORS.trust,
       )
+      // §1.4 which traffic it answers instantly / thinks about, the serving-stack switch, and
+      // (a hybrid) the legend of its second vector on the bars below
+      this.cardModel.set(5, thinkingLine(model), model.thinking === 'always' ? COLORS.warn : COLORS.data)
+      const legend = model.thinking === 'hybrid' ? t('think.alt.legend') : ''
+      this.cardModel.set(6, [thinkingToggle(model), legend].filter(Boolean).join('  ·  '), COLORS.textDim)
+    } else {
+      this.cardModel.set(5, '')
+      this.cardModel.set(6, '')
     }
     const modelH = this.cardModel.draw(cx, y, t('rack.card.model'), this.sparks.height2 + 8)
     this.sparks.x = 8
-    this.sparks.y = 20 + 5 * 14 + 4
-    this.sparks.draw(axisQuality(s, lo), { ticks: this.axisTicks(), max: qualityScale() })
+    this.sparks.y = 20 + 7 * 14 + 4
+    // the bars are what each axis is judged with; a hybrid's notch marks its other mode
+    this.sparks.draw(judgedAxisQuality(s, lo), { ticks: this.axisTicks(), max: qualityScale(), alt: otherModeAxisQuality(s, lo) })
     y += modelH + 6
     return this.layoutLines(this.fitRows(s, tw, lo), y)
   }
@@ -1260,23 +1272,22 @@ export class InspectPanel {
       )
     }
     if (c.fits && c.kinds) body.push(t('inspect.dep.tip.clears', { k: c.clears, n: c.kinds }))
-    if (c.thinkTokens > 0) body.push(t('inspect.dep.tip.think', { n: fmtTokens(c.thinkTokens) }))
+    if (c.thinking === 'always') body.push(t('inspect.dep.tip.think', { n: fmtTokens(c.thinkTokens) }))
+    else if (c.thinking === 'hybrid')
+      body.push(
+        t('inspect.dep.tip.hybrid', {
+          instant: modeSplit(c.model)
+            .instant.map((d) => reqShort(d))
+            .join(t('think.listSep')),
+          n: fmtTokens(c.thinkTokens),
+        }),
+      )
     if (c.fits) body.push(t('inspect.dep.tip.body', { tier: tier ? hwShort(tier) : '' }))
     return {
       title: modelName(c.model),
       value: c.fits ? t('inspect.dep.tip.value', { speed: fmtTokS(c.perUserTokS), q: c.judgedQ.toFixed(0) }) : row.speedT.text,
       body: body.join('\n'),
     }
-  }
-}
-
-function axisQuality(s: GameState, lo: Loadout): Record<CapabilityAxis, number> {
-  return {
-    chat: serverQualityVs(s, lo, 'chat'),
-    coding: serverQualityVs(s, lo, 'coding'),
-    reasoning: serverQualityVs(s, lo, 'reasoning'),
-    general: serverQualityVs(s, lo, 'general'),
-    agentic: serverQualityVs(s, lo, 'agentic'),
   }
 }
 

@@ -98,6 +98,7 @@ export function spawnRequest(
     sloCause: undefined,
     refusedBy: undefined,
     thinkTokens: undefined,
+    thinkingMode: undefined,
     answeredBy: undefined,
     answeredModelId: undefined,
   }

@@ -9,6 +9,7 @@ import type {
   PostTrainMeta,
   PostTrainMethod,
   PostTrainTarget,
+  ThinkingSupport,
 } from '../core/types'
 import { POSTTRAIN_COMPUTE_SCALE } from '../config'
 import { THINK_TOKENS_FALLBACK } from './calibrate'
@@ -250,10 +251,14 @@ export interface DerivedFields {
   paramsTotalB: number
   paramsActiveB: number
   isMoE: boolean
+  /** §1.4 thinking support: inherited, or 'always' when a reasoning run teaches an instruct model to think. */
+  thinking: ThinkingSupport
   isReasoning: boolean
   thinkTokens: number
   quality: number
   qualityBy: Record<CapabilityAxis, number>
+  /** a hybrid's instant-mode vector after the run (the run's per-axis change applied to the base's). */
+  qualityByInstant?: Record<CapabilityAxis, number>
   layers: number
   kvLayers: number
   kvHeads: number
@@ -270,6 +275,22 @@ export interface DerivedFields {
   desc: string
   /** the resulting lineage depth (base depth + 1). */
   depth: number
+}
+
+/**
+ * The vector a checkpoint answers instantly with: a hybrid's instant-mode vector, a 'never'
+ * model's only one; an 'always' model has none (it cannot answer without thinking).
+ */
+function instantVector(m: ModelDef): Record<CapabilityAxis, number> | undefined {
+  return m.qualityByInstant ?? (m.thinking === 'never' ? m.qualityBy : undefined)
+}
+
+/**
+ * §2.6 the thinking support of a weight average: parents that agree keep it; averaging a
+ * thinker with an instruct sibling (or with a hybrid) gives a checkpoint that can do both.
+ */
+function mergedSupport(a: ThinkingSupport, b: ThinkingSupport): ThinkingSupport {
+  return a === b ? a : 'hybrid'
 }
 
 /**
@@ -319,10 +340,22 @@ export function computeDerivedFields(
     }
   }
 
-  // --- internal state (§3): alignment / instructFollow / isReasoning ---
+  // --- §1.4 the instant-mode vector of a hybrid: the run moves it by the same per-axis amount ---
+  const baseInstant = instantVector(base)
+  let qualityByInstant: Record<CapabilityAxis, number> | undefined
+  if (method === 'merge' && other) {
+    // a weight average answers instantly with the parents' instant paths (either one's, if only it has one)
+    const paths = [baseInstant, instantVector(other)].filter((v): v is Record<CapabilityAxis, number> => !!v)
+    qualityByInstant = paths.length === 2 ? avgVec(paths[0], paths[1]) : paths.length === 1 ? { ...paths[0] } : undefined
+  } else if (baseInstant) {
+    qualityByInstant = {} as Record<CapabilityAxis, number>
+    for (const a of CAP_AXES) qualityByInstant[a] = clampQ(baseInstant[a] + (qualityBy[a] - base.qualityBy[a]))
+  }
+
+  // --- internal state (§3): alignment / instructFollow / thinking support ---
   const alignment: AlignmentProfile = { ...base.alignment }
   let instructFollow = base.instructFollow
-  let isReasoning = base.isReasoning
+  let thinking: ThinkingSupport = base.thinking
 
   if (method === 'merge' && other) {
     // weight averaging interpolates alignment too (DOSSIER §2.6): the merged checkpoint
@@ -347,7 +380,9 @@ export function computeDerivedFields(
     }
   }
   if (method === 'sft') instructFollow = Math.min(100, instructFollow + 8 * Math.sqrt(effort))
-  if (method === 'grpo' || (target === 'reasoning' && method !== 'merge')) isReasoning = true
+  // a reasoning run teaches an instruct model to think (DeepSeek-R1 from V3): the result is a
+  // dedicated thinker; a hybrid keeps its off switch, a thinker stays one
+  if ((method === 'grpo' || (target === 'reasoning' && method !== 'merge')) && thinking === 'never') thinking = 'always'
 
   // --- deployment fields (§4.8/§5.6/§5.7): only distill / qat / merge reshape ---
   let body: DeployBody = bodyOf(base)
@@ -360,26 +395,39 @@ export function computeDerivedFields(
     body = bodyOf(student)
     contextWindowK = Math.min(contextWindowK, student.contextWindowK)
     longCtx = Math.min(longCtx, student.longCtx)
-    // student-capacity cap: the small body can't hold the full teacher signal.
+    // student-capacity cap: the small body can't hold the full teacher signal (in either mode).
+    // The student imitates the teacher's answers, so it inherits the teacher's thinking support.
+    const studentInstant = instantVector(student) ?? student.qualityBy
     for (const a of CAP_AXES) {
       const cap = Math.min(base.qualityBy[a], student.qualityBy[a] + 18)
       qualityBy[a] = clampQ(Math.min(qualityBy[a], cap))
+      if (qualityByInstant && baseInstant) {
+        const capI = Math.min(baseInstant[a], studentInstant[a] + 18)
+        qualityByInstant[a] = clampQ(Math.min(qualityByInstant[a], capI))
+      }
     }
   } else if (method === 'qat') {
     // trained AT 4-bit: the checkpoint's release precision is now INT4 (no PTQ tax there).
     body = { ...body, nativeWeightBytes: 0.5 }
-    for (const a of CAP_AXES) qualityBy[a] = clampQ(qualityBy[a] - 2)
+    for (const a of CAP_AXES) {
+      qualityBy[a] = clampQ(qualityBy[a] - 2)
+      if (qualityByInstant) qualityByInstant[a] = clampQ(qualityByInstant[a] - 2)
+    }
   } else if (method === 'merge' && other) {
     // both parents share one body (mergeCompatible); the merge is materialized at the
     // higher of the two release precisions (averaging dequantizes a low-bit parent).
     body = { ...body, nativeWeightBytes: Math.max(base.nativeWeightBytes, other.nativeWeightBytes) }
-    isReasoning = isReasoning || other.isReasoning
+    thinking = mergedSupport(base.thinking, other.thinking)
     contextWindowK = Math.min(contextWindowK, other.contextWindowK)
     longCtx = Math.min(longCtx, other.longCtx)
   }
+  // only a hybrid keeps a separate instant-mode vector (a 'never' model's IS its qualityBy)
+  if (thinking !== 'hybrid') qualityByInstant = undefined
+  const isReasoning = thinking !== 'never'
   // a run that teaches thinking gives the checkpoint a thinking budget; a merge keeps the larger.
   let thinkTokens = method === 'merge' && other ? Math.max(base.thinkTokens, other.thinkTokens) : base.thinkTokens
   if (isReasoning && thinkTokens === 0) thinkTokens = THINK_TOKENS_FALLBACK
+  if (!isReasoning) thinkTokens = 0
 
   const { paramsTotalB } = body
   const tier = pickTier(qualityBy, paramsTotalB)
@@ -400,10 +448,12 @@ export function computeDerivedFields(
     variant: base.variant,
     spec,
     ...body,
+    thinking,
     isReasoning,
     thinkTokens,
     quality,
     qualityBy,
+    ...(qualityByInstant ? { qualityByInstant } : {}),
     contextWindowK,
     longCtx,
     alignment,
@@ -411,6 +461,13 @@ export function computeDerivedFields(
     desc,
     depth,
   }
+}
+
+/** The per-axis mean of two capability vectors (a weight average, §2.6). */
+function avgVec(a: Record<CapabilityAxis, number>, b: Record<CapabilityAxis, number>): Record<CapabilityAxis, number> {
+  const out = {} as Record<CapabilityAxis, number>
+  for (const k of CAP_AXES) out[k] = clampQ((a[k] + b[k]) / 2)
+  return out
 }
 
 /** The deploy body a derived checkpoint inherits as a unit: size, KV layout, release precision. */
@@ -526,10 +583,12 @@ export function deriveModel(s: GameState, meta: PostTrainMeta): ModelDef | null 
     paramsTotalB: f.paramsTotalB,
     paramsActiveB: f.paramsActiveB,
     isMoE: f.isMoE,
+    thinking: f.thinking,
     isReasoning: f.isReasoning,
     thinkTokens: f.thinkTokens,
     quality: f.quality,
     qualityBy: f.qualityBy,
+    ...(f.qualityByInstant ? { qualityByInstant: f.qualityByInstant } : {}),
     layers: f.layers,
     kvLayers: f.kvLayers,
     kvHeads: f.kvHeads,

@@ -16,7 +16,7 @@ import {
   THROTTLE_FLOOR,
   TRAFFIC_SCALE,
 } from '../src/config'
-import type { CapabilityAxis, GameEvent, GameState, Outcome, Request } from '../src/core/types'
+import type { CapabilityAxis, GameEvent, GameState, ModelDef, Outcome, PostTrainMeta, Request, Tower } from '../src/core/types'
 import {
   deployModel,
   sellTower,
@@ -58,7 +58,15 @@ import {
   startResearch,
   updateResearch,
 } from '../src/sim/research'
-import { deriveQuality, postTrainComputeCost, postTrainDataCost, resolveModel, studioPreview } from '../src/sim/models'
+import {
+  computeDerivedFields,
+  deriveModel,
+  deriveQuality,
+  postTrainComputeCost,
+  postTrainDataCost,
+  resolveModel,
+  studioPreview,
+} from '../src/sim/models'
 import * as actionsModule from '../src/sim/actions'
 import * as effectsModule from '../src/sim/effects'
 import {
@@ -93,7 +101,7 @@ import {
   serverSpeed,
   serverTargets,
 } from '../src/sim/effects'
-import { calibrateRecipes, recipeGainOrderingOk } from '../src/sim/calibrate'
+import { calibrateRecipes, recipeGainOrderingOk, THINK_TOKENS_FALLBACK } from '../src/sim/calibrate'
 import { endlessScaling, generateEndlessWave } from '../src/sim/endless'
 import { isBrownout, isThrottling, updatePower } from '../src/sim/power'
 import { spawnRequest } from '../src/sim/spawn'
@@ -132,10 +140,15 @@ const FRONTIER = 'minimax_m3'
 const MLA = 'glm_5_2'
 const AGENT_SHORT = 'gptoss_120b'
 /**
- * INSTRUCT : Nemotron 3 Nano 4B — a non-thinking model. Interactive chat needs one: a thinking
- * model's hidden reasoning blows chat's time-to-first-answer bound (§1.4).
+ * INSTRUCT : Nemotron 3 Nano 4B — a small HYBRID: it answers interactive traffic (chat, code
+ * completion) with thinking switched off, as a non-thinking model would (§1.4).
+ * ALWAYS   : K2-Horizon-7B — a 9B dense model that ALWAYS thinks (reasoning effort only sets how
+ *            long): its hidden reasoning blows chat's time-to-first-answer bound on a slow rack.
+ * NEVER    : Qwen3.5 0.8B served thinking-off — the roster's non-reasoning deployment.
  */
 const INSTRUCT = WEAK
+const ALWAYS = 'k2h_7b'
+const NEVER = 'g_qwen3_5_0_8b_non_reasoning_2'
 
 function runFor(s: GameState, seconds: number): void {
   const steps = Math.round(seconds / SIM_DT)
@@ -1297,7 +1310,7 @@ describe('prefill vs decode (two-phase serving, real tokens)', () => {
     expect(r.prefillDoneAt).toBeGreaterThan(0) // TTFT moment recorded
     expect(r.ttftReal).toBeGreaterThan(0) // real-seconds TTFT latched
     // the thinking model reasons before it answers: its hidden tokens join the decode
-    const hidden = effectsModule.hiddenTokensFor(MODEL_DEFS[CODER], REQUEST_TYPES.summ.thinkMul)
+    const hidden = effectsModule.hiddenTokensFor(MODEL_DEFS[CODER], REQUEST_TYPES.summ)
     expect(hidden).toBeGreaterThan(0)
     expect(r.hiddenTokens).toBe(hidden)
     expect(r.maxWork).toBe(400 + hidden)
@@ -1981,7 +1994,14 @@ describe('real economy (§6.6): token-priced income, real operating cost, SLO ou
     // the same 27B dense body run without its thinking mode, so the only bound it can miss
     // is the per-token one
     const base = resolveModel(s, GENERAL)!
-    s.derivedModels['general_instant'] = { ...base, id: 'general_instant', isReasoning: false, thinkTokens: 0 }
+    s.derivedModels['general_instant'] = {
+      ...base,
+      id: 'general_instant',
+      thinking: 'never',
+      qualityByInstant: undefined,
+      isReasoning: false,
+      thinkTokens: 0,
+    }
     s.models['general_instant'] = true
     // blanket the lane with slow Standard (L40S) racks so the chat is decoded to
     // completion (slowly) — several racks working it never make its tokens faster.
@@ -2073,7 +2093,7 @@ function shadowModel(
 ) {
   const base = resolveModel(s, baseId)!
   // an instant (non-thinking) double: these tests measure alignment, not thinking time
-  const m = { ...base, id, alignment, isReasoning: false, thinkTokens: 0 }
+  const m: ModelDef = { ...base, id, alignment, thinking: 'never', qualityByInstant: undefined, isReasoning: false, thinkTokens: 0 }
   s.derivedModels[id] = m
   s.models[id] = true
   return m
@@ -2293,6 +2313,8 @@ function shadowQuality(s: GameState, baseId: string, id: string, q: Partial<Reco
     id,
     qualityBy: { ...base.qualityBy, ...q },
     alignment: { ...base.alignment, overRefusal: 0 },
+    thinking: 'never' as const,
+    qualityByInstant: undefined,
     isReasoning: false,
     thinkTokens: 0,
   }
@@ -2750,15 +2772,16 @@ describe('prefix cache and router (§4.2 / §4.10)', () => {
   it('a Router keeps easy traffic off a slow thinker: of the racks that answer correctly, the soonest answer wins', () => {
     const s = createState(411)
     richBuild(s)
-    // a strong thinking model and a fast non-thinking one, both well above chat's line
+    // an always-thinking model and a hybrid that answers chat instantly, both well above chat's line
     tryBuild(s, 'srv_frontier', 2, 2)
-    deployModel(s, lastTower(s).id, GENERAL)
+    deployModel(s, lastTower(s).id, ALWAYS)
     const thinker = lastTower(s).id
     buildGeneralRack(s, 2, 0, INSTRUCT)
     const instant = lastTower(s).id
     expect(tryBuild(s, 'router', 1, 2)).toBe(true)
-    expect(MODEL_DEFS[GENERAL].thinkTokens).toBeGreaterThan(0)
-    expect(MODEL_DEFS[GENERAL].qualityBy.chat).toBeGreaterThan(MODEL_DEFS[INSTRUCT].qualityBy.chat)
+    expect(MODEL_DEFS[ALWAYS].thinking).toBe('always')
+    expect(effectsModule.hiddenTokensFor(MODEL_DEFS[ALWAYS], REQUEST_TYPES.chat)).toBeGreaterThan(0)
+    expect(MODEL_DEFS[ALWAYS].qualityBy.chat).toBeGreaterThan(MODEL_DEFS[INSTRUCT].qualityByInstant!.chat)
     liveWave(s)
     const r = freeze(spawnRequest(s, 'chat'))
     step(s)
@@ -2978,7 +3001,7 @@ describe('serving physics: thinking, precision, multi-LoRA and the two-line bill
     return id
   }
 
-  it('a thinking model reasons before it answers: hidden tokens cost decode time, are never billed, and break chat’s first-answer bound', () => {
+  it('an always-thinking model reasons before it answers: hidden tokens cost decode time, are never billed, and break chat’s first-answer bound', () => {
     const run = (modelId: string) => {
       const s = createState(500)
       richBuild(s)
@@ -2991,9 +3014,10 @@ describe('serving physics: thinking, precision, multi-LoRA and the two-line bill
       untilResolved(s, r)
       return { s, r }
     }
-    const think = run(GENERAL)
-    const expected = effectsModule.hiddenTokensFor(MODEL_DEFS[GENERAL], REQUEST_TYPES.chat.thinkMul)
+    const think = run(ALWAYS)
+    const expected = effectsModule.hiddenTokensFor(MODEL_DEFS[ALWAYS], REQUEST_TYPES.chat)
     expect(expected).toBeGreaterThan(0)
+    expect(think.r.thinkingMode).toBe('thinking')
     expect(think.r.hiddenTokens).toBe(expected)
     expect(think.r.thinkTokens).toBe(expected)
     expect(think.r.maxWork).toBe(think.r.tokensOut + expected)
@@ -3001,14 +3025,17 @@ describe('serving physics: thinking, precision, multi-LoRA and the two-line bill
     expect(think.r.sloCause).toBe('ttfat') // far past chat's few-second first-answer bound
     // the market pays for the answer: half pay (an SLA credit) of the ANSWER tokens only
     expect(think.s.stats.cashEarned).toBeCloseTo(serveRevenueOf(think.s, think.r) * 0.5, 9)
+    // a hybrid answers the same chat with thinking switched off
     const instant = run(INSTRUCT)
+    expect(instant.r.thinkingMode).toBe('instant')
     expect(instant.r.hiddenTokens).toBe(0)
     expect(instant.r.ttfatReal).toBeCloseTo(instant.r.ttftReal, 9)
     expect(instant.s.stats.served).toBe(1)
     // a long-CoT request's output already IS its reasoning, and an embedding generates nothing
-    expect(effectsModule.hiddenTokensFor(MODEL_DEFS[GENERAL], REQUEST_TYPES.reason.thinkMul)).toBe(0)
-    expect(effectsModule.hiddenTokensFor(MODEL_DEFS[GENERAL], REQUEST_TYPES.embed.thinkMul)).toBe(0)
-    expect(effectsModule.hiddenTokensFor(MODEL_DEFS[INSTRUCT], REQUEST_TYPES.agent.thinkMul)).toBe(0)
+    expect(effectsModule.hiddenTokensFor(MODEL_DEFS[ALWAYS], REQUEST_TYPES.reason)).toBe(0)
+    expect(effectsModule.hiddenTokensFor(MODEL_DEFS[ALWAYS], REQUEST_TYPES.embed)).toBe(0)
+    // a model served thinking-off spends nothing, even on an agent step
+    expect(effectsModule.hiddenTokensFor(MODEL_DEFS[NEVER], REQUEST_TYPES.agent)).toBe(0)
   })
 
   it('a rack picks its weight format between waves: an explicit 4-bit format fits a model too big at full precision, at its tax', () => {
@@ -3117,5 +3144,203 @@ describe('serving physics: thinking, precision, multi-LoRA and the two-line bill
     expect(perSec).toBeCloseTo((usdPerHr * (SIM_TIME_SCALE / 3600) * RACKS_PER_TILE) / CREDIT_USD, 9)
     // a fully loaded rack's GPU-hour line plus its energy line is its real all-in rate
     expect(usdPerHr).toBeCloseTo(HARDWARE_DEFS.hw_perf.gpuHrUsd, 1)
+  })
+})
+
+/* --------------------------------------------------------------------------
+ * §1.4 hybrid thinking: the engine's per-request mode. A hybrid answers interactive
+ * traffic (latency class IN) with thinking switched off — no hidden tokens, judged on
+ * its instant-mode vector — and thinks about everything else (hidden tokens first,
+ * judged on its thinking-mode qualityBy). Always / never models have one mode.
+ * ------------------------------------------------------------------------ */
+describe('hybrid thinking mode (§1.4)', () => {
+  /** One request of an archetype on one rack running `modelId`, parked in range, run to its outcome. */
+  function serveOne(modelId: string, typeId: string, rack: (s: GameState) => void) {
+    const s = createState(610)
+    richBuild(s)
+    rack(s)
+    const tw = lastTower(s)
+    expect(deployModel(s, tw.id, modelId)).toBe(true)
+    liveWave(s)
+    const r = freeze(benignOf(spawnRequest(s, typeId)))
+    untilResolved(s, r)
+    const outcome = eventsOf(s, 'outcome').find((e) => e.requestId === r.id)!
+    return { s, r, tw, outcome }
+  }
+  const h100 = (s: GameState) => {
+    tryBuild(s, 'srv_edge', 1, 2)
+    const t = lastTower(s)
+    upgradeHardware(s, t.id)
+    upgradeHardware(s, t.id)
+  }
+  const l40s = (s: GameState) => {
+    tryBuild(s, 'srv_edge', 1, 2)
+    upgradeHardware(s, lastTower(s).id)
+  }
+  /** The margin combat scores: that mode's vector − taxes − the long-context penalty − difficulty. */
+  const expectedMargin = (s: GameState, tw: Tower, r: Request, mode: 'instant' | 'thinking') =>
+    serverQualityVs(s, loadoutOf(s, tw), r.def.primaryAxis, mode) - longContextPenalty(s, loadoutOf(s, tw), r.contextLen) - r.difficulty
+
+  it('a hybrid answers chat at once — no hidden tokens — judged on its thinking-off capability', () => {
+    const m = MODEL_DEFS[GENERAL]
+    expect(m.thinking).toBe('hybrid')
+    expect(m.qualityByInstant!.chat).toBeLessThan(m.qualityBy.chat)
+    const { s, r, tw, outcome } = serveOne(GENERAL, 'chat', h100)
+    expect(r.thinkingMode).toBe('instant')
+    expect(r.hiddenTokens).toBe(0)
+    expect(r.thinkTokens).toBeUndefined() // no thinking segment on the request bar
+    expect(r.maxWork).toBe(r.tokensOut)
+    expect(r.ttfatReal).toBeCloseTo(r.ttftReal, 9)
+    expect(r.bestQuality).toBeCloseTo(expectedMargin(s, tw, r, 'instant'), 6)
+    expect(r.bestQuality).toBeLessThan(expectedMargin(s, tw, r, 'thinking') - 1)
+    expect(outcome.outcome).toBe('served')
+    expect(outcome.thinkingMode).toBe('instant')
+    expect(outcome.hiddenTokens).toBe(0)
+  })
+
+  it('the same hybrid thinks on reasoning and RAG: hidden tokens first, judged on its thinking capability', () => {
+    // a reasoning request: its long chain-of-thought output IS the reasoning (no extra hidden budget)
+    const reason = serveOne(GENERAL, 'reason', h100)
+    expect(reason.r.thinkingMode).toBe('thinking')
+    expect(reason.r.hiddenTokens).toBe(effectsModule.hiddenTokensFor(MODEL_DEFS[GENERAL], REQUEST_TYPES.reason))
+    expect(reason.r.bestQuality).toBeCloseTo(expectedMargin(reason.s, reason.tw, reason.r, 'thinking'), 6)
+    expect(reason.outcome.thinkingMode).toBe('thinking')
+    // a RAG answer is reasoned over first: the hidden tokens decode before the answer and are not billed
+    const rag = serveOne(GENERAL, 'rag', h100)
+    const hidden = Math.round(MODEL_DEFS[GENERAL].thinkTokens * REQUEST_TYPES.rag.thinkMul)
+    expect(hidden).toBeGreaterThan(0)
+    expect(rag.r.thinkingMode).toBe('thinking')
+    expect(rag.r.hiddenTokens).toBe(hidden)
+    expect(rag.r.thinkTokens).toBe(hidden)
+    expect(rag.r.maxWork).toBe(rag.r.tokensOut + hidden)
+    expect(rag.r.ttfatReal).toBeGreaterThan(rag.r.ttftReal)
+    expect(rag.outcome.hiddenTokens).toBe(hidden)
+    // token-weighted over a growing context: within the long-context penalty's drift
+    expect(rag.r.bestQuality).toBeCloseTo(expectedMargin(rag.s, rag.tw, rag.r, 'thinking'), 0)
+    expect(rag.r.bestQuality).toBeGreaterThan(expectedMargin(rag.s, rag.tw, rag.r, 'instant') + 1)
+  })
+
+  it('an instant answer is judged on the instant vector alone: a hybrid strong only when thinking answers chat wrongly', () => {
+    const s = createState(611)
+    richBuild(s)
+    const base = resolveModel(s, GENERAL)!
+    s.derivedModels['brittle'] = {
+      ...base,
+      id: 'brittle',
+      alignment: { ...base.alignment, overRefusal: 0 },
+      qualityBy: { ...base.qualityBy, chat: 120 },
+      qualityByInstant: { ...base.qualityByInstant!, chat: 10 },
+    }
+    s.models['brittle'] = true
+    buildGeneralRack(s, 1, 2, 'brittle')
+    liveWave(s)
+    const r = freeze(benignOf(spawnRequest(s, 'chat')))
+    untilResolved(s, r)
+    expect(r.thinkingMode).toBe('instant')
+    expect(r.bestQuality).toBeLessThan(0)
+    expect(eventsOf(s, 'outcome').find((e) => e.requestId === r.id)?.outcome).toBe('bad')
+  })
+
+  it('an always-thinking model still misses chat’s time-to-first-answer bound on a slow rack; a hybrid of its size does not', () => {
+    expect(MODEL_DEFS[ALWAYS].thinking).toBe('always')
+    const always = serveOne(ALWAYS, 'chat', l40s)
+    expect(always.r.thinkingMode).toBe('thinking')
+    expect(always.r.hiddenTokens).toBe(effectsModule.hiddenTokensFor(MODEL_DEFS[ALWAYS], REQUEST_TYPES.chat))
+    expect(always.r.hiddenTokens).toBeGreaterThan(0)
+    expect(always.r.ttfatReal * 1000).toBeGreaterThan(REQUEST_TYPES.chat.ttfatSloMs!)
+    expect(always.r.sloCause).toBe('ttfat')
+    expect(always.outcome.outcome).toBe('sloMiss')
+    // a 9B hybrid on the same rack answers the chat instantly: no thinking delay to miss
+    const hybridId = 'g_qwen3_5_9b_2'
+    expect(MODEL_DEFS[hybridId].thinking).toBe('hybrid')
+    const hybrid = serveOne(hybridId, 'chat', l40s)
+    expect(hybrid.r.thinkingMode).toBe('instant')
+    expect(hybrid.r.hiddenTokens).toBe(0)
+    expect(hybrid.r.sloCause).not.toBe('ttfat')
+  })
+
+  it('the deploy picker / fit checks use the same mode per archetype as combat', () => {
+    const s = createState(612)
+    const lo = loadout(s, 'hw_perf', GENERAL)
+    expect(effectsModule.answerMode(MODEL_DEFS[GENERAL], REQUEST_TYPES.chat)).toBe('instant')
+    expect(effectsModule.answerMode(MODEL_DEFS[GENERAL], REQUEST_TYPES.comp)).toBe('instant')
+    expect(effectsModule.answerMode(MODEL_DEFS[GENERAL], REQUEST_TYPES.agent)).toBe('thinking')
+    expect(effectsModule.answerMode(MODEL_DEFS[ALWAYS], REQUEST_TYPES.chat)).toBe('thinking')
+    expect(effectsModule.answerMode(MODEL_DEFS[NEVER], REQUEST_TYPES.reason)).toBe('instant')
+    // an embedding generates no text: nothing thinks
+    expect(effectsModule.answerMode(MODEL_DEFS[GENERAL], REQUEST_TYPES.embed)).toBe('instant')
+    // the instant vector backs the interactive axes, qualityBy everything else
+    expect(serverQualityVs(s, lo, 'chat', 'instant')).toBeCloseTo(serverQualityVs(s, lo, 'chat') - (MODEL_DEFS[GENERAL].qualityBy.chat - MODEL_DEFS[GENERAL].qualityByInstant!.chat), 9)
+    expect(effectsModule.qualityIn(MODEL_DEFS[ALWAYS], 'instant')).toBe(MODEL_DEFS[ALWAYS].qualityBy)
+  })
+})
+
+describe('derived checkpoints keep their thinking support (§1.4 Studio)', () => {
+  const recipe = (id: keyof typeof METHOD_RECIPES) => METHOD_RECIPES[id]
+
+  it('a run on a hybrid moves both vectors by the same per-axis amount and keeps the off switch', () => {
+    const base = MODEL_DEFS[GENERAL]
+    for (const [method, target] of [
+      ['lora', 'coding'],
+      ['grpo', 'reasoning'],
+      ['cai', 'safety'],
+      ['qat', 'general'],
+    ] as const) {
+      const f = computeDerivedFields(base, recipe(method), target, 1, null)
+      expect(f.thinking).toBe('hybrid')
+      expect(f.isReasoning).toBe(true)
+      expect(f.thinkTokens).toBe(base.thinkTokens)
+      for (const a of ['chat', 'coding', 'reasoning', 'general', 'agentic'] as const) {
+        const dThink = f.qualityBy[a] - base.qualityBy[a]
+        const dInst = f.qualityByInstant![a] - base.qualityByInstant![a]
+        // the same change, except where the 8..130 clamp cuts one of them
+        if (f.qualityByInstant![a] > 8 && f.qualityByInstant![a] < 130 && f.qualityBy[a] < 130) expect(dInst).toBeCloseTo(dThink, 9)
+      }
+    }
+  })
+
+  it('a reasoning run teaches an instruct model to think: it becomes an always-thinking model', () => {
+    const base = MODEL_DEFS[NEVER]
+    expect(base.thinking).toBe('never')
+    const grpo = computeDerivedFields(base, recipe('grpo'), 'reasoning', 1, null)
+    expect(grpo.thinking).toBe('always')
+    expect(grpo.isReasoning).toBe(true)
+    expect(grpo.thinkTokens).toBe(THINK_TOKENS_FALLBACK)
+    expect(grpo.qualityByInstant).toBeUndefined()
+    // a chat SFT on it does not: it stays an instruct deployment
+    const sft = computeDerivedFields(base, recipe('sft'), 'chat', 1, null)
+    expect(sft.thinking).toBe('never')
+    expect(sft.thinkTokens).toBe(0)
+    // an always-thinking body stays one whatever it is trained on
+    expect(computeDerivedFields(MODEL_DEFS[ALWAYS], recipe('sft'), 'chat', 1, null).thinking).toBe('always')
+  })
+
+  it('merging a thinker with its instruct sibling gives a hybrid that answers instantly with the instruct path', () => {
+    const s = createState(613)
+    const meta: PostTrainMeta = { baseIds: [NEVER], method: 'grpo', target: 'reasoning', effort: 1, dataSpent: 0, startWave: 0 }
+    const thinker = deriveModel(s, meta)!
+    expect(thinker.thinking).toBe('always')
+    const merged = computeDerivedFields(MODEL_DEFS[NEVER], recipe('merge'), 'general', 1, thinker)
+    expect(merged.thinking).toBe('hybrid')
+    expect(merged.qualityByInstant).toEqual(MODEL_DEFS[NEVER].qualityBy)
+  })
+
+  it('a distilled student of a hybrid teacher stays a hybrid, both vectors capped by the student', () => {
+    const f = computeDerivedFields(MODEL_DEFS[BIG], recipe('distill'), 'general', 1, null)
+    expect(f.thinking).toBe('hybrid')
+    for (const a of ['chat', 'coding', 'reasoning', 'general', 'agentic'] as const)
+      expect(f.qualityByInstant![a]).toBeLessThanOrEqual(MODEL_DEFS[BIG].qualityByInstant![a] + 1e-9)
+  })
+
+  it('the derived checkpoint deployModel writes carries the preview’s thinking fields', () => {
+    const s = createState(614)
+    const meta: PostTrainMeta = { baseIds: [GENERAL], method: 'lora', target: 'chat', effort: 1, dataSpent: 0, startWave: 0 }
+    const prev = studioPreview(s, GENERAL, 'lora', 'chat', 1)!
+    const drv = deriveModel(s, meta)!
+    expect(drv.thinking).toBe(prev.fields.thinking)
+    expect(drv.qualityByInstant).toEqual(prev.fields.qualityByInstant)
+    // and combat serves its chat instantly, judged on the derived instant vector
+    expect(effectsModule.answerMode(drv, REQUEST_TYPES.chat)).toBe('instant')
+    expect(effectsModule.qualityIn(drv, 'instant')).toBe(drv.qualityByInstant)
   })
 })

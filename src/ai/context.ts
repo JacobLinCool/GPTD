@@ -83,13 +83,21 @@ function modelsSection(): string {
   const lines: string[] = ['## Model roster (real open-weight checkpoints)']
   for (const m of MODEL_LIST) {
     const size = m.isMoE ? `${sizeLabel(m.paramsTotalB)} total / ${sizeLabel(m.paramsActiveB)} active (MoE)` : sizeLabel(m.paramsTotalB)
-    const flags = m.isReasoning ? ' · reasoning' : ''
+    const flags =
+      m.thinking === 'hybrid'
+        ? ` · hybrid thinking (instant on chat/completion, ~${m.thinkTokens} hidden tok on the rest)`
+        : m.thinking === 'always'
+          ? ` · always thinks (~${m.thinkTokens} hidden tok per answer)`
+          : ''
     const real = m.real
     const prov = real ? `${real.developer}, ${real.released}, ${real.license}, ctx ${m.contextWindowK}k` : ''
     const q = m.qualityBy
     lines.push(
       `- ${m.name} — ${size}${flags} · ${prov} · Q${r0(m.quality)} ` +
-        `(chat ${r0(q.chat)}, coding ${r0(q.coding)}, reasoning ${r0(q.reasoning)}, general ${r0(q.general)}, agentic ${r0(q.agentic)})`,
+        `(chat ${r0(q.chat)}, coding ${r0(q.coding)}, reasoning ${r0(q.reasoning)}, general ${r0(q.general)}, agentic ${r0(q.agentic)})` +
+        (m.qualityByInstant
+          ? ` · instant chat ${r0(m.qualityByInstant.chat)}, coding ${r0(m.qualityByInstant.coding)}`
+          : ''),
     )
   }
   return lines.join('\n')

@@ -1,4 +1,4 @@
-import type { MethodRecipe, PostTrainMethod, ServerSpec } from '../core/types'
+import type { MethodRecipe, PostTrainMethod, ServerSpec, ThinkingSupport } from '../core/types'
 
 /**
  * Calibration: real public-benchmark percentages → GPTD's internal quality
@@ -25,6 +25,11 @@ import type { MethodRecipe, PostTrainMethod, ServerSpec } from '../core/types'
  * retired one (clamped to its observed range; the provenance and residual sd are kept for
  * Expert display). The game only ever reads the resolved numbers, so it stays fully
  * deterministic; the uncertainty of a bridged cell is a documented property of the data.
+ *
+ * INSTANT MODE. A hybrid checkpoint (it can switch thinking off) carries a second
+ * vector, `qualityByInstant`, calibrated from its instant-mode cells through the SAME
+ * blends and curves (`qualityFromBenchmarks`): the cells come from AA's Non-reasoning row
+ * of the same checkpoint, or the per-cell thinking→instant pair fit (scripts/aa-cells.mjs).
  *
  * Deliberately NOT derived from the Artificial Analysis composite Intelligence
  * Index: that index re-baselines between versions (MiniMax-M2 read 61 then 28).
@@ -314,10 +319,11 @@ export function longCtxOf(lcr: number | undefined, tier: keyof typeof LONGCTX_FL
 }
 
 /* ------------------------------------------------------------------ *
- *  THINKING MODELS — whether a checkpoint thinks, and how much.        *
- *  Derived at load from Artificial Analysis' serving telemetry on the  *
- *  pinned variant (AA_META), the same way qualityBy is calibrated from *
- *  its benchmark cells; the running sim reads only the result.         *
+ *  THINKING MODELS — how much a thinking checkpoint thinks.             *
+ *  WHETHER it thinks is a fact of its chat template (thinking support,  *
+ *  data/model-thinking.json); HOW MUCH is derived at load from          *
+ *  Artificial Analysis' serving telemetry on the pinned thinking        *
+ *  variant (AA_META), the way qualityBy is calibrated from its cells.   *
  * ------------------------------------------------------------------ */
 
 /** AA telemetry on its standard 1K-token prompt (seconds, output tok/s). */
@@ -335,25 +341,17 @@ export const THINK_TOKENS_FALLBACK = 1500
 /** A first ANSWER token more than this after the first token means hidden reasoning ran. */
 const THINK_GAP_S = 1
 
-/** The variant name says thinking: "(Reasoning)", "Thinking", "Thinker", R1, or a reasoning-effort tag. */
-export function thinkingVariantName(name: string): boolean {
-  if (/non-reasoning/i.test(name)) return false
-  return /reasoning|thinking|thinker|\br1\b|\((?:low|medium|high|xhigh|max)\b[^)]*\)|max effort|high effort/i.test(name)
-}
-
 /**
- * isReasoning + thinkTokens for one checkpoint. Evidence in order: AA telemetry
- * (time to first answer token − time to first token > 1 s ⇒ thinking, and that gap ×
- * output speed ≈ the hidden tokens per answer, clamped to 300–4000), then the model
- * card (`cardEvidence`), then the variant name. A thinking model without telemetry
- * gets the 1500-token fallback; an instruct model thinks 0 tokens.
+ * isReasoning + thinkTokens for one checkpoint. Its chat template decides whether it can think
+ * (`support` ≠ 'never'); AA's telemetry on the pinned thinking variant sizes the budget — the
+ * time-to-first-answer gap (ttfat − ttft) × output speed, clamped to 300–4000 tokens. A thinker
+ * AA never timed (or timed without a measurable gap) gets the 1500-token fallback; a model that
+ * never thinks spends 0.
  */
-export function thinkingOf(t: ServingTelemetry | undefined, cardEvidence?: boolean): { isReasoning: boolean; thinkTokens: number } {
-  if (t?.ttftS && t.ttfatS && t.tps) {
-    const gap = t.ttfatS - t.ttftS
-    if (gap <= THINK_GAP_S) return { isReasoning: false, thinkTokens: 0 }
-    return { isReasoning: true, thinkTokens: clamp(Math.round(gap * t.tps), THINK_TOKENS_MIN, THINK_TOKENS_MAX) }
-  }
-  const isReasoning = cardEvidence ?? thinkingVariantName(t?.name ?? '')
-  return { isReasoning, thinkTokens: isReasoning ? THINK_TOKENS_FALLBACK : 0 }
+export function thinkingOf(t: ServingTelemetry | undefined, support: ThinkingSupport): { isReasoning: boolean; thinkTokens: number } {
+  if (support === 'never') return { isReasoning: false, thinkTokens: 0 }
+  const tps = t?.tps ?? 0
+  const gap = t?.ttftS && t.ttfatS && tps ? t.ttfatS - t.ttftS : 0
+  const thinkTokens = gap > THINK_GAP_S ? clamp(Math.round(gap * tps), THINK_TOKENS_MIN, THINK_TOKENS_MAX) : THINK_TOKENS_FALLBACK
+  return { isReasoning: true, thinkTokens }
 }

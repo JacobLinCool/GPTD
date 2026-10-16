@@ -63,7 +63,6 @@
       "hfParamsB": 38.97,
       "contextK": 131,
       "license": "Apache-2.0",
-      "thinking": true,
       "manual": [
         "paramsTotalB",
         "paramsActiveB"
@@ -129,7 +128,6 @@
       "hfParamsB": 684.53,
       "contextK": 164,
       "license": "MIT",
-      "thinking": true,
       "manual": [
         "paramsTotalB",
         "paramsActiveB"
@@ -163,7 +161,6 @@
       "hfParamsB": 8.19,
       "contextK": 131,
       "license": "MIT",
-      "thinking": true,
       "manual": [
         "paramsTotalB",
         "paramsActiveB"
@@ -1311,7 +1308,6 @@
       "hfParamsB": 1.08,
       "contextK": 131,
       "license": "Apache-2.0",
-      "thinking": true,
       "manual": [
         "paramsTotalB",
         "paramsActiveB"
@@ -1345,7 +1341,6 @@
       "hfParamsB": 5.06,
       "contextK": 524,
       "license": "Apache-2.0",
-      "thinking": true,
       "manual": [
         "paramsTotalB",
         "paramsActiveB"
@@ -1379,7 +1374,6 @@
       "hfParamsB": 379.17,
       "contextK": 524,
       "license": "Apache-2.0",
-      "thinking": true,
       "manual": [
         "paramsTotalB",
         "paramsActiveB"
@@ -1413,7 +1407,6 @@
       "hfParamsB": 9,
       "contextK": 524,
       "license": "Apache-2.0",
-      "thinking": true,
       "manual": [
         "paramsTotalB",
         "paramsActiveB"
@@ -1447,7 +1440,6 @@
       "hfParamsB": 37.44,
       "contextK": 524,
       "license": "Apache-2.0",
-      "thinking": true,
       "manual": [
         "paramsTotalB",
         "paramsActiveB"
@@ -1489,7 +1481,6 @@
       "hfParamsB": 127.49,
       "contextK": 262,
       "license": "MIT",
-      "thinking": true,
       "manual": [
         "paramsTotalB",
         "paramsActiveB"
@@ -1683,7 +1674,6 @@
       "hfParamsB": 34.35,
       "contextK": 262,
       "license": "EXAONE AI Model License",
-      "thinking": true,
       "manual": [
         "paramsTotalB",
         "paramsActiveB"
@@ -1731,7 +1721,6 @@
       "hfParamsB": 749.36,
       "contextK": 262,
       "license": "Apache-2.0",
-      "thinking": true,
       "manual": [
         "paramsTotalB",
         "paramsActiveB"
@@ -1983,7 +1972,6 @@
       "hfParamsB": 2.7,
       "contextK": 131,
       "license": "LFM Open License v1.0",
-      "thinking": true,
       "manual": [
         "paramsTotalB",
         "paramsActiveB"
@@ -2479,7 +2467,6 @@
       "hfParamsB": 456.09,
       "contextK": 1000,
       "license": "Apache-2.0",
-      "thinking": true,
       "manual": [
         "paramsTotalB",
         "paramsActiveB",
@@ -2514,7 +2501,6 @@
       "hfParamsB": 228.69,
       "contextK": 197,
       "license": "Modified MIT",
-      "thinking": true,
       "manual": [
         "paramsTotalB",
         "paramsActiveB"
@@ -2548,7 +2534,6 @@
       "hfParamsB": 228.69,
       "contextK": 205,
       "license": "MiniMax M2.7 Non-Commercial License",
-      "thinking": true,
       "manual": [
         "paramsTotalB",
         "paramsActiveB",
@@ -2584,7 +2569,6 @@
       "hfParamsB": 427.04,
       "contextK": 1049,
       "license": "MiniMax Community License",
-      "thinking": true,
       "manual": [
         "paramsTotalB",
         "paramsActiveB"
@@ -2861,7 +2845,6 @@
       "hfParamsB": 314.84,
       "contextK": 262,
       "license": "MIT",
-      "thinking": true,
       "manual": [
         "paramsTotalB",
         "paramsActiveB"
@@ -2904,7 +2887,6 @@
       "hfParamsB": 396.8,
       "contextK": 262,
       "license": "Apache-2.0",
-      "thinking": true,
       "manual": [
         "paramsTotalB",
         "paramsActiveB"
@@ -3154,7 +3136,6 @@
       "hfParamsB": 31.58,
       "contextK": 262,
       "license": "NVIDIA Open Model License",
-      "thinking": true,
       "manual": [
         "paramsTotalB",
         "paramsActiveB"
@@ -3358,7 +3339,6 @@
       "hfParamsB": 74.89,
       "contextK": 262,
       "license": "OpenMDW-1.1",
-      "thinking": true,
       "manual": [
         "paramsTotalB",
         "paramsActiveB"
@@ -3553,7 +3533,6 @@
       "hfParamsB": 2.52,
       "contextK": 131,
       "license": "Apache-2.0",
-      "thinking": true,
       "manual": [
         "paramsTotalB",
         "paramsActiveB"
@@ -4520,7 +4499,6 @@
       "hfParamsB": 14.86,
       "contextK": 262,
       "license": "MIT",
-      "thinking": true,
       "manual": [
         "paramsTotalB",
         "paramsActiveB"
@@ -4553,7 +4531,6 @@
       "hfParamsB": 14.86,
       "contextK": 262,
       "license": "MIT",
-      "thinking": true,
       "manual": [
         "paramsTotalB",
         "paramsActiveB"
@@ -4591,7 +4568,6 @@
       "hfParamsB": 691.69,
       "contextK": 262,
       "license": "Apache-2.0",
-      "thinking": true,
       "manual": [
         "paramsTotalB",
         "paramsActiveB"
@@ -4838,7 +4814,6 @@
       "hfParamsB": 250.29,
       "contextK": 1049,
       "license": "Upstage Solar License",
-      "thinking": true,
       "manual": [
         "paramsTotalB",
         "paramsActiveB",

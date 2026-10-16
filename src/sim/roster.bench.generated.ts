@@ -330,3 +330,185 @@ export const AA_META: Record<string, { name: string; released: string; ttftS?: n
   g_a_x_k2: { name: 'A.X-K2', released: '2026-08-12' },
   g_inkling: { name: 'Inkling (Xhigh)', released: '2026-07-15', ttftS: 2.36, ttfatS: 11.886, tps: 209.944 },
 }
+
+/**
+ * INSTANT-MODE cells (thinking off) of every HYBRID checkpoint (data/model-thinking.json), same reference
+ * scale: resolved from its `instant` pin (AA's Non-reasoning row of the same checkpoint) or, without one,
+ * the per-cell pair fit in data/aa-bridges.json applied to its thinking cells. content.ts calibrates
+ * qualityByInstant from these through the same curves as qualityBy.
+ */
+export const AA_BENCH_INSTANT: Record<string, Partial<BenchInputs>> = {
+  qwen3_32b: { gpqaDiamond: 53.5, ifBench: 31.5, lcr: 0, sciCode: 28, terminalBenchHard: 4.1, hle: 4.3 }, // qwen3-32b-instruct
+  glm45_air: { gpqaDiamond: 64.2, ifBench: 31.7, lcr: 31, sciCode: 25.5, terminalBenchHard: 16.6, hle: 5.7 }, // pair fit
+  deepseek_v31: { gpqaDiamond: 73.5, ifBench: 37.8, lcr: 45, sciCode: 36.7, terminalBenchHard: 24.2, hle: 6.3 }, // deepseek-v3-1
+  nemotron_super: { gpqaDiamond: 70.5, ifBench: 45.5, lcr: 42.9, sciCode: 29.5, terminalBenchHard: 23.2, hle: 9.1 }, // pair fit
+  nemotron_nano_9b: { gpqaDiamond: 55.7, ifBench: 27.1, lcr: 22.7, sciCode: 20.9, terminalBenchHard: 0.8, hle: 4 }, // nvidia-nemotron-nano-9b-v2
+  nemotron3_nano_30b: { gpqaDiamond: 39.9, ifBench: 37.5, lcr: 6.7, sciCode: 23, terminalBenchHard: 12.1, hle: 4.6 }, // nvidia-nemotron-3-nano-30b-a3b
+  qwen36_27b: { gpqaDiamond: 82.9, ifBench: 45.7, lcr: 55, sciCode: 37.3, terminalBenchHard: 21.2, hle: 13.6 }, // qwen3-6-27b-non-reasoning
+  qwen35_122b: { gpqaDiamond: 82.7, ifBench: 50.8, lcr: 56, sciCode: 35.6, terminalBenchHard: 29.5, hle: 14.8 }, // qwen3-5-122b-a10b-non-reasoning
+  glm_5_2: { gpqaDiamond: 68.6, ifBench: 47.7, lcr: 37.7, sciCode: 32.3, terminalBenchHard: 29.9, hle: 9.4 }, // glm-5-2-non-reasoning
+  deepseek_v4_pro: { gpqaDiamond: 74.2, ifBench: 51.2, lcr: 45.3, sciCode: 39, terminalBenchHard: 22.6, hle: 10.2 }, // deepseek-v4-pro-non-reasoning
+  minimax_m3: { gpqaDiamond: 82.4, ifBench: 50.1, lcr: 53.1, sciCode: 36.4, terminalBenchHard: 34.1, hle: 14 }, // pair fit
+  qwen35_397b: { gpqaDiamond: 86.1, ifBench: 51.6, lcr: 58, sciCode: 41.1, terminalBenchHard: 35.6, hle: 18.8 }, // qwen3-5-397b-a17b-non-reasoning
+  nemotron3_ultra_550b: { gpqaDiamond: 76.7, ifBench: 49.5, lcr: 48, sciCode: 32.3, terminalBenchHard: 29.3, hle: 11.1 }, // pair fit
+  g_qwen3_5_4b_2: { gpqaDiamond: 71.2, ifBench: 33.3, lcr: 28.3, sciCode: 18.3, terminalBenchHard: 11.4, hle: 7.5 }, // qwen3-5-4b-non-reasoning
+  g_gemma_4_e4b_2: { gpqaDiamond: 54.9, ifBench: 40.5, lcr: 18, sciCode: 3.9, terminalBenchHard: 7.6, hle: 4.7 }, // gemma-4-e4b-non-reasoning
+  g_nvidia_nemotron_3_nano_4b_2: { gpqaDiamond: 43.8, ifBench: 40.1, lcr: 11.4, sciCode: 15.1, terminalBenchHard: 5.7, hle: 4.8 }, // pair fit
+  g_gemma_4_e2b_2: { gpqaDiamond: 40.5, ifBench: 33.6, lcr: 15, sciCode: 20.4, terminalBenchHard: 2.3, hle: 4.5 }, // gemma-4-e2b-non-reasoning
+  g_qwen3_5_2b: { gpqaDiamond: 43.8, ifBench: 29.1, lcr: 13.7, sciCode: 7.2, terminalBenchHard: 3.8, hle: 4.9 }, // qwen3-5-2b-non-reasoning
+  g_exaone_4_0_1_2b_reasoning_2: { gpqaDiamond: 42.4, ifBench: 25.3, lcr: 0, sciCode: 7.4, terminalBenchHard: 0, hle: 5.8 }, // exaone-4-0-1-2b
+  g_qwen3_1_7b_instruct_reasonin: { gpqaDiamond: 28.3, ifBench: 21.1, lcr: 0, sciCode: 6.9, terminalBenchHard: 0, hle: 5.2 }, // qwen3-1.7b-instruct
+  g_qwen3_0_6b_instruct_reasonin: { gpqaDiamond: 23.1, ifBench: 21.9, lcr: 0, sciCode: 4.1, terminalBenchHard: 0, hle: 5.2 }, // qwen3-0.6b-instruct
+  g_gemma_4_12b_2: { gpqaDiamond: 66.1, ifBench: 45.2, lcr: 30.7, sciCode: 29.7, terminalBenchHard: 11.4, hle: 6.2 }, // gemma-4-12b-non-reasoning
+  g_qwen3_5_9b_2: { gpqaDiamond: 78.6, ifBench: 37.8, lcr: 38, sciCode: 27.7, terminalBenchHard: 18.2, hle: 8.6 }, // qwen3-5-9b-non-reasoning
+  g_qwen3_14b_instruct_reasoning_2: { gpqaDiamond: 47, ifBench: 23.9, lcr: 0, sciCode: 26.5, terminalBenchHard: 5.3, hle: 4.2 }, // qwen3-14b-instruct
+  g_gemma_4_31b_2: { gpqaDiamond: 76.3, ifBench: 53.5, lcr: 36, sciCode: 41.1, terminalBenchHard: 30.3, hle: 11.5 }, // gemma-4-31b-non-reasoning
+  g_qwen3_5_27b_2: { gpqaDiamond: 84.2, ifBench: 46.9, lcr: 55.7, sciCode: 36.7, terminalBenchHard: 31.8, hle: 13.2 }, // qwen3-5-27b-non-reasoning
+  g_qwen3_5_35b_a3b_2: { gpqaDiamond: 81.9, ifBench: 44.5, lcr: 55.3, sciCode: 29.3, terminalBenchHard: 10.6, hle: 12.8 }, // qwen3-5-35b-a3b-non-reasoning
+  g_qwen3_6_35b_a3b_2: { gpqaDiamond: 81.7, ifBench: 36.2, lcr: 56.7, sciCode: 1.3, terminalBenchHard: 25.8, hle: 12.5 }, // qwen3-6-35b-a3b-non-reasoning
+  g_gemma_4_26b_a4b_2: { gpqaDiamond: 71.4, ifBench: 45.4, lcr: 39.7, sciCode: 37.3, terminalBenchHard: 25, hle: 10.7 }, // gemma-4-26b-a4b-non-reasoning
+  g_nemotron_cascade_2_30b_a3b_2: { gpqaDiamond: 66.5, ifBench: 49.1, lcr: 24, sciCode: 28.6, terminalBenchHard: 17.2, hle: 7 }, // pair fit
+  g_exaone_4_5_33b_2: { gpqaDiamond: 69.9, ifBench: 40, lcr: 35.1, sciCode: 23.6, terminalBenchHard: 16.6, hle: 7 }, // pair fit
+  g_exaone_4_0_32b_reasoning_2: { gpqaDiamond: 62.8, ifBench: 33.5, lcr: 8, sciCode: 25.2, terminalBenchHard: 1.5, hle: 4.9 }, // exaone-4-0-32b
+  g_solar_open_100b_reasoning_2: { gpqaDiamond: 57.2, ifBench: 39.9, lcr: 25.4, sciCode: 22.8, terminalBenchHard: 2.1, hle: 6.4 }, // pair fit
+  g_llama_nemotron_super_49b_v1__2: { gpqaDiamond: 48.1, ifBench: 32.9, lcr: 22, sciCode: 23.8, terminalBenchHard: 3.8, hle: 4.3 }, // llama-nemotron-super-49b-v1-5
+  g_llama_3_3_nemotron_super_49b_2: { gpqaDiamond: 51.7, ifBench: 39.5, lcr: 11.3, sciCode: 22.9, terminalBenchHard: 0, hle: 3.5 }, // llama-3-3-nemotron-super-49b
+  g_hermes_4_llama_3_1_70b_reaso_2: { gpqaDiamond: 49.1, ifBench: 29, lcr: 2, sciCode: 27.7, terminalBenchHard: 0, hle: 3.6 }, // hermes-4-llama-3-1-70b
+  g_deepseek_v4_flash_2: { gpqaDiamond: 80.5, ifBench: 46.1, lcr: 51.3, sciCode: 39.4, terminalBenchHard: 43.1, hle: 13.7 }, // pair fit
+  g_llama_3_1_nemotron_ultra_253: { gpqaDiamond: 63.8, ifBench: 32, lcr: 4.6, sciCode: 28.5, terminalBenchHard: 2.1, hle: 6.1 }, // pair fit
+  g_deepseek_v3_2_reasoning_0925_2: { gpqaDiamond: 73.8, ifBench: 43.1, lcr: 43, sciCode: 39.9, terminalBenchHard: 25, hle: 8.6 }, // deepseek-v3-2-0925
+  g_hermes_4_llama_3_1_405b_reas: { gpqaDiamond: 53.6, ifBench: 34.8, lcr: 20, sciCode: 34.6, terminalBenchHard: 9.8, hle: 4.2 }, // hermes-4-llama-3-1-405b
+  qwen38_flash_next: { gpqaDiamond: 81.9, ifBench: 46.2, lcr: 51.3, sciCode: 39.6, terminalBenchHard: 45.6, hle: 13.6 }, // pair fit
+  qwen38_27b: { gpqaDiamond: 81.8, ifBench: 57.7, lcr: 62.2, sciCode: 35.2, terminalBenchHard: 29.4, hle: 11.6 }, // qwen3-8-27b-non-reasoning
+  deepseek_v41_flash: { gpqaDiamond: 71.5, ifBench: 51.5, lcr: 49.5, sciCode: 34.5, terminalBenchHard: 22.2, hle: 10.4 }, // deepseek-v4-1-flash-non-reasoning
+  mimo_v26_pro: { gpqaDiamond: 85.6, ifBench: 50, lcr: 55.7, sciCode: 47.2, terminalBenchHard: 51.1, hle: 16.5 }, // pair fit
+  mimo_v26_flash: { gpqaDiamond: 79.7, ifBench: 45.2, lcr: 47.8, sciCode: 40.1, terminalBenchHard: 38.7, hle: 12.8 }, // pair fit
+  hy3: { gpqaDiamond: 79.5, ifBench: 45.1, lcr: 50.8, sciCode: 38.1, terminalBenchHard: 36.6, hle: 12.4 }, // pair fit
+  ling31_flash: { gpqaDiamond: 83.9, ifBench: 47.2, lcr: 53.5, sciCode: 42.2, terminalBenchHard: 43.3, hle: 13.9 }, // pair fit
+  ling30_flash: { gpqaDiamond: 75.6, ifBench: 42.5, lcr: 46.9, sciCode: 33.2, terminalBenchHard: 29.9, hle: 9.9 }, // pair fit
+  ling30_tiny: { gpqaDiamond: 64.3, ifBench: 37.8, lcr: 38.5, sciCode: 20, terminalBenchHard: 13.8, hle: 6.3 }, // pair fit
+  solar_open2_250b: { gpqaDiamond: 75.8, ifBench: 43.3, lcr: 46, sciCode: 37.7, terminalBenchHard: 28.1, hle: 11.2 }, // pair fit
+  motif3: { gpqaDiamond: 73.6, ifBench: 44.7, lcr: 48.9, sciCode: 33.4, terminalBenchHard: 40.2, hle: 13.3 }, // pair fit
+  minicpm5_2b: { gpqaDiamond: 61.3, ifBench: 37.3, lcr: 37.9, sciCode: 21.6, terminalBenchHard: 7.3, hle: 6.2 }, // pair fit
+  inkling_small: { gpqaDiamond: 79.3, ifBench: 44.8, lcr: 48.6, sciCode: 38.9, terminalBenchHard: 33.4, hle: 12.4 }, // pair fit
+  g_g9v3_39a5b: { gpqaDiamond: 70.9, ifBench: 40.3, lcr: 41.8, sciCode: 29.4, terminalBenchHard: 19.5, hle: 8.4 }, // pair fit
+  g_granite_4_2_30b: { gpqaDiamond: 55.9, ifBench: 36.1, lcr: 31.1, sciCode: 30.1, terminalBenchHard: 15.9, hle: 6.8 }, // pair fit
+  g_granite_4_2_3b: { gpqaDiamond: 48, ifBench: 32.4, lcr: 14.8, sciCode: 20.8, terminalBenchHard: 8.4, hle: 5.6 }, // pair fit
+  g_granite_4_2_8b: { gpqaDiamond: 54.7, ifBench: 35.4, lcr: 28.4, sciCode: 25.4, terminalBenchHard: 11.7, hle: 6.4 }, // pair fit
+  g_k_exaone_2_0_0803: { gpqaDiamond: 73.1, ifBench: 40.4, lcr: 38.3, sciCode: 33.2, terminalBenchHard: 23.3, hle: 8.7 }, // pair fit
+  g_longcat_2_0: { gpqaDiamond: 68.6, ifBench: 42.7, lcr: 41.6, sciCode: 29, terminalBenchHard: 29.8, hle: 12.5 }, // pair fit
+  g_nex_n2_pro: { gpqaDiamond: 79, ifBench: 43.4, lcr: 52.6, sciCode: 34.2, terminalBenchHard: 37, hle: 12.5 }, // pair fit
+  g_nemotron_3_5_bolt_74b_a9b: { gpqaDiamond: 69.4, ifBench: 41.8, lcr: 44.7, sciCode: 31.5, terminalBenchHard: 29, hle: 10.2 }, // pair fit
+  g_nemotron_3_5_lightning: { gpqaDiamond: 65.2, ifBench: 38.1, lcr: 38.5, sciCode: 25.9, terminalBenchHard: 14.1, hle: 6.6 }, // pair fit
+  g_a_x_k2: { gpqaDiamond: 75.8, ifBench: 43.3, lcr: 44.9, sciCode: 32.5, terminalBenchHard: 25.5, hle: 11.4 }, // pair fit
+  g_inkling: { gpqaDiamond: 77.1, ifBench: 44.4, lcr: 49.7, sciCode: 36.9, terminalBenchHard: 32.6, hle: 12 }, // pair fit
+}
+
+/** Provenance of every instant cell that is not a reference measurement: as AA_BENCH_SOURCE, plus 'pairfit sd=<x>'. */
+export const AA_BENCH_INSTANT_SOURCE: Record<string, Partial<Record<keyof BenchInputs, string>>> = {
+  qwen3_32b: { terminalBenchHard: 'bridge:TB-2.1≈+HLE+SciCode sd=4.97' },
+  glm45_air: { gpqaDiamond: 'pairfit sd=8.55', ifBench: 'pairfit sd=4.53', lcr: 'pairfit sd=7.47', sciCode: 'pairfit sd=7.55', terminalBenchHard: 'pairfit sd=4.42', hle: 'pairfit sd=2.77' },
+  nemotron_super: { gpqaDiamond: 'pairfit sd=8.55', ifBench: 'pairfit sd=4.53', lcr: 'pairfit sd=7.47', sciCode: 'pairfit sd=7.55', terminalBenchHard: 'pairfit sd=4.42', hle: 'pairfit sd=2.77' },
+  glm_5_2: { gpqaDiamond: 'latest', ifBench: 'bridge:LCR+HLE+GPQA-D sd=9.4', lcr: 'eq', sciCode: 'bridge:HLE+LCR+GPQA-D sd=5.61', terminalBenchHard: 'bridge:TB-2.1+HLE sd=5.14', hle: 'eq' },
+  deepseek_v4_pro: { gpqaDiamond: 'bridge:HLE+LCR+SciCode sd=7.5', ifBench: 'bridge:LCR+HLE+SciCode sd=9.65', lcr: 'eq', sciCode: 'eq', terminalBenchHard: 'bridge:TB-2.1≈+HLE+SciCode sd=4.97', hle: 'eq' },
+  minimax_m3: { gpqaDiamond: 'pairfit sd=8.55', ifBench: 'pairfit sd=4.53', lcr: 'pairfit sd=7.47', sciCode: 'pairfit sd=7.55', terminalBenchHard: 'pairfit sd=4.42', hle: 'pairfit sd=2.77' },
+  nemotron3_ultra_550b: { gpqaDiamond: 'pairfit sd=8.55', ifBench: 'pairfit sd=4.53', lcr: 'pairfit sd=7.47', sciCode: 'pairfit sd=7.55', terminalBenchHard: 'pairfit sd=4.42', hle: 'pairfit sd=2.77' },
+  g_nvidia_nemotron_3_nano_4b_2: { gpqaDiamond: 'pairfit sd=8.55', ifBench: 'pairfit sd=4.53', lcr: 'pairfit sd=7.47', sciCode: 'pairfit sd=7.55', terminalBenchHard: 'pairfit sd=4.42', hle: 'pairfit sd=2.77' },
+  g_nemotron_cascade_2_30b_a3b_2: { gpqaDiamond: 'pairfit sd=8.55', ifBench: 'pairfit sd=4.53', lcr: 'pairfit sd=7.47', sciCode: 'pairfit sd=7.55', terminalBenchHard: 'pairfit sd=4.42', hle: 'pairfit sd=2.77' },
+  g_exaone_4_5_33b_2: { gpqaDiamond: 'pairfit sd=8.55', ifBench: 'pairfit sd=4.53', lcr: 'pairfit sd=7.47', sciCode: 'pairfit sd=7.55', terminalBenchHard: 'pairfit sd=4.42', hle: 'pairfit sd=2.77' },
+  g_solar_open_100b_reasoning_2: { gpqaDiamond: 'pairfit sd=8.55', ifBench: 'pairfit sd=4.53', lcr: 'pairfit sd=7.47', sciCode: 'pairfit sd=7.55', terminalBenchHard: 'pairfit sd=4.42', hle: 'pairfit sd=2.77' },
+  g_deepseek_v4_flash_2: { gpqaDiamond: 'pairfit sd=8.55', ifBench: 'pairfit sd=4.53', lcr: 'pairfit sd=7.47', sciCode: 'pairfit sd=7.55', terminalBenchHard: 'pairfit sd=4.42', hle: 'pairfit sd=2.77' },
+  g_llama_3_1_nemotron_ultra_253: { gpqaDiamond: 'pairfit sd=8.55', ifBench: 'pairfit sd=4.53', lcr: 'pairfit sd=7.47', sciCode: 'pairfit sd=7.55', terminalBenchHard: 'pairfit sd=4.42', hle: 'pairfit sd=2.77' },
+  qwen38_flash_next: { gpqaDiamond: 'pairfit sd=8.55', ifBench: 'pairfit sd=4.53', lcr: 'pairfit sd=7.47', sciCode: 'pairfit sd=7.55', terminalBenchHard: 'pairfit sd=4.42', hle: 'pairfit sd=2.77' },
+  qwen38_27b: { gpqaDiamond: 'latest', ifBench: 'bridge:LCR+HLE+GPQA-D sd=9.4', lcr: 'eq', sciCode: 'eq', terminalBenchHard: 'bridge:TB-2.1+HLE+SciCode sd=4.97', hle: 'eq' },
+  deepseek_v41_flash: { gpqaDiamond: 'bridge:HLE+LCR+SciCode sd=7.5', ifBench: 'bridge:LCR+HLE+SciCode sd=9.65', lcr: 'eq', sciCode: 'eq', terminalBenchHard: 'bridge:TB-2.1≈+HLE+SciCode sd=4.97', hle: 'eq' },
+  mimo_v26_pro: { gpqaDiamond: 'pairfit sd=8.55', ifBench: 'pairfit sd=4.53', lcr: 'pairfit sd=7.47', sciCode: 'pairfit sd=7.55', terminalBenchHard: 'pairfit sd=4.42', hle: 'pairfit sd=2.77' },
+  mimo_v26_flash: { gpqaDiamond: 'pairfit sd=8.55', ifBench: 'pairfit sd=4.53', lcr: 'pairfit sd=7.47', sciCode: 'pairfit sd=7.55', terminalBenchHard: 'pairfit sd=4.42', hle: 'pairfit sd=2.77' },
+  hy3: { gpqaDiamond: 'pairfit sd=8.55', ifBench: 'pairfit sd=4.53', lcr: 'pairfit sd=7.47', sciCode: 'pairfit sd=7.55', terminalBenchHard: 'pairfit sd=4.42', hle: 'pairfit sd=2.77' },
+  ling31_flash: { gpqaDiamond: 'pairfit sd=8.55', ifBench: 'pairfit sd=4.53', lcr: 'pairfit sd=7.47', sciCode: 'pairfit sd=7.55', terminalBenchHard: 'pairfit sd=4.42', hle: 'pairfit sd=2.77' },
+  ling30_flash: { gpqaDiamond: 'pairfit sd=8.55', ifBench: 'pairfit sd=4.53', lcr: 'pairfit sd=7.47', sciCode: 'pairfit sd=7.55', terminalBenchHard: 'pairfit sd=4.42', hle: 'pairfit sd=2.77' },
+  ling30_tiny: { gpqaDiamond: 'pairfit sd=8.55', ifBench: 'pairfit sd=4.53', lcr: 'pairfit sd=7.47', sciCode: 'pairfit sd=7.55', terminalBenchHard: 'pairfit sd=4.42', hle: 'pairfit sd=2.77' },
+  solar_open2_250b: { gpqaDiamond: 'pairfit sd=8.55', ifBench: 'pairfit sd=4.53', lcr: 'pairfit sd=7.47', sciCode: 'pairfit sd=7.55', terminalBenchHard: 'pairfit sd=4.42', hle: 'pairfit sd=2.77' },
+  motif3: { gpqaDiamond: 'pairfit sd=8.55', ifBench: 'pairfit sd=4.53', lcr: 'pairfit sd=7.47', sciCode: 'pairfit sd=7.55', terminalBenchHard: 'pairfit sd=4.42', hle: 'pairfit sd=2.77' },
+  minicpm5_2b: { gpqaDiamond: 'pairfit sd=8.55', ifBench: 'pairfit sd=4.53', lcr: 'pairfit sd=7.47', sciCode: 'pairfit sd=7.55', terminalBenchHard: 'pairfit sd=4.42', hle: 'pairfit sd=2.77' },
+  inkling_small: { gpqaDiamond: 'pairfit sd=8.55', ifBench: 'pairfit sd=4.53', lcr: 'pairfit sd=7.47', sciCode: 'pairfit sd=7.55', terminalBenchHard: 'pairfit sd=4.42', hle: 'pairfit sd=2.77' },
+  g_g9v3_39a5b: { gpqaDiamond: 'pairfit sd=8.55', ifBench: 'pairfit sd=4.53', lcr: 'pairfit sd=7.47', sciCode: 'pairfit sd=7.55', terminalBenchHard: 'pairfit sd=4.42', hle: 'pairfit sd=2.77' },
+  g_granite_4_2_30b: { gpqaDiamond: 'pairfit sd=8.55', ifBench: 'pairfit sd=4.53', lcr: 'pairfit sd=7.47', sciCode: 'pairfit sd=7.55', terminalBenchHard: 'pairfit sd=4.42', hle: 'pairfit sd=2.77' },
+  g_granite_4_2_3b: { gpqaDiamond: 'pairfit sd=8.55', ifBench: 'pairfit sd=4.53', lcr: 'pairfit sd=7.47', sciCode: 'pairfit sd=7.55', terminalBenchHard: 'pairfit sd=4.42', hle: 'pairfit sd=2.77' },
+  g_granite_4_2_8b: { gpqaDiamond: 'pairfit sd=8.55', ifBench: 'pairfit sd=4.53', lcr: 'pairfit sd=7.47', sciCode: 'pairfit sd=7.55', terminalBenchHard: 'pairfit sd=4.42', hle: 'pairfit sd=2.77' },
+  g_k_exaone_2_0_0803: { gpqaDiamond: 'pairfit sd=8.55', ifBench: 'pairfit sd=4.53', lcr: 'pairfit sd=7.47', sciCode: 'pairfit sd=7.55', terminalBenchHard: 'pairfit sd=4.42', hle: 'pairfit sd=2.77' },
+  g_longcat_2_0: { gpqaDiamond: 'pairfit sd=8.55', ifBench: 'pairfit sd=4.53', lcr: 'pairfit sd=7.47', sciCode: 'pairfit sd=7.55', terminalBenchHard: 'pairfit sd=4.42', hle: 'pairfit sd=2.77' },
+  g_nex_n2_pro: { gpqaDiamond: 'pairfit sd=8.55', ifBench: 'pairfit sd=4.53', lcr: 'pairfit sd=7.47', sciCode: 'pairfit sd=7.55', terminalBenchHard: 'pairfit sd=4.42', hle: 'pairfit sd=2.77' },
+  g_nemotron_3_5_bolt_74b_a9b: { gpqaDiamond: 'pairfit sd=8.55', ifBench: 'pairfit sd=4.53', lcr: 'pairfit sd=7.47', sciCode: 'pairfit sd=7.55', terminalBenchHard: 'pairfit sd=4.42', hle: 'pairfit sd=2.77' },
+  g_nemotron_3_5_lightning: { gpqaDiamond: 'pairfit sd=8.55', ifBench: 'pairfit sd=4.53', lcr: 'pairfit sd=7.47', sciCode: 'pairfit sd=7.55', terminalBenchHard: 'pairfit sd=4.42', hle: 'pairfit sd=2.77' },
+  g_a_x_k2: { gpqaDiamond: 'pairfit sd=8.55', ifBench: 'pairfit sd=4.53', lcr: 'pairfit sd=7.47', sciCode: 'pairfit sd=7.55', terminalBenchHard: 'pairfit sd=4.42', hle: 'pairfit sd=2.77' },
+  g_inkling: { gpqaDiamond: 'pairfit sd=8.55', ifBench: 'pairfit sd=4.53', lcr: 'pairfit sd=7.47', sciCode: 'pairfit sd=7.55', terminalBenchHard: 'pairfit sd=4.42', hle: 'pairfit sd=2.77' },
+}
+
+/** The AA row each hybrid's instant vector was measured on ('' = derived from the pair fit). */
+export const AA_INSTANT_VIA: Record<string, string> = {
+  qwen3_32b: 'Qwen3 32B (Non-reasoning)',
+  glm45_air: '',
+  deepseek_v31: 'DeepSeek V3.1 (Non-reasoning)',
+  nemotron_super: '',
+  nemotron_nano_9b: 'NVIDIA Nemotron Nano 9B V2 (Non-reasoning)',
+  nemotron3_nano_30b: 'NVIDIA Nemotron 3 Nano 30B A3B (Non-reasoning)',
+  qwen36_27b: 'Qwen3.6 27B (Non-reasoning)',
+  qwen35_122b: 'Qwen3.5 122B A10B (Non-reasoning)',
+  glm_5_2: 'GLM-5.2 (Non-reasoning)',
+  deepseek_v4_pro: 'DeepSeek V4 Pro 0813 (Non-reasoning)',
+  minimax_m3: '',
+  qwen35_397b: 'Qwen3.5 397B A17B (Non-reasoning)',
+  nemotron3_ultra_550b: '',
+  g_qwen3_5_4b_2: 'Qwen3.5 4B (Non-reasoning)',
+  g_gemma_4_e4b_2: 'Gemma 4 E4B (Non-reasoning)',
+  g_nvidia_nemotron_3_nano_4b_2: '',
+  g_gemma_4_e2b_2: 'Gemma 4 E2B (Non-reasoning)',
+  g_qwen3_5_2b: 'Qwen3.5 2B (Non-reasoning)',
+  g_exaone_4_0_1_2b_reasoning_2: 'Exaone 4.0 1.2B (Non-reasoning)',
+  g_qwen3_1_7b_instruct_reasonin: 'Qwen3 1.7B (Non-reasoning)',
+  g_qwen3_0_6b_instruct_reasonin: 'Qwen3 0.6B (Non-reasoning)',
+  g_gemma_4_12b_2: 'Gemma 4 12B (Non-reasoning)',
+  g_qwen3_5_9b_2: 'Qwen3.5 9B (Non-reasoning)',
+  g_qwen3_14b_instruct_reasoning_2: 'Qwen3 14B (Non-reasoning)',
+  g_gemma_4_31b_2: 'Gemma 4 31B (Non-reasoning)',
+  g_qwen3_5_27b_2: 'Qwen3.5 27B (Non-reasoning)',
+  g_qwen3_5_35b_a3b_2: 'Qwen3.5 35B A3B (Non-reasoning)',
+  g_qwen3_6_35b_a3b_2: 'Qwen3.6 35B A3B (Non-reasoning)',
+  g_gemma_4_26b_a4b_2: 'Gemma 4 26B A4B (Non-reasoning)',
+  g_nemotron_cascade_2_30b_a3b_2: '',
+  g_exaone_4_5_33b_2: '',
+  g_exaone_4_0_32b_reasoning_2: 'EXAONE 4.0 32B (Non-reasoning)',
+  g_solar_open_100b_reasoning_2: '',
+  g_llama_nemotron_super_49b_v1__2: 'Llama Nemotron Super 49B v1.5 (Non-reasoning)',
+  g_llama_3_3_nemotron_super_49b_2: 'Llama 3.3 Nemotron Super 49B v1 (Non-reasoning)',
+  g_hermes_4_llama_3_1_70b_reaso_2: 'Hermes 4 - Llama-3.1 70B (Non-reasoning)',
+  g_deepseek_v4_flash_2: '',
+  g_llama_3_1_nemotron_ultra_253: '',
+  g_deepseek_v3_2_reasoning_0925_2: 'DeepSeek V3.2 Exp (Non-reasoning)',
+  g_hermes_4_llama_3_1_405b_reas: 'Hermes 4 - Llama-3.1 405B (Non-reasoning)',
+  qwen38_flash_next: '',
+  qwen38_27b: 'Qwen3.8 27B (Non-reasoning)',
+  deepseek_v41_flash: 'DeepSeek V4.1 Flash (Non-reasoning)',
+  mimo_v26_pro: '',
+  mimo_v26_flash: '',
+  hy3: '',
+  ling31_flash: '',
+  ling30_flash: '',
+  ling30_tiny: '',
+  solar_open2_250b: '',
+  motif3: '',
+  minicpm5_2b: '',
+  inkling_small: '',
+  g_g9v3_39a5b: '',
+  g_granite_4_2_30b: '',
+  g_granite_4_2_3b: '',
+  g_granite_4_2_8b: '',
+  g_k_exaone_2_0_0803: '',
+  g_longcat_2_0: '',
+  g_nex_n2_pro: '',
+  g_nemotron_3_5_bolt_74b_a9b: '',
+  g_nemotron_3_5_lightning: '',
+  g_a_x_k2: '',
+  g_inkling: '',
+}

@@ -171,12 +171,19 @@ export interface SparkOpts {
   max?: number
   /** the axis to outline (default agentic, the discriminative one §6.4); null = none. */
   highlight?: CapabilityAxis | null
+  /**
+   * a second vector marked on each bar as a thin notch (a hybrid's other thinking mode, §1.4):
+   * the bar is the vector the axis is judged with, the notch what the other mode would score.
+   */
+  alt?: Partial<Record<CapabilityAxis, number>> | null
 }
 
 export class QualitySparks extends Container {
   private g = new Graphics()
   private labels: Text[] = []
   private vals: Text[] = []
+  /** the `alt` vector's value per axis, printed after the bar's own (purple, like its notch). */
+  private altVals: Text[] = []
 
   constructor(
     private w = 320,
@@ -187,9 +194,11 @@ export class QualitySparks extends Container {
     for (let i = 0; i < AXES.length; i++) {
       const l = label('', 10, COLORS.textDim)
       const v = label('', 10, COLORS.text, 'bold')
+      const a = label('', 10, COLORS.data)
       this.labels.push(l)
       this.vals.push(v)
-      this.addChild(l, v)
+      this.altVals.push(a)
+      this.addChild(l, v, a)
     }
   }
 
@@ -198,7 +207,8 @@ export class QualitySparks extends Container {
     const g = this.g
     g.clear()
     const barX = 52
-    const barW = this.w - barX - 36
+    // room after the bar for its value (and the alt vector's, when one is marked)
+    const barW = this.w - barX - (opts.alt ? 58 : 36)
     const max = Math.max(1, opts.max ?? 100)
     const hlAxis = opts.highlight === undefined ? 'agentic' : opts.highlight
     AXES.forEach((axis, i) => {
@@ -222,6 +232,13 @@ export class QualitySparks extends Container {
       const alpha = tick !== undefined || highlight ? 1 : judgedView ? 0.35 : 0.9
       g.roundRect(barX, y + 2, barW, 9, 2).fill({ color: TRACK, alpha: 0.85 })
       g.roundRect(barX, y + 2, Math.max(2, barW * frac), 9, 2).fill({ color: col, alpha })
+      const alt = opts.alt?.[axis]
+      if (alt !== undefined) {
+        const ax = barX + barW * Math.max(0, Math.min(1, alt / max))
+        g.rect(Math.round(ax), y + 2, 1, 9).fill({ color: COLORS.data, alpha: 0.95 })
+        g.rect(Math.round(ax) - 1, y + 1, 3, 1).fill({ color: COLORS.data, alpha: 0.95 })
+        g.rect(Math.round(ax) - 1, y + 11, 3, 1).fill({ color: COLORS.data, alpha: 0.95 })
+      }
       if (tick !== undefined) {
         const tx = barX + barW * Math.max(0, Math.min(1, tick / max))
         g.rect(Math.round(tx) - 1, y, 2, 13).fill({ color: COLORS.textBright })
@@ -239,6 +256,10 @@ export class QualitySparks extends Container {
       v.style.fill = tick !== undefined && q < tick ? COLORS.danger : COLORS.text
       v.x = barX + barW + 6
       v.y = y
+      const av = this.altVals[i]
+      av.text = alt !== undefined ? '▏' + alt.toFixed(0) : ''
+      av.x = v.x + v.width + 3
+      av.y = y
     })
   }
 

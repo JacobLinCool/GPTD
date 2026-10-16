@@ -2,12 +2,12 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import type { GameState } from '../src/core/types'
-import { pwl, ROSTER_FRONTIER_TOLERANCE, THINK_TOKENS_FALLBACK, thinkingOf, thinkingVariantName } from '../src/sim/calibrate'
+import { pwl, ROSTER_FRONTIER_TOLERANCE, THINK_TOKENS_FALLBACK, thinkingOf } from '../src/sim/calibrate'
 import { DEFAULT_MODEL_ID, HARDWARE_DEFS, INFRA_NODES, MODEL_CANDIDATES, MODEL_DEFS } from '../src/sim/content'
 import { kvPerReqGb, longContextPenalty, serverFitsMemory, serverQuality } from '../src/sim/effects'
 import { applyInfraEffects } from '../src/sim/research'
 import { MODEL_ARCH } from '../src/sim/roster.arch.generated'
-import { AA_BENCH, AA_BENCH_SOURCE } from '../src/sim/roster.bench.generated'
+import { AA_BENCH, AA_BENCH_INSTANT, AA_BENCH_INSTANT_SOURCE, AA_BENCH_SOURCE, AA_INSTANT_VIA } from '../src/sim/roster.bench.generated'
 import { createState } from '../src/sim/state'
 
 /* --------------------------------------------------------------------------
@@ -22,7 +22,7 @@ const MAP = json('data/roster-aa-map.json')
 const REFERENCE = json(MAP.referenceSnapshot).data as { id: string; slug: string; evaluations: Record<string, number | null> }[]
 const LATEST = json('data/aa-snapshot.json').data as { id: string; slug: string }[]
 const CELLS = Object.entries(MAP.benchmarkCells as Record<string, string>).filter(([k]) => !k.startsWith('_'))
-const PINS = Object.entries(MAP.models as Record<string, { slug: string; aaId: string }>)
+const PINS = Object.entries(MAP.models as Record<string, { slug: string; aaId: string; instant?: { slug: string; aaId: string } }>)
 const candidate = (id: string) => MODEL_CANDIDATES.find((m) => m.id === id)!
 
 function infraOn(s: GameState, ...ids: string[]): void {
@@ -55,8 +55,10 @@ describe('benchmark cells on the frozen reference scale', () => {
     const bySlug = new Map(LATEST.map((m) => [m.slug, m.id]))
     for (const [, pin] of PINS) expect(bySlug.get(pin.slug)).toBe(pin.aaId)
     // the two DeepSeek checkpoints whose bare slugs AA recycled are pinned to the open re-releases
-    expect(MAP.models.deepseek_v4_pro).toEqual({ slug: 'deepseek-v4-pro', aaId: '83173329-c09a-41f1-a028-a282a5f908d7' })
-    expect(MAP.models.g_deepseek_v4_flash_2).toEqual({ slug: 'deepseek-v4-flash', aaId: 'fe4c0848-e284-4e52-a79d-cdc28392f1a9' })
+    expect(MAP.models.deepseek_v4_pro).toMatchObject({ slug: 'deepseek-v4-pro', aaId: '83173329-c09a-41f1-a028-a282a5f908d7' })
+    expect(MAP.models.g_deepseek_v4_flash_2).toMatchObject({ slug: 'deepseek-v4-flash', aaId: 'fe4c0848-e284-4e52-a79d-cdc28392f1a9' })
+    // instant pins are slug-checked the same way
+    for (const [, pin] of PINS) if (pin.instant) expect(bySlug.get(pin.instant.slug)).toBe(pin.instant.aaId)
     expect(MODEL_DEFS.deepseek_v4_pro.name).toBe('DeepSeek-V4-Pro-0813')
   })
 
@@ -165,31 +167,86 @@ describe('architecture from config.json (KV layout, native precision)', () => {
   })
 })
 
-describe('thinking models (AA telemetry → isReasoning / thinkTokens)', () => {
-  it('a first-answer gap means hidden reasoning; its length × speed is the budget', () => {
-    expect(thinkingOf({ ttftS: 0.5, ttfatS: 10.5, tps: 200 })).toEqual({ isReasoning: true, thinkTokens: 2000 })
-    expect(thinkingOf({ ttftS: 1, ttfatS: 90, tps: 60 }).thinkTokens).toBe(4000) // clamped
-    expect(thinkingOf({ ttftS: 0.5, ttfatS: 0.5, tps: 200 })).toEqual({ isReasoning: false, thinkTokens: 0 })
-    // no telemetry: the model card, then the variant name; an untimed thinker gets the fallback
-    expect(thinkingOf(undefined, true)).toEqual({ isReasoning: true, thinkTokens: THINK_TOKENS_FALLBACK })
-    expect(thinkingOf({ name: 'Qwen3 1.7B (Reasoning)' }).isReasoning).toBe(true)
-    expect(thinkingOf({ name: 'Qwen3.5 0.8B (Non-reasoning)' }).isReasoning).toBe(false)
-    expect(thinkingVariantName('GLM-5.2 (Max)')).toBe(true)
-    expect(thinkingVariantName('Apriel-v1.6-15B-Thinker')).toBe(true)
+describe('thinking support (chat template) and the thinking budget (AA telemetry)', () => {
+  const THINKING = json('data/model-thinking.json').models as Record<string, { mode: string; quote?: string; template?: string }>
+  const repoOf = (m: { real?: { source: string } }) => m.real!.source.replace('https://huggingface.co/', '')
+
+  it('the budget is the first-answer gap × output speed on the pinned thinking variant; whether it thinks is the template\'s call', () => {
+    expect(thinkingOf({ ttftS: 0.5, ttfatS: 10.5, tps: 200 }, 'hybrid')).toEqual({ isReasoning: true, thinkTokens: 2000 })
+    expect(thinkingOf({ ttftS: 1, ttfatS: 90, tps: 60 }, 'always').thinkTokens).toBe(4000) // clamped
+    // a thinker AA never timed gets the fallback; a model that never thinks spends nothing
+    expect(thinkingOf(undefined, 'always')).toEqual({ isReasoning: true, thinkTokens: THINK_TOKENS_FALLBACK })
+    expect(thinkingOf({ ttftS: 0.5, ttfatS: 10.5, tps: 200 }, 'never')).toEqual({ isReasoning: false, thinkTokens: 0 })
   })
 
-  it('roster flags follow the pinned variant, not a guess', () => {
-    // pinned on thinking-mode AA rows, so their qualityBy IS thinking-mode capability
-    for (const id of ['g_qwen3_5_9b_2', 'g_gemma_4_31b_2', 'g_apriel_v1_6_15b_thinker_2', 'gptoss_120b', 'deepseek_v4_pro']) {
-      expect(MODEL_DEFS[id].isReasoning).toBe(true)
-      expect(MODEL_DEFS[id].thinkTokens).toBeGreaterThan(0)
+  it('every checkpoint carries the mode its chat template allows, with evidence', () => {
+    for (const m of MODEL_CANDIDATES) {
+      const e = THINKING[repoOf(m)]
+      expect(e, m.id).toBeDefined()
+      expect(m.thinking).toBe(e.mode)
+      expect(m.isReasoning).toBe(m.thinking !== 'never')
+      if (m.thinking === 'never') expect(m.thinkTokens).toBe(0)
+      else expect(m.thinkTokens).toBeGreaterThan(0)
+      // only a hybrid has a second (instant-mode) vector
+      expect(m.qualityByInstant !== undefined).toBe(m.thinking === 'hybrid')
     }
-    // instruct models think 0 tokens
-    for (const id of ['g_qwen3_5_0_8b_non_reasoning_2', 'g_gemma_3_1b_2']) {
-      expect(MODEL_DEFS[id].isReasoning).toBe(false)
-      expect(MODEL_DEFS[id].thinkTokens).toBe(0)
-    }
+    // the switch, by family: Qwen3.5/3.6 enable_thinking, GLM-5.2, DeepSeek V4's thinking_mode "chat",
+    // MiniMax-M3's thinking_mode "disabled"; gpt-oss, Kimi K3, MiniMax-M2.x and Qwen3.8-2.4T always reason
+    for (const id of ['qwen36_27b', 'g_qwen3_5_27b_2', 'glm_5_2', 'deepseek_v4_pro', 'deepseek_v41_flash', 'minimax_m3', 'hy3', 'g_gemma_4_31b_2'])
+      expect(MODEL_DEFS[id].thinking).toBe('hybrid')
+    for (const id of ['gptoss_20b', 'gptoss_120b', 'kimi_k3', 'g_minimax_m2_7_2', 'g_qwen3_8_2_4t_a95b', 'glm_5_3'])
+      expect(MODEL_DEFS[id].thinking).toBe('always')
+    expect(THINKING['Qwen/Qwen3.8-2.4T-A95B'].quote).toBe('Disabling thinking is not supported.')
+    // a hybrid template served thinking-off: the roster pins its Non-reasoning row
+    expect(MODEL_DEFS.g_qwen3_5_0_8b_non_reasoning_2.thinking).toBe('never')
+    expect(THINKING['Qwen/Qwen3.5-0.8B'].template).toBe('hybrid')
+    expect(MODEL_DEFS.g_gemma_3_1b_2.thinking).toBe('never')
     expect(MODEL_DEFS[DEFAULT_MODEL_ID].isReasoning).toBe(false)
+  })
+
+  it('a hybrid\'s instant vector is calibrated from its Non-reasoning row on the same reference scale', () => {
+    const ref = new Map(REFERENCE.map((m) => [m.id, m]))
+    const instantPins = Object.entries(MAP.models as Record<string, { instant?: { slug: string; aaId: string } }>).filter(([, p]) => p.instant)
+    expect(instantPins.length).toBeGreaterThanOrEqual(20)
+    let carried = 0
+    for (const [id, pin] of instantPins) {
+      expect(AA_INSTANT_VIA[id]).not.toBe('')
+      const rec = ref.get(pin.instant!.aaId)
+      if (!rec) continue
+      for (const [field, key] of CELLS) {
+        const v = rec.evaluations[key]
+        if (v == null) continue
+        // carry-forward by UUID: a reference measurement is never moved
+        expect(AA_BENCH_INSTANT[id][field as keyof (typeof AA_BENCH_INSTANT)[string]]).toBe(Math.round(v * 1000) / 10)
+        expect(AA_BENCH_INSTANT_SOURCE[id]?.[field as keyof (typeof AA_BENCH_INSTANT)[string]]).toBeUndefined()
+      }
+      carried++
+    }
+    expect(carried).toBeGreaterThanOrEqual(15)
+    // Qwen3.5-27B off: IFBench 75.6 → 46.9 (AA, measured), so its chat drops while knowledge holds
+    const q = MODEL_DEFS.g_qwen3_5_27b_2
+    expect(q.real?.instantVia).toBe('Qwen3.5 27B (Non-reasoning)')
+    expect(q.qualityByInstant!.chat).toBeLessThan(q.qualityBy.chat)
+    expect(q.qualityByInstant!.reasoning).toBeLessThan(q.qualityBy.reasoning)
+  })
+
+  it('a hybrid AA timed only in thinking mode gets its instant cells from the pair fit, never above thinking', () => {
+    const fit = json('data/aa-bridges.json').instant as { pairs: number; fits: Record<string, { a: number; b: number; n: number }> }
+    expect(fit.pairs).toBeGreaterThanOrEqual(20)
+    // switching thinking off costs the most on the hardest benchmark (HLE) and little on knowledge (GPQA)
+    expect(fit.fits.hle.b).toBeLessThan(fit.fits.gpqa.b)
+    const derived = Object.keys(AA_BENCH_INSTANT).filter((id) => AA_INSTANT_VIA[id] === '')
+    expect(derived).toContain('minimax_m3')
+    for (const id of derived) {
+      for (const [field, key] of CELLS) {
+        const f = fit.fits[key]
+        const t = AA_BENCH[id][field as keyof (typeof AA_BENCH)[string]]!
+        const v = AA_BENCH_INSTANT[id][field as keyof (typeof AA_BENCH_INSTANT)[string]]!
+        expect(v).toBeLessThanOrEqual(t + 0.05)
+        expect(v).toBeCloseTo(Math.min(t, Math.max(0, f.a + f.b * t)), 0)
+        expect(AA_BENCH_INSTANT_SOURCE[id]?.[field as keyof (typeof AA_BENCH_INSTANT)[string]]).toMatch(/^pairfit sd=/)
+      }
+    }
   })
 })
 

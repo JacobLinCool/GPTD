@@ -170,7 +170,8 @@ GPTD/
 │  └─ manual/           # player manual: en.md, zh-TW.md, README.md (language index)
 ├─ AGENTS.md            # contributor working rules (kept at repo root for agent discovery)
 ├─ tests/               # Vitest: sim.test.ts, metrics.test.ts, playthrough.test.ts (balance autoplay)
-└─ scripts/             # agent-smoke.mjs (bridge E2E) + headless Playwright playtest + screenshots
+├─ data/                # model data: Artificial Analysis snapshots + fits, model-arch.json (config.json facts), model-thinking.json (chat-template thinking support), roster-aa-map.json (UUID pins)
+└─ scripts/             # model data pipelines (aa-sync, arch-sync, thinking-sync, gen-roster, roster-report) + agent-smoke.mjs (bridge E2E) + headless Playwright playtest + screenshots
 ```
 
 > All art and audio are generated procedurally at runtime — there are no binary asset files to ship.

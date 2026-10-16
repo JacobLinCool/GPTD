@@ -170,7 +170,7 @@ const HELP = {
     'lastReport{wave,served,sloMiss,bad,unservable,unsafe,overRefused,leaked,total,goodputPct,sloAttainPct,trustLostBy,slaLostBy,sloCauses,overRefusedBy,guardCaught,selfHandled,byType,…} | null',
     'board{cols,rows,core,freeTiles[{col,row,nearLane}]}, towers[{id,defId,col,row,online,range,coversLanes(guards),hwId,modelId,role,sellValue,nextHwId,upgradeCost,deployableModelIds}]',
     'catalog[{defId,cost,range,guardrail{archetype,side,latencyMs,recall,falsePositiveRate,catches[{hazard,locked,unlockedBy}]}}], hardware[{id,name,hbmGb,cooling,deployableModelIds}]',
-    'models[{id,qualityBy,contextWindowK,paramsTotalB,paramsActiveB,isMoE,isReasoning,alignment{safety,refusalStyle,overRefusal},alignmentTax}], upgrades[], research{infra,posttrain,eval,options[{id,name,desc,dataCost,requires}],requisition{rackIds,lentTflops,capTflops,servingLossPct,blocked}}',
+    'models[{id,qualityBy,contextWindowK,paramsTotalB,paramsActiveB,isMoE,isReasoning,thinking(always|hybrid|never),qualityByInstant (hybrids),thinkTokens,alignment{safety,refusalStyle,overRefusal},alignmentTax}], upgrades[], research{infra,posttrain,eval,options[{id,name,desc,dataCost,requires}],requisition{rackIds,lentTflops,capTflops,servingLossPct,blocked}}',
     'studio{available,baseModelIds,targets,effortNotches,methods[{id,name,allowedTargets,dataCost,unlocked,requiresTech}],activeRun}',
     'stats{served,sloMiss,bad,unservable,unsafe,overRefused,leaked,cashEarned,peakConcurrent,lastReportWave,trustLostBy,slaLostBy}',
   ],
@@ -179,6 +179,7 @@ const HELP = {
     'A blocked or refused jailbreak counts as served; an unanswered one costs SLA only. Read lastReport.trustLostBy / slaLostBy / sloCauses / overRefusedBy to find the real cause of a meter drop.',
     'Guardrails screen every request on the lanes their range touches (towers[].coversLanes), wherever they sit: each guard family adds its latency once and one false-positive roll; extra copies of the same guard add coverage, not recall.',
     'A Router dispatches requests in its range to the in-range rack whose model is best at them. Several racks working one request blend its answer quality by tokens generated.',
+    'Thinking: a hybrid model answers interactive traffic (chat, code completion) with thinking off — no hidden tokens, judged on qualityByInstant — and thinks about everything else (hidden tokens first, judged on qualityBy). An always-thinking model thinks on chat too and misses its time-to-first-answer bound (sloCauses.ttfat) on a slow rack.',
   ],
   examples: [
     `curl -s http://${HOST}:${PORT}/state`,

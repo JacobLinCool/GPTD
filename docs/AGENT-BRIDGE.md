@@ -164,7 +164,12 @@ guessing. Unknown actions are rejected the same way, never a crash.
                  "deployableModelIds": [ "…" ] } ],   // the GPU-tier ladder + what fits each tier
   "models": [ { "id": "…", "name": "…", "tier": "small", "quality": 41,
                "qualityBy": { "chat": 60, "coding": 38, "reasoning": 41, "general": 52, "agentic": 30 },
-               "contextWindowK": 128, "paramsTotalB": 8, "paramsActiveB": 8, "isMoE": false, "isReasoning": false,
+               "contextWindowK": 128, "paramsTotalB": 8, "paramsActiveB": 8, "isMoE": false, "isReasoning": true,
+               // thinking support: "hybrid" answers chat / code completion with thinking off (judged on
+               // qualityByInstant) and thinks about everything else; "always" thinks on every answer;
+               // "never" answers at once (qualityBy is its only vector)
+               "thinking": "hybrid", "qualityByInstant": { "chat": 52, "coding": 33, "reasoning": 38, "general": 47, "agentic": 21 },
+               "thinkTokens": 2000,   // hidden tokens per thinking-mode answer (× the archetype's thinkMul)
                "alignment": { "safety": 58, "refusalStyle": "hard-refusal", "overRefusal": 0.12 },
                "alignmentTax": 1.62 } ],
   "upgrades": [ { "id": "…", "level": 0, "maxLevel": 1, "buyable": false } ],
@@ -192,7 +197,7 @@ guessing. Unknown actions are rejected the same way, never a crash.
   "goodputPct": 87.2,          // % of ALL requests served correctly, safely and within SLO
   "sloAttainPct": 95.3,        // % of ANSWERED requests that met every latency bound
   "trustLostBy": { "leaked": 6, "overRefused": 0.5 }, "slaLostBy": { "leaked": 9, "sloMiss": 3 },
-  "sloCauses": { "ttft": 2 },  // which latency bound each SLO-miss missed first (ttft / tpot / e2el)
+  "sloCauses": { "ttft": 2 },  // which latency bound each SLO-miss missed first (ttft / ttfat / tpot / e2el)
   "overRefusedBy": { "model": 1 },   // who wrongly refused: the model's alignment or a guardrail
   "guardCaught": 4, "selfHandled": 2, "cacheHits": 12,
   "cashIn": 9.4, "clearBonus": 8, "powerCost": 3.1, "avgTtft": 0.21, "p95Ttft": 0.48,

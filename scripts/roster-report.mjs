@@ -5,7 +5,7 @@
 //   node scripts/roster-report.mjs catalog   refresh the roster marks (★ = active) and the `Serving —` line of
 //                                            every pool checkpoint in docs/MODEL-CATALOG.md; lists pool
 //                                            checkpoints that have no catalog entry yet
-//   node scripts/roster-report.mjs table     print the active roster (size, qualityBy, KV, precision)
+//   node scripts/roster-report.mjs table     print the active roster (size, qualityBy, KV, precision, thinking support)
 
 import { readFileSync, writeFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
@@ -133,11 +133,14 @@ function pareto({ content, calibrate }) {
   P(`${Math.round(tol * 100)}% on every axis — strictly beaten by something no bigger, on all five lanes. The gate trims **${pool.length}`)
   P(`candidates → ${active.length} active**, spanning ${size(active.reduce((a, b) => (b.paramsTotalB < a.paramsTotalB ? b : a)))} → ${size(active.reduce((a, b) => (b.paramsTotalB > a.paramsTotalB ? b : a)))}. The default starter`)
   P(`(\`DEFAULT_MODEL_ID\`) is the smallest dense, non-thinking active model: **${content.MODEL_DEFS[content.DEFAULT_MODEL_ID].name}**.`)
+  P('The quality columns are thinking-mode capability; *thinking* names the support the chat template allows')
+  P('(`data/model-thinking.json`) with the hidden tokens per thinking-mode answer — a **hybrid** answers chat and code')
+  P('completion with thinking off, on its separate thinking-off vector (see MODEL-CATALOG.md).')
   P()
-  P('| model | size (total / active) | chat / general / coding / reasoning / agentic | attention | KV per token (+ per request) | release precision | thinks |')
-  P('|-------|----------------------|-----------------------------------------------|-----------|------------------------------|-------------------|-------:|')
+  P('| model | size (total / active) | chat / general / coding / reasoning / agentic | attention | KV per token (+ per request) | release precision | thinking |')
+  P('|-------|----------------------|-----------------------------------------------|-----------|------------------------------|-------------------|---------:|')
   for (const m of [...active].sort((a, b) => a.paramsTotalB - b.paramsTotalB)) {
-    P(`| ${m.name} | ${size(m)} / ${m.paramsActiveB}B | ${q5(m)} | ${m.attn} | ${kb(m)} KB (+${m.kvStateMbPerReq.toFixed(0)} MB) | ${m.real?.precision ?? '—'} (${m.nativeWeightBytes} B/param) | ${m.isReasoning ? m.thinkTokens : '—'} |`)
+    P(`| ${m.name} | ${size(m)} / ${m.paramsActiveB}B | ${q5(m)} | ${m.attn} | ${kb(m)} KB (+${m.kvStateMbPerReq.toFixed(0)} MB) | ${m.real?.precision ?? '—'} (${m.nativeWeightBytes} B/param) | ${m.thinking === 'never' ? '—' : `${m.thinking} ${m.thinkTokens}`} |`)
   }
   P()
   const pruned = pool.filter((m) => !activeIds.has(m.id)).sort((a, b) => a.paramsTotalB - b.paramsTotalB)
@@ -179,7 +182,7 @@ function generatedEntry(m, nameOf) {
   const lineage = m.real?.baseModelId ? `derived from ${nameOf(m.real.baseModelId)}` : '—'
   return [
     `### ${m.name}`,
-    `**${m.real?.developer}** · ${(m.real?.released ?? '').slice(0, 7)} · ${m.real?.license} · ${size}${m.isReasoning ? ' · reasoning' : ''} · ${m.contextWindowK}K ctx · spec: ${m.spec} · lineage: ${lineage} · confidence: ${m.real?.confidence}`,
+    `**${m.real?.developer}** · ${(m.real?.released ?? '').slice(0, 7)} · ${m.real?.license} · ${size}${m.thinking === 'hybrid' ? ' · hybrid reasoning' : m.isReasoning ? ' · reasoning' : ''} · ${m.contextWindowK}K ctx · spec: ${m.spec} · lineage: ${lineage} · confidence: ${m.real?.confidence}`,
     `[model card](${m.real?.source})`,
     `Benchmarks — ${CELLS.map(([f, label]) => {
       const v = m.real?.benchmarks?.[f]
@@ -190,6 +193,22 @@ function generatedEntry(m, nameOf) {
     m.desc,
     '',
   ].join('\n')
+}
+
+/**
+ * The thinking support a roster entry is served with (data/model-thinking.json): a hybrid's switch
+ * and its thinking-off vector (chat / general / coding / reasoning / agentic), an always-thinker's
+ * budget, or none.
+ */
+function thinkingText(m) {
+  const knob = m.real?.thinkingToggle
+  const toggle = !knob ? '' : knob === 'none' ? ' (no off switch)' : ` (${knob})`
+  if (m.thinking === 'hybrid') {
+    const via = m.real?.instantVia ? `AA ${m.real.instantVia}` : 'the thinking→instant pair fit'
+    return `hybrid thinking${toggle}: instant on interactive traffic, judged ${AXES.map((a) => m.qualityByInstant[a]).join(' / ')} (from ${via}); thinks ~${m.thinkTokens} hidden tokens elsewhere`
+  }
+  if (m.thinking === 'always') return `always thinks${toggle}: ~${m.thinkTokens} hidden tokens per answer`
+  return 'answers without hidden reasoning'
 }
 
 /** Refresh ★ (active in the game) and the `Serving —` architecture line of every catalog entry in the pool. */
@@ -234,7 +253,7 @@ function catalog({ content, bench }) {
     out.push(line)
     if (cur && line.startsWith('Benchmarks')) {
       const m = cur
-      const thinks = m.isReasoning ? `thinks ~${m.thinkTokens} hidden tokens per answer` : 'answers without hidden reasoning'
+      const thinks = thinkingText(m)
       out.push(
         `Serving — ${m.attn} · KV ${(m.kvBytesPerToken / 1024).toFixed(1)} KB/token on ${m.kvLayers} of ${m.layers} layers` +
           `${m.kvStateMbPerReq >= 1 ? ` + ${m.kvStateMbPerReq.toFixed(0)} MB/request` : ''} · ${m.real?.precision} weights (${m.nativeWeightBytes} B/param) · ${thinks}  `,
@@ -250,7 +269,8 @@ function catalog({ content, bench }) {
 function table({ content }) {
   const active = Object.values(content.MODEL_DEFS).sort((a, b) => a.paramsTotalB - b.paramsTotalB)
   for (const m of active) {
-    console.log(`${m.id.padEnd(32)} ${size(m).padStart(6)}/${String(m.paramsActiveB).padEnd(5)} ${q5(m).padEnd(26)} ${m.attn.padEnd(13)} KV ${kb(m).padStart(6)} KB +${m.kvStateMbPerReq.toFixed(0).padStart(4)} MB  ${String(m.real?.precision).padEnd(5)} ${m.nativeWeightBytes} B/p  think ${m.isReasoning ? m.thinkTokens : 0}`)
+    const inst = m.qualityByInstant ? `  instant ${AXES.map((a) => m.qualityByInstant[a]).join(' / ')}` : ''
+    console.log(`${m.id.padEnd(32)} ${size(m).padStart(6)}/${String(m.paramsActiveB).padEnd(5)} ${q5(m).padEnd(26)} ${m.attn.padEnd(13)} KV ${kb(m).padStart(6)} KB +${m.kvStateMbPerReq.toFixed(0).padStart(4)} MB  ${String(m.real?.precision).padEnd(5)} ${m.nativeWeightBytes} B/p  ${m.thinking.padEnd(6)} think ${m.thinkTokens}${inst}`)
   }
   console.log(`${active.length} active · default ${content.DEFAULT_MODEL_ID}`)
 }

@@ -168,8 +168,9 @@ export function resolveArch({ developer, name, slug }, catalogEntry) {
 // ---- validation against the config-derived ground truth (data/model-arch.json) ----
 async function validate() {
   const { loadArch, derive } = await import('./arch-sync.mjs')
-  const { loadSnapshots, recordOf, perfOf } = await import('./aa-cells.mjs')
+  const { loadSnapshots, recordOf, THINKING_PATH } = await import('./aa-cells.mjs')
   const arch = loadArch().models
+  const thinkingModes = JSON.parse(readFileSync(THINKING_PATH, 'utf8')).models
   const snaps = loadSnapshots()
   const cat = loadCatalog()
   const norm = (x) => x.toLowerCase().replace(/[^a-z0-9]/g, '')
@@ -182,9 +183,8 @@ async function validate() {
     const aaId = Object.values(e.aa ?? {})[0]
     const rec = recordOf(snaps, aaId)
     if (!rec) continue
-    // the thinking truth the game uses: AA telemetry first, then the card, then the name (calibrate.ts)
-    const perf = perfOf(snaps, aaId)
-    const thinks = perf ? perf.ttfatS - perf.ttftS > 1 : (e.thinking ?? thinkingByName(rec.name))
+    // the thinking truth the game uses: the chat template's support (data/model-thinking.json)
+    const thinks = thinkingModes[repo]?.mode !== 'never'
     const truth = derive(e)
     const r = resolveArch({ developer: rec.model_creator?.name, name: rec.name, slug: rec.slug }, cat[norm(rec.name.split('(')[0])])
     n++

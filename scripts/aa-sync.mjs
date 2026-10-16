@@ -11,7 +11,9 @@
 //                 write data/aa-bridges.json (committed, so builds are deterministic and reviewable).
 //   3. build    — resolve every pinned roster model by AA UUID (refusing a recycled or renamed slug)
 //                 and emit src/sim/roster.bench.generated.ts: the six canonical cells, the display-
-//                 only successor cells, per-cell provenance, and AA's serving telemetry.
+//                 only successor cells, per-cell provenance, and AA's serving telemetry — plus, for
+//                 every HYBRID checkpoint (data/model-thinking.json), its instant-mode cells: from
+//                 its `instant` pin when AA measured the Non-reasoning row, else the pair fit.
 //   4. report   — read-only: bridged cells with their uncertainty, pin problems, unpinned checkpoints.
 //   5. catalog  — refresh the `Benchmarks —` lines in docs/MODEL-CATALOG.md (bridged values labelled).
 //   6. table    — regenerate the human-readable data/aa-snapshot-full.{csv,md} views of the latest snapshot.
@@ -26,6 +28,7 @@ import { join } from 'node:path'
 import {
   ROOT, BRIDGES_PATH, LATEST_PATH, CANONICAL, SUCCESSOR, LABEL,
   loadSnapshots, loadBridges, fitBridges, resolveCells, emitCell, perfOf, pinnedModels, pinProblem, recordOf,
+  instantFromThinking, thinkingByAaId,
 } from './aa-cells.mjs'
 
 const AA_URL = 'https://artificialanalysis.ai/api/v2/data/llms/models'
@@ -74,19 +77,46 @@ function bridges() {
     for (const f of list) console.log(`  bridge ${LABEL[t].padEnd(8)} ← ${f.preds.map((p) => LABEL[p]).join('+').padEnd(22)} n=${String(f.n).padStart(3)} R=${f.R} sd=${f.sd}`)
   }
   for (const f of fits.tb21Era.fits) console.log(`  impute TB-2.1 (≥${fits.tb21Era.since}) ← ${f.preds.map((p) => LABEL[p]).join('+').padEnd(16)} n=${String(f.n).padStart(3)} R=${f.R} sd=${f.sd}`)
+  for (const [k, f] of Object.entries(fits.instant.fits)) console.log(`  instant ${LABEL[k].padEnd(8)} = ${f.a} + ${f.b}·thinking  (n=${f.n} of ${fits.instant.pairs} pairs, R=${f.R}, sd=${f.sd})`)
+}
+
+/**
+ * The instant-mode cells of a hybrid: its instant pin resolved like any pin (a canonical cell
+ * the Non-reasoning row cannot resolve falls back to the pair fit), or — with no pin — the pair
+ * fit applied to its thinking cells. `src` per cell: the pin's provenance, or 'pairfit sd=<x>'.
+ */
+function resolveInstant(snaps, fits, pin, thinking) {
+  if (!fits.instant) throw new Error('data/aa-bridges.json has no instant pair fit — run: node scripts/aa-sync.mjs bridges')
+  const derived = instantFromThinking(fits.instant, thinking.cells)
+  const pairSrc = (k) => `pairfit sd=${fits.instant.fits[k].sd}`
+  if (!pin.instant) {
+    return { via: null, cells: derived, src: Object.fromEntries(Object.keys(derived).map((k) => [k, pairSrc(k)])), sd: {} }
+  }
+  const r = resolveCells(snaps, fits, pin.instant.aaId)
+  for (const k of CANONICAL) {
+    if (r.cells[k] != null || derived[k] == null) continue
+    r.cells[k] = derived[k]
+    r.src[k] = pairSrc(k)
+  }
+  return { via: recordOf(snaps, pin.instant.aaId).name, ...r }
 }
 
 /** Resolve every pinned roster model; throws on a recycled/renamed slug. */
 function resolveRoster() {
   const snaps = loadSnapshots()
   const fits = loadBridges()
+  const modes = thinkingByAaId()
   const problems = []
   const rows = []
   for (const [id, pin] of pinnedModels(snaps.map)) {
     const p = pinProblem(snaps, id, pin)
     if (p) { problems.push(p); continue }
+    const mode = modes.get(pin.aaId)?.mode
+    if (!mode) { problems.push(`${id}: AA ${pin.aaId} is not listed under any data/model-arch.json checkpoint`); continue }
+    if (pin.instant && mode !== 'hybrid') { problems.push(`${id}: has an instant pin but its checkpoint is '${mode}' in data/model-thinking.json`); continue }
     const r = resolveCells(snaps, fits, pin.aaId)
-    rows.push({ id, pin, rec: recordOf(snaps, pin.aaId), ...r })
+    const instant = mode === 'hybrid' ? resolveInstant(snaps, fits, pin, r) : null
+    rows.push({ id, pin, mode, rec: recordOf(snaps, pin.aaId), ...r, instant })
   }
   return { snaps, fits, rows, problems }
 }
@@ -102,7 +132,24 @@ function build() {
   const bench = []
   const source = []
   const meta = []
+  const instBench = []
+  const instSource = []
+  const instVia = []
   for (const r of rows) {
+    if (r.instant) {
+      const body = []
+      const prov = []
+      for (const [field, key] of cells) {
+        const v = r.instant.cells[key]
+        if (v == null) throw new Error(`${r.id}: hybrid with no instant ${LABEL[key]} cell`)
+        const src = r.instant.src[key]
+        body.push(`${field}: ${emitCell(snaps, r.pin.instant?.aaId, key, v, src)}`)
+        if (src !== 'ref') prov.push(`${field}: ${tsStr(r.instant.sd[key] != null ? `${src} sd=${r.instant.sd[key]}` : src)}`)
+      }
+      instBench.push(`  ${r.id}: { ${body.join(', ')} }, // ${r.pin.instant?.slug ?? 'pair fit'}`)
+      if (prov.length) instSource.push(`  ${r.id}: { ${prov.join(', ')} },`)
+      instVia.push(`  ${tsKey(r.id)}: ${tsStr(r.instant.via ?? '')},`)
+    }
     const body = []
     const prov = []
     for (const [field, key] of cells) {
@@ -133,9 +180,18 @@ function build() {
     `export const AA_BENCH_SOURCE: Record<string, Partial<Record<keyof BenchInputs, string>>> = {\n${source.join('\n')}\n}\n\n` +
     `/** AA's display name + release date for the pinned variant, and its serving telemetry on AA's 1K-token prompt\n` +
     ` *  (time to first token, time to first ANSWER token, output tok/s) when a provider was measured. */\n` +
-    `export const AA_META: Record<string, { name: string; released: string; ttftS?: number; ttfatS?: number; tps?: number }> = {\n${meta.join('\n')}\n}\n`
+    `export const AA_META: Record<string, { name: string; released: string; ttftS?: number; ttfatS?: number; tps?: number }> = {\n${meta.join('\n')}\n}\n\n` +
+    `/**\n * INSTANT-MODE cells (thinking off) of every HYBRID checkpoint (data/model-thinking.json), same reference\n` +
+    ` * scale: resolved from its \`instant\` pin (AA's Non-reasoning row of the same checkpoint) or, without one,\n` +
+    ` * the per-cell pair fit in data/aa-bridges.json applied to its thinking cells. content.ts calibrates\n` +
+    ` * qualityByInstant from these through the same curves as qualityBy.\n */\n` +
+    `export const AA_BENCH_INSTANT: Record<string, Partial<BenchInputs>> = {\n${instBench.join('\n')}\n}\n\n` +
+    `/** Provenance of every instant cell that is not a reference measurement: as AA_BENCH_SOURCE, plus 'pairfit sd=<x>'. */\n` +
+    `export const AA_BENCH_INSTANT_SOURCE: Record<string, Partial<Record<keyof BenchInputs, string>>> = {\n${instSource.join('\n')}\n}\n\n` +
+    `/** The AA row each hybrid's instant vector was measured on ('' = derived from the pair fit). */\n` +
+    `export const AA_INSTANT_VIA: Record<string, string> = {\n${instVia.join('\n')}\n}\n`
   writeFileSync(GENERATED, out)
-  console.log(`✓ wrote ${GENERATED} — ${rows.length} models, ${source.length} with non-reference cells`)
+  console.log(`✓ wrote ${GENERATED} — ${rows.length} models, ${source.length} with non-reference cells, ${instBench.length} hybrids with an instant vector (${rows.filter((r) => r.instant?.via).length} pinned, ${rows.filter((r) => r.instant && !r.instant.via).length} pair-fit)`)
 }
 
 function report() {
@@ -145,6 +201,10 @@ function report() {
   console.log(`\n=== AA → GPTD roster cells (${rows.length} pinned; reference scale) — ≈ bridged, ~ equated ===`)
   console.log(`${'id'.padEnd(34)} ${CANONICAL.map((k) => LABEL[k].padStart(6)).join('')}`)
   for (const r of rows) console.log(`${r.id.padEnd(34)} ${CANONICAL.map((k) => f(r.cells[k]) + mark(r, k)).join('')}`)
+  const hybrids = rows.filter((r) => r.instant)
+  console.log(`\n=== instant mode (thinking off) of the ${hybrids.length} hybrid checkpoints — ≈ bridged, ~ equated, ƒ pair fit ===`)
+  const markI = (r, k) => (r.instant.src[k]?.startsWith('pairfit') ? 'ƒ' : r.instant.src[k]?.startsWith('bridge') ? '≈' : r.instant.src[k] === 'eq' ? '~' : ' ')
+  for (const r of hybrids) console.log(`${r.id.padEnd(34)} ${CANONICAL.map((k) => f(r.instant.cells[k]) + markI(r, k)).join('')}  ${r.instant.via ?? '(pair fit)'}`)
   const bridged = rows.flatMap((r) => CANONICAL.filter((k) => r.src[k]?.startsWith('bridge')).map((k) => `${r.id}.${LABEL[k]} ${r.src[k]} (sd ${r.sd[k]})`))
   console.log(`\nbridged cells (${bridged.length}):\n  ${bridged.join('\n  ') || 'none'}`)
   console.log(`\npin problems (${problems.length}): ${problems.join('; ') || 'none'}`)
