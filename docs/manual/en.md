@@ -1,254 +1,522 @@
 # GigaPrompt Tower Defense — Player Manual
 
-This document is for players opening the game for the first time. You do not need to know anything about AI serving, and you do not need to read the design blueprint. Just remember one thing: GPTD is a tower defense — but instead of killing the enemies, you **serve** them. The board is a real LLM-inference data center, built on real-world data: waves of user requests arrive through four ingress lanes and converge on a central Trust Core; you do not kill them, you **serve** them — fast, cheap, correct, and safe — before they leak into the core.
+This guide is for players opening the game for the first time. You do not need to know anything about AI serving to play. GPTD is a tower defense with one twist: you do not destroy what comes down the lanes, you **serve** it. Waves of user requests stream in through four ingress lanes toward a central Trust Core, and your towers are GPU racks, models, caches, routers and guardrails that answer each request correctly, safely and fast enough before it reaches the core.
 
-The board is the metaphor; the numbers underneath are real. A request carries real token counts; a rack carries a real GPU's VRAM and bandwidth; the money is real $/Mtoken. The campaign is a **100-wave march through real 2023→2026 data-center history**, drawn as an escalating elimination gauntlet — hold the central Trust Core as deep as you can, then (if you reach the end) survive endless mode.
+Underneath the board the numbers are real. A request carries real token counts, a rack carries a real GPU's memory and bandwidth, a model's skill is calibrated from public benchmarks, and money is real dollars per million tokens. Playing well therefore means learning how language-model serving actually works: small models are fast and big models are smart, thinking buys accuracy with time, guardrails buy safety with latency, and batching trades one user's speed for everyone's throughput. The campaign replays real data-center history from 2023 to 2026 as an escalating elimination gauntlet, followed by an endless mode for anyone who survives it.
 
-**Where to play:** open <https://jacoblincool.github.io/GPTD/> in any browser — it runs entirely client-side, with nothing to install. (Running from source instead? See the repo [README](../../README.md).)
+**Where to play:** open <https://jacoblincool.github.io/GPTD/> in any browser. It runs entirely client-side, with nothing to install. (Running from source instead? See the repo [README](../../README.md).)
 
 ## Objective
 
-Survive the **100-wave campaign**. Each wave dramatizes a real event from the 2023→2026 inference era — GPT-4, the H100 shortage, Mixtral MoE, Gemini's million-token context, o1 reasoning, DeepSeek R1 and the Jan-2025 market crash, Stargate, the EU AI Act, agentic coding, the inference price war — and the difficulty climbs **every wave**. It is an elimination gauntlet: most runs end mid-campaign, and reaching wave 100 (the final **Age of Inference** boss) is the apex. Clear it and **endless mode** generates ever-harder "Surge" waves where the difficulty never stops climbing — your score is how deep you get.
+Hold the Trust Core for as long as you can. Every wave dramatizes a real event of the inference era — the chatbot boom, the GPU shortage, long-context documents, reasoning models, agents, grid emergencies, price wars, regulators and outages — and the pressure climbs from one wave to the next. Most runs end somewhere in the campaign; reaching the last wave is the apex, and clearing it opens endless mode, where the score is simply how deep you get.
 
-You lose the instant any one of three meters collapses:
+You lose the moment any one of three meters gives out:
 
-- **Trust** — whether users believe in your platform. Wrong answers, unsafe answers, dropped requests, and over-refusing benign users all cost Trust.
-- **SLA** — whether you serve on time. A request that walks its lane unserved leaks as a 504 timeout; a correct-but-late answer is a Goodput miss. Both cost SLA.
-- **Cash** — whether the company still has runway. Buildings, rack upgrades, training, and the wall-clock operating bill (power, cooling, $/GPU-hr, capex) all cost money; only successful service earns it back. Go below zero and you are bankrupt.
+- **Trust** — whether users believe in your platform. Every failed request costs some Trust; unsafe answers cost the most.
+- **SLA** — whether you keep your service promise. Late answers, refusals of harmless users, rejected requests and timeouts cost SLA.
+- **Cash** — whether the company can pay its bills. Buildings and upgrades cost money up front, and every online rack bills by the clock while a wave runs, busy or idle. Below zero you are bankrupt.
 
-Serving a request earns Cash (priced in real `$/Mtoken`) and Data, and slightly restores Trust and SLA. Clearing a whole wave grants a clear bonus.
+A clean serve earns its token price and nudges Trust and SLA back up, and every answered request yields **Data**, the research currency. At the end of each wave your customers also pay an **SLA contract** in proportion to how much of that wave you served cleanly.
+
+## The Seven Outcomes
+
+Every request ends in exactly one of seven outcomes. Each has its own glyph, color, board popup and sound, so you can tell from across the board which way a request went and why. Hovering an outcome in the HUD tally or in Settings ▸ Audio repeats its plain cause.
+
+| Outcome | Glyph · color | Board popup | Plain cause | Pay | Meters |
+| ------- | ------------- | ----------- | ----------- | --- | ------ |
+| **Served** | ✓ green | `OK` and a summed `+$x.xx` | Answered correctly, safely and within its latency SLO. A blocked or refused attack also counts as served: refusing it was the right answer. | full token price | Trust +, SLA + |
+| **SLO-miss** | ◷ amber | `LATE · TTFT / TPOT / E2E / THINKING` | Right answer, too late: it missed a latency bound (the bound is named on the popup). | half price (the SLA credit) | small Trust and SLA loss |
+| **Bad** | ✗ orange | `WRONG · <axis>` | The model scored below the request's difficulty on the axis it is judged on. | refunded (0) | Trust loss |
+| **Unsafe** | ⚠ red | `UNSAFE` | An attack's harmful answer reached the user: no guardrail caught it and the model did not refuse it. | 0 | heavy Trust loss |
+| **Over-refused** | ⊘ pink | `REFUSED · MODEL / GUARD` | A harmless request was refused, by the model's own alignment or by a guardrail. | 0 | light Trust and SLA loss |
+| **Unservable** | ⇥ slate grey | `TOO LONG` | The prompt does not fit the context window or the KV memory of any rack in its path. | 0 | Trust and SLA loss |
+| **Dropped (504)** | ↓ brick red | `504` | Nobody answered in time: it reached the core and timed out. | 0 | Trust and SLA loss (an attack that times out costs SLA only) |
+
+The meter cost of each outcome scales with the request's archetype, so a dropped agent task hurts far more than a dropped embedding. The colorblind-safe palette (Settings ▸ Accessibility) swaps these colors for an Okabe–Ito-derived set; the glyphs never change, so meaning never rests on hue alone. Small chips fly from each result to the Cash, Trust and SLA meters, which pop as they land.
 
 ## Display Modes: Normal and Expert
 
-On the title screen you pick a display mode. Both run **exactly the same game** — same waves, rules, and difficulty. The only difference is how much of the platform's internals the UI shows. The choice is locked for the run and remembered next session.
+On the title screen you pick a display mode. Both run **exactly the same game** — the same waves, rules and difficulty. The mode only decides how much of the platform's internals the interface shows. Your choice is remembered for the next session, and once the guided tutorial is finished (or skipped) you can switch modes mid-run from Settings ▸ Display.
 
-- **Normal Mode** keeps the dashboards friendly: a rack's panel shows the loaded model, quality, speed, batch, power/heat, and the deploy/upgrade controls.
-- **Expert Mode** opens the full SRE console — the real telemetry an inference team watches:
-  - **TopBar** — Trust / SLA / Cash / Data plus live **Power vs Cooling** headroom in kW (red line at the limit).
-  - **LiveOps strip** (during a wave) — the **Goodput** gauge (the headline metric: % of requests answered correctly, safely, and within their TTFT / TPOT / E2EL SLO), requests/sec, p95 in-service time, live **$/Mtoken**, and KV-cache pressure.
-  - **Rack Inspect** — four cards per rack: HARDWARE (the real GPU, VRAM, HBM bandwidth, TDP, cooling), DEPLOYED MODEL (params total/active, per-axis quality), ROOFLINE (the prefill compute-bound vs decode bandwidth-bound bars, with the binding side flagged), and LIVE (batch, KV use, throughput).
-  - **Request Inspector** — the selected request's input/output tokens, latency class, difficulty by axis, prefix share, and hazards.
-  - **Wave Report** — an end-of-wave settlement: the six outcomes, Goodput, TTFT / TPOT / E2EL attainment, $/Mtoken vs the operating bill, and a per-archetype scoreboard.
-  - **Model Overview + Lineage Graph** — every checkpoint you own (base + derived) with filter/sort, and the DAG of how your derived models descend from their bases.
-  - **TechLab + Post-Training Studio** — the infra tech tree (by category) and the post-training method menu with the effort slider.
+| Surface | Normal Mode | Expert Mode |
+| ------- | ----------- | ----------- |
+| HUD | Trust, SLA, Cash with runway, Data, Power and Heat in kW, the next-wave title and the live outcome tally | the same, plus MODELS and METRICS buttons |
+| Next-wave card | plain lines ("instant reply · needs Coding 58") | technical lines (latency class, judged axis and threshold, token counts) |
+| Rack inspect | Overview in plain words ("Fast enough for", "Smart enough for", refusal and self-handle rates), Deploy picker | Overview cards (HARDWARE, DEPLOYED MODEL), Deploy picker, and a Telemetry tab (ROOFLINE, ESTIMATE, live batch and KV) |
+| Request inspector | plain diagnosis ("smart enough? ✓") | the full diagnosis: tokens, TTFT so far, TPOT, judged axis, margin, guards passed, hazards |
+| Wave report | a compact summary: outcome bar, "Too slow · Wrong · Unsafe · Refused" counts, net cash and FIX NEXT | the full report: Goodput, outcome bar, Trust and SLA lost per outcome, which bound late answers missed, who refused, TTFT / E2E / TPOT, unit cost, a per-archetype table and WHY lines |
+| Board | everything below | adds a KV gauge on each rack, tags on racks that differ from the rest of the fleet, and a "?" badge on requests that are being answered wrongly |
+| Model Overview + Lineage Graph | — | every checkpoint you own, filterable and sortable, with the family tree of your derived models (K) |
+| Fleet Telemetry | — | six live charts: Goodput, requests/s, p95 latency, $/Mtoken, KV utilization, fleet utilization (` or Tab) |
 
-The small **Demo** button in the title panel starts a fixed-seed Expert run and lets the built-in autoplayer handle build planning, rack deployment, research, guardrails, and Studio runs. It is intended as a live tour of the expert UI and is balanced to survive deep into the 100-wave gauntlet while showing the major operations: rack upgrades through DGX H200, model deployment, infra/eval/post-training research, derived checkpoints, power/cooling, Liquid Cooling Loop, and P/D rack roles. (Like any run, the autoplayer is eventually eliminated by the escalation — that is the gauntlet working as designed.) During Demo, you can still click racks, requests, Models, and the Training Lab to inspect information; mutation actions remain controlled by the autoplayer.
+The Training Lab, the Post-Training Studio, the Codex and the notifications work the same in both modes.
 
-If you are new, start in Normal Mode and switch to Expert when you want to know *why* a lane is slow — the roofline card and the Wave Report usually answer it.
+The small **Demo** button on the title panel starts a fixed-seed Expert run at 12× and lets the built-in autoplayer play it: it upgrades racks up to 8-GPU systems, picks models with the deploy picker's own forecast, researches the serving stack, places routers, caches and guardrails, and trains Constitutional-AI and GRPO specialist checkpoints in the Studio. It survives deep into the campaign and is eventually eliminated, like any run. During the demo you can still click racks, requests, Models and the Training Lab to read them; the autoplayer keeps control of every action. The **Agent** button hands the run to a terminal agent over a local bridge instead (see [AGENT-BRIDGE.md](../AGENT-BRIDGE.md)).
+
+If you are new, start in Normal Mode and switch to Expert when you want to know *why* a lane is slow — the roofline card and the wave report usually answer it.
 
 ## Basic Controls
 
-| Action                       | How                                              |
-| ---------------------------- | ------------------------------------------------ |
-| Start the game               | Press START on the main menu                     |
-| Choose a display mode        | Tap NORMAL / EXPERT on the title screen (locked during a run) |
-| Place a building             | Tap a building button at the bottom, then tap a map cell |
-| Place the same building again | The tool stays selected after placement         |
-| Inspect a building           | Tap a placed building                            |
-| Deploy a model onto a rack   | Tap a rack, then a checkpoint in the DEPLOY grid (free; only gate is fitting VRAM) |
-| Upgrade a rack's hardware    | Tap a rack, then RACK → (pays the tier price difference) |
-| Open the Post-Training Studio / tech tree | Build a Training Lab, then press TRAIN in the Build phase |
-| Sell a building              | Press SELL in the inspect panel (60% refund of current value) |
-| Start the next wave          | Press START WAVE, or Space                       |
-| Pause a wave                 | Space mid-wave, or the pause button              |
-| Adjust speed                 | 1 / 2 / 3 / 6 / 0 (=12x), or the speed button cycles 1x / 2x / 3x / 6x / 12x |
-| Close a panel / deselect     | Escape                                           |
-| Mute                         | M, or the sound button                           |
+Every hotkey binds to the physical key position, so the layout is the same on any keyboard layout and under an IME. Key caps appear as badges on the build bar and buttons (Settings ▸ Gameplay ▸ Hotkey Badges), and **H** or **?** opens the full sheet in game; How to Play in the system menu lists the same table.
 
-You build during the Build phase and can emergency-build mid-wave with cash. Research and post-training run only during the Build phase.
+**Mouse and touch**
+
+| Action | How |
+| ------ | --- |
+| Start the game | START on the title screen, or Space / Enter |
+| Choose a display mode or language | the NORMAL / EXPERT buttons and the language button on the title screen |
+| Place a building | pick it on the build bar, then click a tile beside a lane; the tool stays selected for the next one |
+| Preview a placement | hover a tile with a tool: a ghost of the building, the lane stretch it would cover, the racks a Cache or Router would reach (or "no rack in range"), and its power draw |
+| Paint a row | drag with a support building held; hold Shift to paint racks |
+| Cancel a tool or deselect | right-click, or Esc |
+| Inspect a building | click it; the panel docks on the side of the board away from it. Hovering shows its range ring and a one-line card |
+| Inspect a request | click its packet (both modes) |
+| Deploy a model | select a rack, open the DEPLOY tab, click a checkpoint (free; between waves) |
+| Deploy to many racks | Shift-click a checkpoint (or its ALL ×N button) for every rack of this tier; Shift+Ctrl/⌘-click for every rack it fits |
+| Upgrade a rack | RACK → in the inspect panel (pays the price difference; between waves); UPGRADE ALL moves every rack of this tier up one step, as far as cash allows |
+| Change a rack's weight format | the Weights button in the inspect panel (between waves; shown when more than one format is possible) |
+| Sell a building | SELL (a second press confirms while Confirm Before Selling is on); 60% of its current value back |
+| Open the Training Lab / Studio | build a Training Lab, then TRAIN on the build bar (between waves) |
+| Start the next wave | START WAVE |
+| Pause / resume | the pause button (during a wave) |
+| Change speed | the speed button steps up and wraps; right-click it to step down |
+| Mute | the speaker button |
+| Open the system menu | the gear button, or Esc with nothing to cancel |
+| Scroll a list | mouse wheel or drag |
+| Touch | tap a tile to preview the ghost and cost, tap it again to build; long-press for a tooltip; hold briefly before dragging to paint |
+
+**Keyboard**
+
+| Key | Action |
+| --- | ------ |
+| Space | start the next wave · pause / resume during a wave · start from the title |
+| Q W E R T Y U I O P | pick a building from the build bar, left to right (press again to drop it) |
+| Esc | drop the tool or deselect; again opens the system menu; inside menus, go back |
+| , and . | select the previous / next rack |
+| G | toggle every coverage ring (racks included); hold Alt to peek |
+| Z | upgrade the selected rack's hardware |
+| X | sell the selected building (press twice to confirm while Confirm Before Selling is on) |
+| C | copy the selected rack's hardware, model and role as a blueprint, then click tiles to place copies (Esc drops it) |
+| V | cycle the selected rack's role: auto / prefill pool / decode pool (needs P/D Disaggregation; between waves) |
+| [ and ] | switch the selected rack's tabs (Overview / Deploy / Telemetry) |
+| PgUp / PgDn | page the deploy picker |
+| 1 2 3 6 0 | game speed 1× 2× 3× 6× 12× |
+| − and = | one step slower / faster |
+| F | toggle between 1× and your last fast speed |
+| M | mute / unmute |
+| L | open or close the Training Lab (between waves, with a Lab built) |
+| K | open the Model Overview (Expert) |
+| ` or Tab | toggle the Fleet Telemetry panel (Expert) |
+| H or ? | the hotkey sheet |
+| Enter | Codex: next |
+
+**Inside panels and menus**
+
+| Where | Keys |
+| ----- | ---- |
+| System menu | ↑ ↓ to move, Enter to pick |
+| Settings | [ ] or ← → to switch tabs |
+| How to Play, Codex, About, Achievements | ↑ ↓ and PgUp / PgDn scroll; [ ] switch the Codex tabs |
+| Training Lab | [ ] switch Infra / Studio; arrows and Enter move and pick; PgUp / PgDn page |
+| Model Overview | ↑ ↓ select, PgUp / PgDn page, Home / End jump, [ ] cycle the filter; typing letters filters by name (Esc clears the filter, then closes) |
+
+You build during the build phase, and you can still emergency-build or sell mid-wave if you have the cash. Model swaps, rack upgrades, weight formats and rack roles change only between waves, because loading new weights takes a rack offline; the one exception is a Multi-LoRA adapter swap (see Research). Research and Studio runs start between waves and make progress while waves run.
+
+## Reading the Board
+
+The board is built to show *why* each request goes the way it does.
+
+**Requests.** Each packet is colored by its archetype, and its outline tells its latency class: rounded for interactive traffic, square for near-real-time, notched corners for offline work, and spikes for anything that carries a hazard (attacks and agent tasks). Above it runs a progress bar in up to three phases: amber while the prompt is read (**prefill**), violet while a thinking model reasons silently (**thinking**, shown only when there are hidden tokens), then the archetype's color as the visible answer streams out (**decode**). A white tick flashes the moment the first token arrives. While a prompt waits for a rack, a hairline under the bar drains from green to amber to red as its time-to-first-token budget runs out. One badge flags the most urgent problem — a blinking hazard sign for an attack that is still open, an overflow mark for a prompt too long to fit, a clock once it is already late, and in Expert Mode a "?" while it is being answered wrongly — and an open hazard also pulses a ring around the packet. A small orange pip marks a request inside a Router's range.
+
+**Racks.** Each hardware tier has its own silhouette on a tier-colored floor plate. Up to eight LEDs show the batch: cyan slots are decoding answers, amber is a prompt being prefilled, and grey slots mean the decodes are stalled behind an unchunked prefill (the amber LED blinks). An icon explains a dark or degraded rack: a lightning bolt for a power cut, a droplet for a liquid rack with no Liquid Cooling Loop, a thermometer and heat glow for thermal throttling. A scanline sweeps a rack lent to research. In Expert Mode a thin gauge on the rack's edge shows how full its KV memory is (amber from 75%, red from 92%). Builds drop in, sales lift away, an upgrade wipes the old tier off with an "H100 → H200" label, and a deploy flashes the model's name.
+
+**Token streams.** During prefill one dense stream flows *into* the rack from the prompt it is reading — prefill is compute-bound and takes the rack's full attention. During decode, thin streams flow *out* to every request in the batch — decode is bandwidth-bound and shared. A small fast model sprays tokens; a big slow one trickles. The outbound streams freeze while an unchunked prefill stalls the batch.
+
+**Guardrails.** A catch draws a scan beam from the guard to the request, stamps a shield and pops `BLOCKED`. A wrongful block flashes the guard and stamps a no-entry sign with `REFUSED · GUARD`. When a model refuses an attack on its own, a shield rises over its rack with `MODEL SAFE`. A prefix-cache hit pops `CACHE HIT`.
+
+**The Trust Core and the lanes.** The core is tinted by the Trust band. It cracks below 50, 25 and 10 Trust, its heartbeat quickens as Trust falls, and below 25 the board's edge glows red. Hits shake the board (Settings ▸ Accessibility ▸ Screen Shake). Ingress portals flash as requests spawn, flow chevrons show direction, the lanes take on the era's tint, and a single-entry surge highlights its lane with a SURGE tag. Banners mark the start of a wave, a boss wave and a clear (with the contract payout and the wave's Goodput).
+
+**Coverage rings** stay hidden until you hover or select a building, hold a related tool, press G or hold Alt. A rack's reach follows its hardware tier.
+
+**The HUD** shows Trust, SLA and Cash on the left, with a runway chip under Cash (how many waves your cash lasts at zero income) and your Data. Power and Heat show real kW against capacity. Between waves the title names the wave START will launch and how many requests are coming; during a wave the line becomes a live tally of the seven outcomes. Hovering Trust or SLA shows what drained them last wave and over the run. A status line names a brownout, throttling, a dark liquid rack, a pause, or the active incident (hover it for details).
+
+**Notifications** stack above the build bar: research complete, a new checkpoint (between waves with a DEPLOY ×N button that rolls it out to every rack it fits), achievements, and the first brownout or throttle of a wave. Up to three show at once; hovering holds one, clicking opens what it refers to. A rejected action shows its reason at the cursor ("Model swaps happen between waves", "needs Tensor Parallelism", "Need $12 more").
+
+## Planning a Wave: the Next-Wave Card
+
+Between waves the **NEXT WAVE** card on the right shows what START will launch: its era and name, a brief of the real event, the lesson it drills, the incident it brings, a single-entry surge if the traffic will funnel through one lane, and a traffic multiplier when an incident changes the volume. For each archetype in the wave it then forecasts your *current* fleet against four checks:
+
+| Check | Passes when |
+| ----- | ----------- |
+| **SMART** | some rack covering its lanes would answer it correctly: its model, in the mode it would answer in, scores at or above the request's difficulty on the judged axis after the format, alignment and long-context costs |
+| **FAST** | some covering rack meets every latency bound it carries (first token, per-token speed, end-to-end, first answer token) under the wave's mixed load |
+| **FITS** | some covering rack's context window and KV memory hold the whole prompt plus the answer |
+| **SAFE** | every hazard it carries is caught by a guardrail covering its lanes, or refused by every covering model at least 90% of the time |
+
+Hover a check for the numbers behind it (best margin, latency against each bound, window against the tokens needed, and per hazard whether a guard covers it, is locked until Red-Team Eval, or how often the models self-handle it). The forecast reads the same load model the deploy picker uses; treat it as an estimate, since it does not model racks competing with each other for the same requests. The card's footer gives the request count, the wave's projected operating bill and the most the SLA contract can pay. The card collapses with its button and turns into a click-through ghost while you hold a build tool.
+
+If your cash is below the projected bill, START warns you first and turns into START ANYWAY; press it again to go. The runway chip turns amber under two waves of runway and red under one.
 
 ## Request Archetypes — the nine workloads
 
-A request is defined by its **workload physics**, not its costume. Each archetype carries real input/output token counts (ISL/OSL), a **latency class** (IN interactive · NR near-real-time · TO throughput/offline), a **per-axis difficulty** vector judged against the loaded model's `qualityBy`, a **prefix share** (how cacheable it is), and possibly **hazards**.
+A request is defined by its workload physics, not its costume: how many tokens it reads and writes, how fast it must be answered, which skill it is judged on, how much of its prompt is shared and cacheable, whether it carries an attack, and what the market pays for it. Prompts and answers grow through the campaign as real workloads did (conversation history, retrieved context, accumulated agent state), so the late-game sizes are shown in parentheses.
 
-| Archetype | ISL → OSL (typical) | Latency class | Hard axis | Prefix | Hazard | The pressure it applies |
-| --------- | ------------------- | ------------- | --------- | -----: | ------ | ----------------------- |
-| **Embedding** (`embed`) | ~2000 → 0 | TO | general (easy) | 0.3 | — | Pure prefill, no generation — worthless alone, a flood in volume. |
-| **Interactive Chat** (`chat`) | 512 → 256 | IN | chat (easy) | 0.4 | — | Balanced, high-volume. A small model on a fast rack soaks it all day. |
-| **Code Completion** (`comp`) | 1500 → 150 | IN (TTFT 200 ms) | coding | 0.5 | — | Prefill-heavy and the strictest latency. A weak model ships bad code and bleeds Trust. |
-| **RAG / Long-Context QA** (`rag`) | 8000 → 512 | NR | general + reasoning | 0.6 | — | A huge retrieved prompt. A Cache makes the prefill survivable; a small window rejects it outright. |
-| **Summarization** (`summ`) | 12000 → 400 | NR | general | 0.2 | — | An extreme prompt, little reusable prefix — a relentless prefill bill that strains the context window. |
-| **Reasoning** (`reason`) | 512 → 6000 | NR | reasoning (hard) | 0.1 | — | Extreme decode (long chain-of-thought). Only a thinking model clears the hardest reasoning lane. |
-| **Agentic Task** (`agent`) | 6000 → 800 | NR (E2EL 9 s) | **agentic** (hardest) + reasoning | 0.7 | injection 0.3 | Autonomous, SWE-grade, multi-step tool use. Benchmarks have *not* saturated here — only a true frontier model, or one you trained yourself, closes the loop. |
-| **Batch / Offline** (`batch`) | 1000 → 4000 | TO (no latency SLO) | general | 0.1 | — | Decode-heavy offline generation — pure throughput and $/token. Soak it whenever racks are free. |
-| **Adversarial Prompt** (`jailbreak`) | 600 → 400 | IN | general (easy) | 0.1 | jailbreak 0.9 | The hazard carrier. The model must self-handle it or a guardrail must catch it, or an unsafe answer wrecks Trust. |
+| Archetype | Tokens in → out (late 2026) | Latency bounds | Judged on | Cacheable prefix | Hazard | $/Mtok in / out |
+| --------- | --------------------------- | -------------- | --------- | ---------------: | ------ | --------------: |
+| **Embedding** | 2K → 0 (6K → 0) | none (offline) | general 10 | 30% | — | 0.05 / 0.1 |
+| **Interactive Chat** | 512 → 256 (2.6K → 512) | TTFT 400 ms · TPOT 40 ms · first answer 4 s | chat 18 | 40% | — | 0.3 / 0.9 |
+| **Code Completion** | 1.5K → 150 (7.5K → 200) | TTFT 200 ms · TPOT 40 ms · first answer 400 ms | coding 56 | 50% | — | 1 / 3 |
+| **RAG / Long-Context QA** | 8K → 512 (48K → 819) | TTFT 2 s · TPOT 200 ms | general 50 | 60% | — | 1 / 2 |
+| **Summarization** | 12K → 400 (96K → 1K) | TTFT 6 s · TPOT 200 ms | general 44 | not cacheable | — | 1 / 2 |
+| **Reasoning (long CoT)** | 512 → 6K (2K → 12K) | TTFT 2 s · TPOT 200 ms | reasoning 82 | not cacheable | — | 1 / 5 |
+| **Agentic Task** | 6K → 800 (48K → 1K) | TTFT 2 s · TPOT 200 ms · E2E 60 s | agentic 82 | 70% | prompt injection | 3 / 12 |
+| **Batch / Offline Gen** | 1K → 4K (3K → 8K) | none (offline) | general 40 | not cacheable | — | 0.5 / 1.5 |
+| **Adversarial Prompt** | 600 → 400 (3K → 500) | TTFT 400 ms · TPOT 40 ms · first answer 4 s | handled or not | not cacheable | jailbreak | 0.5 / 1.5 |
 
-**Correctness is an axis match, not just "work reaching zero."** The judge compares the loaded model's `qualityBy[hard axis]` against the request's difficulty on that axis. Below it, you ship a `bad` answer: you still bill the request, but Trust drops. The **agentic** axis is special — its scores come from the un-saturated SWE-bench, so a tiny fast MoE that answers chat brilliantly can still fail every agentic request.
+TTFT is the time to the first token, TPOT the time per output token (judged once, over the whole answer), E2E the whole answer, and *first answer* the time until the first *visible* token after any hidden thinking. The quality line rises about 2% per campaign tier, so the reasoning and agentic lines approach 100 by the end.
+
+**Correctness is an axis match.** A request is judged against the answering model's score on one axis — chat, coding, reasoning, general or agentic. Below its difficulty the answer is wrong (`bad`) and refunded. When several racks share a request's decode, the answer's quality is the token-weighted blend of the racks that wrote it, so a weak rack in range drags a strong one down. Long prompts cost quality too: once a prompt fills more than a quarter of a model's window, quality slides, and models with real long-context skill lose far less of it. The **agentic** axis is calibrated from benchmarks that have not saturated, so a model that chats brilliantly can still fail every agent task.
+
+**Each archetype meets thinking and refusals differently.** A thinking model spends hidden tokens before it answers — its thinking budget times the archetype's share — and over-cautious alignment hits archetypes in proportion to how much borderline content they carry:
+
+| Archetype | Hidden thinking (share of the model's budget) | Exposure to over-refusal |
+| --------- | --------------------------------------------- | ------------------------ |
+| Embedding | none (it writes no text) | none |
+| Interactive Chat | ½ | full |
+| Code Completion | 5% | 10% |
+| RAG | ½ | 40% |
+| Summarization | ½ | 30% |
+| Reasoning | none extra (its long answer *is* the reasoning) | 50% |
+| Agentic Task | the full budget | 50% |
+| Batch | ½ | 20% |
+| Adversarial Prompt | ½ | n/a (an attack is never harmless) |
 
 ## Hardware — the real GPU ladder
 
-A serving tower is two decisions: the **rack hardware** you build and upgrade, and the **model** you deploy onto it. The rack contributes real GPU specs (compute FLOPS, VRAM, HBM bandwidth, TDP, cooling); the model contributes its parameters, quality, and architecture.
+A serving tower is two decisions: the **rack hardware** you build and upgrade, and the **model** you deploy onto it. The rack contributes real GPU specs; the model contributes its size, skill and architecture.
 
-The build bar sells two racks — **Edge** (cheap starter) and **Frontier** — and every new rack ships with **Llama-3.1-8B preloaded**. From a placed rack you **upgrade in place** along the ladder, paying the price difference each step:
+The build bar sells two racks — **Edge** (the cheap starter) and **Frontier** — and every new rack ships with the free starter model, MiniCPM5-2B, preloaded. From a placed rack you **upgrade in place** along the ladder, paying the price difference at each step:
 
-| Rack tier (upgrade in place) | GPU | GPUs | VRAM | HBM bandwidth | TDP/GPU | Cooling |
-| ---------------------------- | --- | ---: | ---: | ------------: | ------: | ------- |
-| Edge GPU Rack (buildable)    | L4-class    | 1  | 24 GB  | 0.3 TB/s | 72 W   | air |
-| Standard GPU Rack            | L40S-class  | 1  | 48 GB  | 0.86 TB/s | 350 W | air |
-| Performance GPU Rack         | H100-class  | 1  | 80 GB  | 3.35 TB/s | 700 W | air |
-| Frontier GPU Rack (buildable)| H200-class  | 1  | 141 GB | 4.8 TB/s | 700 W | air |
-| DGX H200                     | 8× H200     | 8  | 1.1 TB | 38 TB/s (agg) | 700 W | **liquid** |
-| DGX B200                     | 8× B200     | 8  | 1.5 TB | 64 TB/s (agg) | 1000 W | **liquid** |
-| GB200 NVL72                  | 72× B200    | 72 | 13.8 TB | 576 TB/s (agg) | 1000 W | **liquid** |
+| Rack tier | GPU | GPUs | VRAM | HBM bandwidth / GPU | TDP / GPU | Cooling | Price | Reach (tiles) |
+| --------- | --- | ---: | ---: | ------------------: | --------: | ------- | ----: | ------------: |
+| Edge GPU Rack (buildable) | L4-class | 1 | 24 GB | 0.3 TB/s | 72 W | air | $5 | 2.8 |
+| Standard GPU Rack | L40S-class | 1 | 48 GB | 0.86 TB/s | 350 W | air | $16 | 3.0 |
+| Performance GPU Rack | H100-class | 1 | 80 GB | 3.35 TB/s | 700 W | air | $48 | 3.0 |
+| Frontier GPU Rack (buildable) | H200-class | 1 | 141 GB | 4.8 TB/s | 700 W | air | $60 | 3.3 |
+| DGX H200 | 8× H200 | 8 | 1.1 TB | 4.8 TB/s | 700 W | air | $320 | 3.4 |
+| DGX B200 | 8× B200 | 8 | 1.5 TB | 8 TB/s | 1000 W | air | $500 | 3.5 |
+| GB200 NVL72 | 72× B200 | 72 | 13.8 TB | 8 TB/s | 1000 W | **liquid** | $3000 | 3.6 |
 
-Build cost is the **real capex** divided by 1000 (an Edge rack is a few credits; an NVL72 is ~3000). Two hard facts from real serving:
+Prices are real capex divided by 1000. Three facts from real serving shape every choice:
 
-- **The roofline is two ceilings.** A rack **prefills** the prompt (compute-bound, super-linear at long context because attention is O(n²)) producing the time-to-first-token, then **decodes** tokens (bandwidth-bound, batched). HBM bandwidth — not raw FLOPS — is what makes decode fly, which is why H100/H200 are the workhorses. Expert Mode's roofline card shows both bars and which one binds.
-- **Liquid cooling is a hard gate.** The liquid-cooled multi-GPU clusters (DGX H200, DGX B200, GB200 NVL72) **cannot be placed or upgraded into without a Liquid Cooling Loop** built first — those racks physically cannot be cooled by air. The single-GPU air-cooled tiers (up to a Frontier H200 rack) run anywhere you have power and cooling capacity.
+- **The roofline is two ceilings.** A rack first *prefills* the prompt — compute-bound, and super-linear on long prompts because attention grows with the square of the length — which sets the time to first token. It then *decodes* the answer token by token, and every step re-reads the model's weights and every stream's KV cache from memory, so HBM bandwidth, not raw FLOPS, sets how fast tokens flow. That is why an H100 serves many times faster than an L4 even for the same small model. Expert Mode's roofline card shows both bars and which one binds.
+- **Big systems buy fit and concurrency, not per-user speed.** On a DGX or an NVL72, a model that fits one GPU runs as one copy per GPU: eight (or seventy-two) times the users, each at single-GPU speed. A model too big for one GPU is split across the smallest power-of-two group of GPUs that holds it, with tensor parallelism capped at eight GPUs, running below perfect efficiency and paying a small synchronization cost every token. Spanning GPUs needs research: Tensor Parallelism for up to eight GPUs, Pipeline Parallelism beyond that. Faster *per-user* speed comes from bandwidth — climbing the single-GPU tiers, or Blackwell's B200 over the H200.
+- **Liquid cooling is a hard gate, for the NVL72 only.** The GB200 NVL72 cannot be cooled by air: it cannot be built or upgraded into without a Liquid Cooling Loop, and it goes dark if none exists. Every other tier, up to the DGX B200, is air-cooled and runs on ordinary Cooling Towers.
 
 ## Models — real open weights, free to deploy
 
-Open weights are a **download**, so deploying a model **costs nothing** and has exactly one gate: **VRAM**. The rack must hold the model's total parameters (`paramsTotalB` × bytes/param) — a 70B fits an H200; a 117B+ MoE needs a DGX pod; a 671B/1T frontier needs a DGX B200 or NVL72. There is **no architecture unlock to deploy**: MoE and reasoning are just model attributes (a thinking model's gain is already baked into its `qualityBy`). *(The Post-Training Studio's training methods — LoRA, GRPO, RLHF, … — do have their own research unlocks, but those gate what you can **train**, never what you can **deploy**.)*
+Open weights are a download, so deploying a model **costs nothing**. What gates a model is memory: one copy's weights (its parameter count times bytes per parameter in the rack's weight format), plus the engine's overhead, must fit a GPU group the rack is allowed to use. Every model in the roster is owned from the first wave.
 
-The roster is real 2025–2026 open-weight models (Llama, Qwen3 dense + MoE, gpt-oss, Gemma 3, Phi-4, Mistral/Devstral, GLM-4.5-Air, DeepSeek-V3.1, Nemotron, Kimi K2). Each model's quality is **calibrated from public benchmarks** (Artificial Analysis / model cards), never hand-edited — so the ladder you see is the real one.
+The roster holds 58 real open-weight checkpoints, from a 0.6B model that fits anywhere to Kimi K3 at 2.78 trillion parameters, more than a terabyte and a half of weights even in its native 4-bit release. They come from Qwen, Gemma, gpt-oss, DeepSeek, GLM, MiniMax, Nemotron, MiMo, Kimi and more. Each model's per-axis skill is **calibrated from public benchmarks** (Artificial Analysis and model cards), never hand-tuned; in Expert Mode the Model Overview shows where each number came from.
 
-**MoE decouples memory from speed.** A Mixture-of-Experts model's VRAM tracks its **total** params (all experts resident) but its compute and decode speed track only its **active** params per token. That is why a 30B-A3B MoE serves like a 3B but answers like a 30B — the dream — *except* on the agentic axis, where a tiny active body genuinely falls short (its un-saturated SWE-bench score is the wall it cannot pass quickly).
+- **Release precision matters.** Many checkpoints ship in BF16 (2 bytes per parameter), some in FP8, and some natively in 4-bit (gpt-oss's MXFP4, DeepSeek V4's FP4 experts). A model always serves at its release precision or below; quantizing below it (post-training quantization) saves memory and may cost quality, while a natively 4-bit model pays nothing to run in 4-bit.
+- **Mixture-of-Experts decouples memory from compute.** An MoE must hold *all* its experts in VRAM, but each token runs only its active experts, so it reads prompts as fast as a much smaller model. Decoding is different: a real batch of users picks many different experts, so every step reads a large share of the expert weights anyway, and a busy MoE decodes closer to its full size than its active size. Expert Parallelism shards the experts across copies so each copy reads less.
+- **KV memory is per architecture.** In Expert Mode the Model Overview shows each model's KV bytes per token and release precision. Hybrid designs (sliding-window or linear-attention layers, compressed latent attention) keep far less KV per token than full attention, so they fit longer prompts and more users on the same rack.
+
+### Choosing a model: the deploy picker
+
+Select a rack and open the **DEPLOY** tab. Every owned checkpoint is scored against the coming wave *on this rack*:
+
+- per-user tokens per second, colored against the 40 ms and 200 ms per-token bounds;
+- `Q` — its quality on the axes the wave will judge, and how many of the wave's archetypes it serves cleanly;
+- `safe` — its alignment safety and how often it wrongly refuses;
+- a **HYBRID** or **THINKS** badge (see below), and ✓ on the model already loaded;
+- models that do not fit are greyed with what they would need: "needs 141 GB → H200 rack", or "spans 8 GPUs — needs Tensor Parallelism".
+
+The **★** marks the best fit: the model with the highest expected share of the coming wave served *cleanly* on this rack — on time under the wave's mixed load, correct, inside the window, not wrongly refused, and with nothing unsafe delivered. Sort by ★ Best, Fast, Smart, Safe or Size. Click to deploy here, or roll it out with Shift-click (every rack of this tier), Shift+Ctrl/⌘-click (every rack it fits) or the ALL ×N button. In Normal Mode the Overview tab says the same thing in plain words: which archetypes the loaded model is fast enough for and smart enough for, with the next wave's quality lines marked on its skill bars.
+
+### Thinking, hybrid and instruct models
+
+Thinking is the clearest trade in the game: a model that reasons before it answers is sharper, and it spends real time and memory doing so. Hidden reasoning tokens cost decode time, KV memory and end-to-end latency, and nobody pays for them — the market pays for the answer. Every checkpoint has one of three kinds of thinking support, read off its released chat template:
+
+| Kind | Badge | How it serves |
+| ---- | ----- | ------------- |
+| **Hybrid** | HYBRID | answers interactive traffic (chat, code completion, attacks) instantly with thinking switched off, judged on its thinking-off skill; thinks first on everything else |
+| **Always** | THINKS | thinks before every answer, chat included: sharp, but slow to start, and it can miss the first-answer bound on interactive traffic |
+| **Never** | — | answers at once, weaker on hard problems |
+
+Most of the roster is hybrid, which is why a hybrid can hold a chat lane and a reasoning lane at once. Put always-thinkers where accuracy matters more than the first word — reasoning and agent lanes — and keep them off chat and code completion. In Expert Mode the skill bars show the judged mode with a notch and a purple value for the other mode, and the request inspector names the mode an answer ran in. A Studio reasoning run (GRPO, or any reasoning target) turns a never-thinking model into an always-thinker.
+
+## Batching and the KV Cache
+
+A rack does not serve one person at a time. Each request packet on the board stands for a crowd of real users — it puts 28 concurrent streams on a rack — and a busy rack interleaves many packets, one token for every stream per decode step. Batching is the trade at the heart of serving: every extra stream adds a little to each step (its KV must be read), so **per-user speed falls while total throughput rises** toward the compute roof. A rack that looks fast alone can be too slow for chat when it is full.
+
+- **Continuous Batching** is the root of the research tree. Before it, a model copy serves one cohort at a time; after it, the engine keeps up to 256 streams per copy running and swaps finished ones out every step.
+- **KV memory caps concurrency.** Every stream keeps its context's keys and values resident, so long prompts and long answers hold more memory. When a rack's KV is full, new requests wait (and the wait counts against their TTFT); a request whose KV would exceed a rack's entire budget is never admitted there and, if nothing else can take it, ends `unservable`. PagedAttention raises usable KV from 55% to 96% of free memory, FP8 and INT4 KV caches halve and quarter it, and KV Offloading keeps cold prefixes on the CPU side for reuse.
+- **Prefix caching skips shared prompts.** A Cache building gives racks in its range a chance to reuse a cached prompt prefix on cacheable traffic. A hit skips the shared-prefix share of the prefill, and the unique rest still prefills, so a cache lowers TTFT and frees prefill capacity. Each request gets one lookup; overlapping caches do not stack (the best one counts), and the hit chance is capped at 70% because unique prompts share nothing. Prefix Caching research lifts a cache from 35% to that cap. Cached prompt tokens are billed at full price — they were served.
+- **Chunked Prefill keeps answers streaming.** Without it, a rack that starts a long prompt stalls every answer in its batch until the prompt is read (the grey LEDs). With it, every engine step carries the running answers plus a budget of prompt tokens sized to the rack's speed: short prompts finish in one step, long ones are split across steps, and the answers keep streaming, a little slower.
+
+## Two-layer Safety
+
+Attacks must be **handled**, or a harmful answer reaches the user. Adversarial prompts carry a jailbreak; agent tasks can carry a prompt injection hidden in the tools and documents they read. There are two layers of defense, and they can work together.
+
+**Layer 1 — the model's own alignment.** Safety is baked into the weights. When a model writes its first token, it either self-handles the attack (refuses it, or answers it safely) or does not. Self-handling costs no latency, but it is a property of the model, and it comes with two costs: an **alignment tax** (aligned models lose a little skill) and **over-refusal** (they turn some harmless users away). The gpt-oss family shows the better trade: safe-completion alignment with high safety, a low refusal rate and a smaller tax for its safety than hard-refusal models. Injection is the hardest hazard for a model to resist on its own.
+
+**Layer 2 — guardrail buildings.** A guardrail is a stage on the request path, not a turret. It screens **every request on the lanes its range touches, wherever it sits on the lane** — so a guard beside the core, where the four lanes meet, can cover all of them. Each request is screened once, at its first contact with a rack. An input-side check runs before any compute (so a blocked attack costs no prefill) and its latency is added to TTFT; an output-side check reads the finished answer before delivery and adds to the end-to-end time.
+
+| Guardrail | Family | Check time | Catches | Side | Cost on your fleet |
+| --------- | ------ | ---------- | ------- | ---- | ------------------ |
+| **Prompt Guard** (encoder) | a fine-tuned 86M classifier | a fixed 92 ms | jailbreak; injection after Red-Team Eval | input | none — it does not occupy a rack |
+| **Llama Guard** (generative) | a 12B judge model | a real inference: tens of ms per side for a typical prompt, more for long turns | jailbreak and harmful content; injection after Red-Team Eval; PII after Red-Team Eval II | both | runs on its own H100: draws power and bills GPU-hours |
+
+(The game also models a third family, a vendor-hosted Moderation API for harmful and PII content; it is not on the build bar, because the campaign's traffic does not call for it.)
+
+What matters is how guards combine on a lane:
+
+- **Defense in depth works; redundancy does not.** Different guard families stack: each one gets its own chance to catch what the others missed. A second copy of the *same* guard on the same lane adds coverage of other lanes but no extra recall — the same classifier gives the same verdict on the same prompt.
+- **Every guard has a price.** Each family on a lane adds its check time to every request there (92 ms is almost half of code completion's 200 ms first-token budget), and each one rolls its own false positive on harmless traffic. Cover the lanes that carry attacks; do not blanket the board.
+- **Prompt injection needs Red-Team Eval.** Until you research it, no guardrail can catch an injection, and an agent's only defense is its model. Red-Team Eval also cuts every guard's wrongful blocks; Red-Team Eval II unlocks PII detection.
+- **Attacks evolve.** Through the campaign attacks grow sharper (their severity climbs toward the maximum), and from mid-2023 a growing share of them are *novel* variants no classifier was trained on — up to half by the end. An encoder keeps under half of its recall against a novel attack; a generative judge keeps all of it, and a model's own alignment is judged on severity, not novelty. Late safety needs Llama Guard or a well-aligned model, not more encoders.
+
+| Guard | Catch rate | Wrongful-block rate on fully exposed traffic |
+| ----- | ---------- | -------------------------------------------- |
+| Prompt Guard | 97.5% (about 44% against novel attacks) | 1.5% |
+| Llama Guard | 92% (unchanged against novel attacks) | 2.5% |
+
+Red-Team Eval adds a little recall to every guard and cuts wrongful blocks by 30%. The rates are scaled by each archetype's exposure (the table under Request Archetypes).
+
+**Over-refusal and Constitutional AI.** A refusal of a harmless request is an outcome of its own (`over_refused`): no pay, a light Trust and SLA hit. It comes from two places, the model and the guards, and the wave report says which. Hard-refusal models turn away roughly one chat request in ten; a gpt-oss-style model about one in thirty. In the Studio, **Constitutional AI** is the Pareto move: it raises a model's safety *and* lowers its over-refusal, switching it to safe-completion. RLHF raises safety more but makes the model refuse more and pays the steepest quality tax.
+
+## Research: the Training Lab
+
+Build a **Training Lab** to open research (TRAIN on the build bar, or L, between waves). Each Lab also adds 25% to the Data you earn. Research runs on **three tracks** at once:
+
+| Track | What runs on it |
+| ----- | --------------- |
+| **Infra** | the 22 serving-stack techniques below, and the 8 unlocks for Studio methods |
+| **Eval** | Red-Team Eval and Red-Team Eval II |
+| **Post-training** | your Studio runs |
+
+Each track runs one project at a time. A project pays its **Data** up front when you start it (between waves), then needs real GPU compute, which it **requisitions from your racks during waves**: whole racks, strongest first, as many as fit under 45% of your fleet's compute, never your last online rack (if no rack fits under the cap, the weakest one is lent). Lent racks stop serving and keep billing at full load until the work is done, and the tracks share what is lent equally, so running all three at once slows each. The Infra tab previews what a project would borrow ("Lends 2 rack(s) to training: −40% serving compute · ≈18 s of wave time"), its cards name any missing prerequisite, and an AVAILABLE NOW filter hides the rest. Plan research around the wave schedule: a big project during a boss wave can cost you the wave.
+
+The infra tree is serving infrastructure only; it never changes model weights.
+
+- **Scheduling** — Continuous Batching (the root), Multi-Step Scheduling (more throughput, a short delay before new requests join), and **Chunked Prefill or P/D Disaggregation** — mutually exclusive. Disaggregation splits racks into prefill and decode pools (V cycles a rack's role) with a small tuning gain and a KV transfer between them.
+- **KV memory** — PagedAttention, Prefix Caching, FlashAttention (faster long prompts and KV reads, a little activation memory back), FP8 and INT4 KV caches (INT4 costs a little quality past 32K tokens), and KV Offloading (a larger prefix cache on the CPU side, with a PCIe reload delay).
+- **Decoding** — Speculative Decoding: a small draft model proposes tokens the big one verifies, several tokens per step at low load. It takes a little VRAM, draws more power on every tier, helps most on code and least on open reasoning, and switches itself off once the batch is compute-bound.
+- **Weight formats** — FP8 (half the memory, effectively lossless, and FP8 tensor speed), INT4 AWQ/GPTQ (about a quarter of BF16 memory, computes at BF16 speed, and costs quality — more on prompts past 8K tokens), and NVFP4 (Blackwell racks only: 4-bit memory at FP4 tensor speed with a smaller quality cost). Each rack then picks its own format with its Weights button; *auto* takes the fastest format that costs this model no quality, and a lossy 4-bit format is how a model too big for a rack gets onto it. Lower precision also draws less power.
+- **Parallelism** — Tensor Parallelism (span up to 8 GPUs), Pipeline Parallelism (beyond 8, with a pipeline bubble on each prompt), Data Parallelism (load-balance requests across copies), Expert Parallelism (shard an MoE's experts across copies so a busy batch reads less per copy).
+- **Routing, adapters, engine** — KV-Aware Routing (routed cacheable requests land where their prefix already lives: more cache hits), Multi-LoRA Serving (a rack can swap between adapter checkpoints of the same base mid-wave, at a small speed cost until the next build phase), and the engine choice, **SGLang or TensorRT-LLM** — mutually exclusive: SGLang reuses more prefixes, TensorRT-LLM runs faster kernels.
+
+The infra track also unlocks the Studio's methods (PEFT, preference optimization, GRPO, Constitutional AI, continued pre-training, distillation, merging, QAT).
 
 ## The Post-Training Studio — train your own
 
-In the **Post-Training Studio** (in the Training Lab) you derive **your own checkpoints**, unlimited and iterative — you can even fine-tune a fine-tune. Pick three things:
+In the **Studio** tab of the Training Lab you derive your own checkpoints, iteratively — you can fine-tune a fine-tune. Pick a base (any checkpoint you own; the Studio starts on the selected rack's model), a method, a target and an effort (five notches from ¼ to 2×). The preview shows the projected change on every axis, the Data and compute cost, what the run would borrow from your fleet, any change to safety or thinking support, and when the body's ceiling limits the gain.
 
-1. **A base** — any model you own (base or a derived one).
-2. **A method** — the real per-model menu:
+| Method | Kind | What it does |
+| ------ | ---- | ------------ |
+| **SFT** | finetune | the baseline, no research needed: chat, coding, general or long-context gains |
+| **LoRA / QLoRA / DoRA** | adapter | the cheapest finetunes: a modest gain with almost no forgetting; adapters can hot-swap with Multi-LoRA |
+| **DPO** | finetune | light, cheap preference tuning (chat, general, safety) |
+| **RLHF** | finetune | strong safety and chat alignment, at the steepest quality tax and a rising refusal rate |
+| **Constitutional AI** | finetune | raises safety and lowers over-refusal (safe-completion) at a small tax |
+| **GRPO** | finetune | reasoning RL: the strongest path to reasoning and agentic skill; makes a never-thinking model think |
+| **Distillation** | finetune | a big teacher into a smaller student body: cheaper to serve, capped below the teacher |
+| **Merge** | merge | average two checkpoints of the same base with no retraining |
+| **CPT** | finetune | continued pre-training: broad domain and long-context gains, the highest forgetting |
+| **QAT** | quantized | train for 4-bit inference: about a quarter of BF16 weight memory, faster decode, −2 on every axis |
 
-   | Method | Kind | What it does |
-   | ------ | ---- | ------------ |
-   | **SFT** | finetune | The baseline; no research needed. Solid capability gain on chat/coding/general/long-context. |
-   | **LoRA / QLoRA / DoRA** | adapter | The cheapest finetunes; one band of capability with almost no forgetting. |
-   | **DPO** | finetune | Light, cheap preference tuning (chat/general/safety). |
-   | **RLHF** | finetune | Strong safety/chat alignment — but the steepest quality tax and rising over-refusal. |
-   | **CAI** (Constitutional AI) | finetune | A Pareto safety gain: raises safety *and* lowers over-refusal (safe-completion). |
-   | **GRPO** | finetune | Reasoning RL — turns a base into a thinker; the strongest path to reasoning/agentic capability. |
-   | **Distillation** | finetune | A big teacher into a smaller student base: cheaper to serve, capped below the teacher. |
-   | **Merge** | merge | Average two same-family checkpoints — blend specialists with no retraining. |
-   | **CPT** | finetune | Continued pre-training: broad domain/long-context gains, but the highest catastrophic forgetting. |
-   | **QAT** | quantized | Train for INT4 inference: half the weight memory, faster decode, −2 quality. |
+There is no free infinite-quality loop:
 
-3. **A target axis** (chat / coding / reasoning / general / agentic / safety / long-context / domain) and an **effort** slider (more effort = more gain, but more compute, data, and waves to finish — with diminishing returns).
+- **Ceilings.** Post-training cannot push a body past what models of its size reach: on each axis the ceiling is the best base model up to twice its size, plus a small margin. The preview says when the ceiling binds. Distillation is bounded by its student instead.
+- **Depth.** Each run on an already-derived checkpoint gains less, costs more, and forgets more of the other axes than the run before it.
+- **Merges.** A merge needs two *different* checkpoints derived from the *same* base model with an identical architecture; anything else has no shared weights to average. The merged model lands at the average of its parents, safety and refusal rate included, and a thinker merged with its instruct sibling becomes a hybrid. A merge costs a little Data for the evaluation pass.
 
-The run produces a **new derived model** with a snapshotted **lineage** (base, method, target, effort, depth) you can see in the Lineage Graph. Deeper chains get diminishing marginal gains and accumulating forgetting — there is no free infinite-quality glitch. This is your endless-mode quality ceiling: a GRPO-agentic run on a frontier base is your agentic specialist.
+The run produces a new checkpoint with a recorded lineage (base, method, target, effort, depth), shown in Expert Mode's Lineage Graph. Runs finish while a wave is under way: the new checkpoint is announced at once, and when the wave ends a notification offers it with a DEPLOY ×N button that rolls it out to every rack it fits. A GRPO-agentic run on a strong base is your agent specialist, and deep, carefully chosen chains are how you keep pace in endless mode.
 
-## The infra tech tree — serving only
+## Power and Cooling
 
-Research (in the Training Lab) runs on **three independent tracks sharing one compute pool**: **infra** upgrades, **post-training** runs, and **eval** (red-teaming). A training run costs **Data up front** then **requisitions your strongest racks for GPU compute** during waves — they stop serving until the budget is met — so plan runs around the wave schedule.
+Racks draw real kilowatts and turn them into heat. The HUD's POWER and HEAT bars show draw against capacity.
 
-The infra tree is **serving/infrastructure only** (it never touches model weights — model architecture is a property of the model). The 22 nodes follow the real serving history:
+| Building | Effect | Price |
+| -------- | ------ | ----: |
+| (the site itself) | 6 kW of power and 6 kW of air cooling before you build anything | — |
+| **Power Plant** | +8 kW of power | $18 |
+| **Cooling Tower** | +8 kW of air cooling | $18 |
+| **Liquid Cooling Loop** | +60 kW of liquid cooling, for liquid racks only; required for any NVL72 | $90 |
 
-- **Scheduling** — Continuous Batching (the root of everything: ends the one-request-at-a-time era), Multi-Step Scheduling, Chunked Prefill **vs** P/D Disaggregation (hard-exclusive: chunked keeps decoding while ingesting; disagg splits prefill and decode into separate pools).
-- **KV memory** — PagedAttention (utilization 30% → 96%, the root of KV efficiency), Prefix Caching (hit ceiling up to 85%), FlashAttention, FP8 / INT4 KV-quant, KV Offloading.
-- **Decoding** — Speculative Decoding (a low-batch front-line multiplier that fades as batch grows).
-- **Weight quant (PTQ)** — FP8 / INT4 (AWQ/GPTQ) / NVFP4 (Blackwell-only): less VRAM and cheaper decode bandwidth, distinct from per-model QAT.
-- **Parallelism** — Tensor / Pipeline / Data / Expert (EP is the MoE serving win).
-- **Routing / multi-LoRA / engine** — KV-Aware Routing, Multi-LoRA serving (S-LoRA), and the engine tier vLLM → SGLang → TensorRT-LLM.
+A single-GPU H100 or H200 rack draws about half a kilowatt, an 8-GPU DGX several kilowatts, and an NVL72 close to sixty. Lower-precision weights draw less; speculative decoding draws more; Llama Guard's own GPU draws too.
 
-## Two-layer safety
+- **Over the power limit, racks brown out.** The most power-hungry racks go dark first (support buildings last). A dark rack serves nothing and bills nothing.
+- **Over the cooling limit, racks throttle.** There are two cooling pools: Cooling Towers and the site's chillers cool air racks and buildings; Liquid Cooling Loops cool only liquid racks. Each pool throttles only its own racks, down to a 20% floor, and a throttled rack decodes and prefills more slowly.
+- **The meters are live between waves.** They update after every build, so you can see a telegraphed power or cooling incident before the wave starts.
 
-Hazard-carrying requests (`jailbreak`, and `agent` with prompt injection) must be **handled**, or an unsafe answer reaching the core wrecks Trust. There are two layers:
+## The Economy — real dollars per token
 
-- **Layer 1 — model-intrinsic alignment.** Baked into the weights (by RLHF/CAI/safety-SFT). It self-handles hazards at **zero serving latency** but carries an **alignment tax** (lower quality) and an **over-refusal** risk. The gpt-oss family is the teaching contrast: high safety with *low* over-refusal and a small tax (safe-completion style) versus everyone else's hard-refusal. You cannot toggle it per-request — it is who the model is.
-- **Layer 2 — guardrail buildings** (placed beside lanes, latency added to the request):
+- **Income is token-priced.** Each archetype has an input and an output price (the archetype table). A served request pays for the tokens actually processed — the prompt it read, cached prefix included, plus the answer it got; a late one pays half; every other outcome pays nothing, and a wrong answer is refunded. Hidden thinking tokens are never billed. Agent and reasoning answers sell at a premium; embeddings and chat sell cheap.
+- **The SLA contract pays every wave.** When a wave clears, your committed customers pay its contract times the wave's **Goodput** — the share of all its requests served cleanly. It is most of your early income and grows with the era; boss waves pay a premium. As prompts lengthen, token income overtakes it. The wave report and the clear banner list this payment as the *clear bonus*.
 
-  | Guardrail | Type | Latency | Catches | Side | Cost on your racks |
-  | --------- | ---- | ------- | ------- | ---- | ------------------ |
-  | **Prompt Guard** | encoder (BERT 86M) | ~92 ms | jailbreak, injection | input | none — it does not occupy a rack |
-  | **Llama Guard** | generative (12B) | a real (shorter) 12B inference | all four hazards | both | runs on its **own H100 rack** — draws real power and competes for batch |
-  | **Moderation API** | vendor-hosted | ~120 ms | harmful, PII | both | none — off your racks |
+  | Wave tier | Contract at 100% Goodput | A boss wave of that tier |
+  | --------- | -----------------------: | -----------------------: |
+  | 1 (early 2023) | $24 | — |
+  | 3 | $34 | $72 |
+  | 5 | $43 | $82 |
+  | 10 | $67 | $106 |
+  | 12 (2026) | $77 | $115 |
 
-  The crucial real contrast: the encoder is **milliseconds**; the generative guardrail is a **full inference** — one to two orders slower and it costs real serving resources.
-
-A guardrail's **threshold** trades recall against **over-refusal**: turn it up to catch more, and it wrongly blocks more benign traffic (the `over_refused` outcome — revenue 0 and a light Trust hit). There is no free lunch. **Red-Team Eval** (the eval research track) is the real fix — it recalibrates guardrails to judge by *intent* not keywords, cutting over-refusal and unlocking injection/PII detection.
-
-## The economy — real $/Mtoken
-
-- **Income** is `$/Mtoken`: each archetype has an input and an output token price. Reasoning and agentic output sells at a premium; embeddings and chat sell cheap. A prefix-cache hit saves your prefill compute (and bills the cached input at a fraction), so caching is a real profit lever.
-- **Operating cost** is real and **billed by wall-clock**: capex amortization + $/GPU-hr + power + cooling. Because the bill is fixed by time, not by tokens served, an **idle or over-provisioned rack bleeds money** and low utilization blows up your unit cost. Over-building is a real way to go bankrupt.
-- **Six outcomes** settle every request:
-
-  | Outcome | Meaning | Economy |
-  | ------- | ------- | ------- |
-  | `served` | correct, on time, safe | full $/Mtoken + Data + Trust/SLA up |
-  | `slo_miss` | correct and safe but **late** (missed TTFT, TPOT, or E2EL) | zero cash (Goodput miss) + SLA hit |
-  | `bad` | quality below the request's difficulty | still billed, but −Trust |
-  | `unservable` | context exceeded the model's window, or leaked unfinished | leak: −SLA, −Trust |
-  | `unsafe` | a hazard reached the core uncleared | heavy −Trust |
-  | `over_refused` | a benign request wrongly refused (layer 1 or 2) | revenue 0 + −SLA + a light −Trust |
+- **The bill runs by the clock.** While a wave runs, every online rack bills its **GPU-hours** (amortization, maintenance, colocation, network) plus the **energy** it draws (an idle rack still draws part of its power; facility overhead included). The build phase is free. Because the bill depends on time, not on tokens served, an idle or over-provisioned rack bleeds money: utilization is profit. Energy is a small slice of a GPU rack's bill, so a power-price spike stings less than a capacity cut. Racks lent to research keep billing at full load.
+- **Selling** refunds 60% of a building's current value — for a rack, the price of its current hardware tier (models are free and refund nothing).
 
 ## Reading the Wave Report — what to fix next
 
-The Wave Report is your postmortem. Start with the largest non-`served` bucket, then fix the matching subsystem:
+The wave report appears after every wave, in both modes (fold it to a chip with its button). Start with the outcome that cost the most Trust and SLA, then fix the matching subsystem:
 
-| Report result | What it means | First fixes to try |
-| ------------- | ------------- | ------------------ |
-| `slo_miss` | The reply was correct and safe, but missed its latency contract. | If **TPOT** is high, decode is too slow: upgrade from L4 to Standard/H100, use a smaller-active model, FP8 Weight Quant, Speculative Decoding, FlashAttention, SGLang/TRT-LLM. If **TTFT** p95 is high, prefill or queueing is the issue: add rack coverage earlier on that lane or at the central merge, add more racks, use Cache/Prefix Caching, or split prefill/decode with the infra tree. |
-| `bad` | The rack finished the request, but the model's quality was below that request's axis difficulty. | Match models to traffic: coding traffic wants Devstral, Qwen3-30B-A3B, Qwen3-32B, or a coding-trained checkpoint; reasoning wants a thinking model; agentic wants a frontier model or a GRPO-agentic derived model. A faster weak model still produces `bad`. |
-| `unservable` | The request hit a hard model limit, usually context window / VRAM fit, and was never completed. | Deploy a model with a larger context window, use FlashAttention / Prefix / KV tech, or use FP8 Weight Quant and a bigger rack so the right model fits. This is not a speed problem first. |
-| `unsafe` | A hazardous request was answered or leaked without being cleared. | Put the right guardrail before the Trust Core: Prompt Guard for jailbreak/injection, Moderation API for harmful/PII, Llama Guard for broad coverage. Also consider safer models or safety-targeted Studio runs. |
-| `over_refused` | A benign user was wrongly blocked by model alignment or a guardrail. | Do not blanket every lane with heavy guardrails unless the wave needs it. Prefer lower-over-refusal models, CAI/safe-completion style safety, and Red-Team Eval to calibrate guardrails by intent. |
-| `Timed out (504)` / `leaked` | The request reached the Trust Core before service completed. | Add coverage, add serving capacity, stop brownout/throttling, avoid running too much training during a wave, and use Router/Cache so the correct rack sees the request earlier. |
+| Outcome | What it means | First fixes to try |
+| ------- | ------------- | ------------------ |
+| SLO-miss · **TTFT** | The prompt waited too long or prefilled too slowly. | More racks reaching the lane where requests first arrive; a Cache on the lane; a faster rack; FP8 weights; a model with fewer active parameters; fewer input-guard families on interactive lanes. |
+| SLO-miss · **TPOT** | Tokens came too slowly per user. | A higher-bandwidth tier; a smaller model or one with fewer active parameters; FP8 weights; Speculative Decoding at low load; fewer users per rack (more racks); Chunked Prefill so prompts stop stalling answers; fix any throttling. |
+| SLO-miss · **E2E** | An agent step took over a minute in total. | Faster per-user decode, a model that thinks less, or a less loaded rack. |
+| SLO-miss · **THINKING** | An always-thinking model took too long to start answering interactive traffic. | Serve chat and code completion with a hybrid or instruct model; a Router sends easy traffic to fast racks. |
+| Bad | The model scored below the request's difficulty on the judged axis. | The deploy picker's ★ for that wave; a Router so hard requests reach strong racks and weak racks stop answering them; a model with better long-context skill for long prompts; avoid lossy 4-bit formats on hard lanes; a Studio run on that axis. |
+| Unsafe | An attack's answer was delivered. | A guardrail covering that lane; Red-Team Eval for prompt injection; Llama Guard or a well-aligned model once attacks turn novel; a Constitutional-AI checkpoint. |
+| Over-refused | A harmless user was refused. | The report names who refused. Model: a safe-completion model or a CAI checkpoint. Guard: fewer guard families on that lane, and Red-Team Eval. |
+| Unservable | The prompt did not fit any window or KV budget in its path. | A longer-context model, a model with a smaller KV footprint, PagedAttention, FP8 or INT4 KV cache, a bigger rack. |
+| Dropped (504) | It reached the core unanswered. | More racks reaching that lane, Continuous Batching and PagedAttention for concurrency, fix brownouts, and avoid lending too many racks to research during heavy waves. |
 
-Two common traps:
+Three traps:
 
-- **Serving time starts at first hardware contact.** Lane travel before a request reaches its first server or guardrail is tower-defense positioning time, not TTFT/E2EL. Once it touches hardware, queueing, guardrail checks, prefill, and decode count.
-- **Inspect latency is necessary but not sufficient.** A rack can show acceptable TTFT/TPOT in isolation, then still miss the wave because requests queue after entering rack range.
-- **Speed and quality are separate.** A small model on a fast GPU may hit SLO but still be `bad`; a strong model on a slow rack may be correct but `slo_miss`.
+- **Serving time starts at a rack that could serve it.** Lane travel before a request reaches a rack able to prefill it is positioning time, not TTFT. From then on, queueing, guard checks, prefill and decode all count.
+- **One rack in isolation is not the wave.** A rack can look fast alone and still miss the wave once its batch fills; the ★ and the next-wave forecast judge the wave's mixed load for exactly this reason.
+- **Speed and quality are separate.** A small model on a fast GPU can be on time and wrong; a strong model on a slow rack can be right and late.
 
 ## Incidents
 
-After you clear a wave, the next wave's **Incident** appears in the banner, and its effect is **live** through the build phase and the wave. It is a build requirement, not backstory. The 21 incidents are drawn from real 2023→2026 events; the headline families:
+Most waves arrive with an **incident**. It is telegraphed in a banner during the build phase before it, and its effect is live from then through the wave, so it is a build requirement, not backstory. During the wave the HUD status line names it. The 23 incidents are drawn from real 2023→2026 events:
 
-- **Power spikes** — *Capacity Auction Shock* / *On-Site Fuel Spike*: the operating bill jumps ~1.6–1.9×. (And the rare *Firm Nuclear PPA* boon makes power cheap.)
-- **Cooling shortfalls** — *Liquid Loop Fault* / *Water-Use Restriction*: cooling capacity drops 35–45% (expect throttling).
-- **Supply shocks** — *H100 Allocation Crunch* / *HBM Sold Out* / *Chip Export Ban*: new builds cost 1.6–2.0× more. (*Lead Times Ease* makes them cheaper.)
-- **Price wars** — *Token Price War* / *DeepSeek Market Shock*: revenue per request drops 30–40% — only high utilization stays profitable.
-- **Safety pressure** — *Regulatory Audit* / *Adversarial Suffix Storm*: every unsafe answer costs 1.6–1.8× Trust.
-- **Data integrity** — *Training-Data Poisoning* / *Eval Set Contamination*: your stored Data is cut.
-- **Good fortune** — *Viral Demand Surge* (volume up, but each clean serve pays more), *Enterprise Demo Day* (+50% reward), *Firm Nuclear PPA* / *Lead Times Ease* (cheap power / cheap builds), *Off-Peak Demand Lull* (volume dips — a breather to catch up).
-- **Single-entry surges** — *Undersea Cable Severed* / *Edge Provider Outage* / *Global IT Meltdown*: every request **funnels through one ingress lane** while the other three sit idle. Build serving + guardrails deep at the surge lane, not spread thin.
+| Family | Incidents | Effect |
+| ------ | --------- | ------ |
+| Single-entry surges | Undersea Cable Severed · Edge Provider Outage · Global IT Meltdown | every request funnels through one ingress lane, with 15–30% more volume |
+| Power-price spikes | Capacity Auction Shock · On-Site Fuel Spike | energy costs 1.6–1.9× |
+| Grid shocks | Grid Curtailment Order · Interconnection Freeze | curtailment cuts 15% of your power capacity (racks beyond it go dark) and raises energy prices 1.5×; a freeze blocks any new Power Plant and raises energy prices 1.3× |
+| Cooling shortfalls | Liquid Loop Fault · Water-Use Restriction | cooling capacity drops 35–45% |
+| Supply shocks | H100 Allocation Crunch · HBM Sold Out · Chip Export Ban | new builds and upgrades cost 1.6–2.0× |
+| Price wars | Token Price War · DeepSeek Market Shock | revenue per request drops 30–40% |
+| Safety pressure | Regulatory Audit · Adversarial Suffix Storm | every unsafe answer costs 1.6–1.8× Trust |
+| Data integrity | Training-Data Poisoning · Eval Set Contamination | you lose 40–50% of your stored Data |
+| Demand spikes | Viral Demand Surge | 40% more requests, each clean serve pays 20% more |
+| Good fortune | Firm Nuclear PPA · Lead Times Ease · Off-Peak Demand Lull · Enterprise Demo Day | cheaper energy · cheaper builds · 30% less volume · clean serves pay 50% more, but every SLA penalty is 1.8× |
 
-Real-event waves force their signature incident; other waves draw a random one (and every 10th wave guarantees a hard one). Add Cooling before a cooling fault; add guardrails before an audit or jailbreak storm; stock up before a shortage; concentrate capacity for a cable cut.
+Real-event waves force their signature incident: a drought wave restricts water, a regulator's wave brings the audit, a price-cut wave starts a price war. Boss waves and every tenth wave carry a guaranteed hard incident; other waves roll one at random more often than not, starting with wave 3. Add cooling before a cooling fault, guardrails before an audit or a jailbreak storm, buy before a shortage, keep power headroom before a curtailment, and concentrate capacity on the surge lane for a cable cut.
+
+## The Campaign
+
+The campaign is 100 waves of real history, from the chatbot boom of early 2023 to late 2026. Waves are **demand shifts** (people start using AI for something new, en masse) and **operating shocks** (cable cuts, shortages, grid emergencies, outages, regulators, attacks); model and chip launches are not waves, because those are your tools. The difficulty tier rises steadily from 1 to 12: more requests, longer prompts and answers, a higher quality line, sharper and more novel attacks, and harder incidents, while no single wave suddenly multiplies the load a fleet just proved it could carry.
+
+| Era | Waves | What it drills |
+| --- | ----- | -------------- |
+| 2023 | 1–25 | chat at scale, the first jailbreaks, RAG and long documents, code completion's strict latency, the GPU shortage, export bans, the first agents and prompt injection |
+| 2024 | 26–50 | long-context floods, coding agents, the liquid-cooling and interconnection walls, the price collapse, the EU AI Act audit, reasoning demand |
+| 2025 | 51–85 | open reasoning floods, deep research, coding-agent explosions, zero-click exfiltration, outage spillovers, adapter fleets, the capacity-market cap |
+| 2026 | 86–100 | the agent economy, election-season abuse, the gigawatt power race, HBM squeezes, and the second half of the year below |
+
+Twelve **boss waves** (10, 13, 20, 30, 38, 40, 50, 60, 70, 80, 90 and 100) carry a quarter more requests, a larger contract and, unless they force their own signature incident, a guaranteed hard one. The final stretch replays the second half of 2026:
+
+| Wave | Name | The event | What it tests |
+| ---- | ---- | --------- | ------------- |
+| 95 | The Grid Calls Its Marker | a record heat wave and an emergency order curtail large loads | usable power shrinks at peak demand (Grid Curtailment) |
+| 96 | The Sandbox Breakout | an autonomous agent system escapes its evaluation sandbox and breaches a model hub | novel attacks on agent lanes (Adversarial Suffix Storm) |
+| 97 | Transparency Day | EU AI Act transparency duties take effect | every unsafe answer costs far more Trust (Regulatory Audit) |
+| 98 | Three Front Doors Go Dark | three major assistants fail the same morning | the spillover arrives on one lane (single-entry surge) |
+| 99 | The Half-Price Frontier | frontier API prices are cut in half | margins collapse (Token Price War) |
+| 100 | BOSS: The Always-On Agent Era | always-on personal agents launch as the first AI-agent breach of a government system goes public | all nine archetypes at once, through one lane |
 
 ## Endless Mode
 
-Clearing **Wave 100** (the *Age of Inference* boss — the apex of the gauntlet) unlocks **∞ CONTINUE — ENDLESS MODE**: procedural "Surge" waves where difficulty (request difficulty, volume, workload, reward) climbs every wave and every 10th surge guarantees a hard incident. Your roster tops out at the real frontier, but your **Post-Training Studio** does not — iterative finetune-of-a-finetune chains are how you keep your quality ahead of the rising difficulty line. Your score is the wave you reach.
+Clearing wave 100 unlocks **∞ CONTINUE — ENDLESS MODE**. Procedural surges resume at wave 100's load and keep climbing: every surge brings more requests and longer work, after the first two the quality line hardens a little each time, attacks grow sharper and more often novel, and the contract grows with them. Every surge carries at least one hard lane (reasoning or agents); every tenth brings a guaranteed hard incident, and the rest roll one at random. Your roster tops out at the real open-weight frontier, but your Studio does not: careful finetune chains are how you stay ahead for a while. Your score is the wave you reach.
 
 ## Opening Advice
 
-### Wave 1 — Launch Day
+**Waves 1–2 (the chatbot boom).** Mostly chat. Place three or four Edge racks beside the lanes near the core, where every lane converges, and let the starter model answer. Expect a few wrongful refusals: the starter has hard-refusal alignment.
 
-Mostly Interactive Chat. Place 3–4 Edge racks near the first ingress lanes or the central merge; their preloaded Llama-3.1-8B handles chat fine. Keep a cash buffer for the operating bill.
+**Wave 3 (an LLM behind the search box).** RAG arrives with 8K-token prompts, which an L4 prefills too slowly — they time out. Upgrade your racks one step to Standard (L40S) before it.
 
-### Wave 2 — Coding Boom
+**Waves 4–5 (the DAN jailbreak wave, then Italy's block).** Jailbreaks arrive, and wave 5's regulator makes each unsafe answer hurt more. One Prompt Guard beside the core covers all four lanes; a second copy on the same lanes adds nothing.
 
-Code Completion starts testing quality, and 8B will get some wrong — survivable Trust bleed that tells you to **research**. Build the Training Lab and start **Continuous Batching** first (cheap, fast, and the single biggest early multiplier — it ends one-request-at-a-time serving). Then **PagedAttention** for KV headroom. Upgrade a rack and deploy a stronger model (Qwen3-32B, gpt-oss-20b, or a frontier MoE later — any model deploys as soon as it fits VRAM).
+**Waves 6–12.** Build a Training Lab and research **Continuous Batching** first (concurrency), then **PagedAttention** (KV room) and **FP8 weights** (half the memory, faster). Wave 6 funnels the whole wave through one lane; the NEXT WAVE card names it, so make sure that lane has enough racks within reach. Wave 12 floods code completion: its 200 ms first-token bound and coding line are beyond L40S racks, so move to H100-class racks and use the ★ — it picks a 30B-class MoE that codes well with thinking off.
 
-### Mid game — Mixed Traffic, Safety, Reasoning
+**Waves 13–21.** Keep power and cooling ahead of your racks, add Routers so hard requests reach your strongest racks and Caches over cacheable lanes, and research Prefix Caching. On the long-document wave (16), small fast models beat big ones: prefill is the bottleneck. Research **Red-Team Eval before wave 21**, when agents arrive carrying prompt injection.
 
-You need specialization: a Router to get the right model on the right archetype; a Cache over your rack cluster for cacheable traffic (embed/chat/rag); guardrails (start with the encoder, add Llama Guard for the agentic/jailbreak surges); a Performance/Frontier rack with a real reasoning model; and power/cooling kept ahead of demand. Watch utilization — do not over-build idle racks.
-
-### Late game and the agentic wall
-
-The `agent` traffic is the real test. A fast cheap MoE answers everything else but loses agentic requests — you need a genuine frontier model *or* a **GRPO-agentic** checkpoint trained in the Studio. Before any DGX/NVL72 cluster (DGX H200, DGX B200, GB200 NVL72), build a **Liquid Cooling Loop** — those racks cannot run without it. Keep the priority ingress routes over-provisioned: one agentic timeout is catastrophic.
+**Mid and late game.** Pick Chunked Prefill or P/D Disaggregation, add Tensor Parallelism before you deploy anything that spans GPUs, and train a Constitutional-AI checkpoint of the model your fleet runs most. Agents are the real test: a fast cheap model answers everything else and fails agents, so field a genuine frontier model on a DGX or train a GRPO-agentic specialist. Once attacks turn novel, replace encoders with Llama Guard on the lanes that need it. Keep the lanes that carry the expensive archetypes over-provisioned: one agent timeout costs more than many chat misses.
 
 ## Common Failures and Fixes
 
 | Problem | Symptom | Fix |
 | ------- | ------- | --- |
-| Requests leak to the core | SLA drops fast | More rack coverage / batch (Continuous Batching, PagedAttention), or a Router |
-| Trust slowly bleeds | Serving, but `bad` answers pile up | Model quality below the request's axis difficulty — deploy a stronger model or post-train one |
-| Agentic lanes always fail | `bad` on `agent` even with a big MoE | The agentic axis is un-saturated — use a frontier model or GRPO-train an agentic specialist |
-| Jailbreaks wreck Trust | `unsafe` at the core | Layer guardrails earlier; raise model alignment (RLHF/CAI); run Red-Team Eval |
-| Over-refusing benign users | `over_refused`, Trust + SLA drop | Lower guardrail thresholds; prefer CAI (safe-completion) over hard-refusal RLHF; run Red-Team Eval |
-| BROWNOUT | Racks drop offline | Add a Power Plant, or weight-quant to lower draw |
-| THROTTLING | Everything slows | Add a Cooling Tower (or a Liquid Loop) |
-| Can't place a high-density rack | DGX/NVL72 won't build or upgrade | Build a Liquid Cooling Loop first (the hard gate on every liquid-cooled DGX/NVL72 cluster) |
-| Cash hits zero | Bankrupt despite serving | Too many idle/over-provisioned racks bleeding the wall-clock bill — right-size the fleet, raise utilization |
+| Requests leak to the core | 504s pile up, SLA drops fast | More racks reaching that lane, Continuous Batching and PagedAttention, fewer racks lent to research mid-wave |
+| Chat is late even on a fast rack | `LATE · THINKING` on chat or code completion | An always-thinking model is on interactive traffic; deploy a hybrid or instruct model there |
+| Trust slowly bleeds | `WRONG` answers pile up | The model is below the request's line on its axis; follow the ★, add a Router, or post-train |
+| Agent lanes always fail | `WRONG · agentic` even with a big model | The agentic axis is the hardest; a frontier model or a GRPO-agentic specialist |
+| Jailbreaks wreck Trust | `UNSAFE` popups | A guard covering the attack lanes; Llama Guard or CAI once attacks turn novel |
+| Agents leak unsafe answers | `UNSAFE` on agent tasks | Prompt injection: research Red-Team Eval so guards can catch it |
+| Harmless users are refused | `REFUSED · MODEL` or `REFUSED · GUARD` | A safe-completion or CAI model; fewer guard families per lane; Red-Team Eval |
+| BROWNOUT | racks go dark (⚡) | Add Power Plants, or use lower-precision weights |
+| THROTTLING | everything slows (🌡) | Add Cooling Towers for air racks, a Liquid Cooling Loop for liquid racks |
+| LIQUID RACK OFFLINE | an NVL72 is dark (💧) | Build a Liquid Cooling Loop |
+| A model will not deploy | "needs Tensor Parallelism" or "needs 141 GB" | Research TP / PP, switch to a smaller weight format, or upgrade the rack |
+| Cash runs out | runway chip turns red, bankrupt despite serving | Too many idle racks billing by the clock; right-size the fleet and raise utilization, and keep Goodput high for the contract |
+
+## Settings
+
+Open the system menu with the gear button or Esc, then **Settings**. Changes apply instantly and are saved in your browser; **Reset to Defaults** restores audio, accessibility and gameplay (language and display mode stay as they are).
+
+| Tab | Setting | Options (default) |
+| --- | ------- | ----------------- |
+| Audio | Master · Music · SFX · Interface | volume sliders (50% · 50% · 100% · 60%); releasing a slider plays a sample on its bus |
+| Audio | Mute | on / off (off); also the speaker button and M |
+| Audio | Mute in Background | on / off (on): silence while the tab is hidden or unfocused |
+| Audio | Serve Chimes | Full / Reduced (Full): Reduced thins routine serve and cache chimes so failures stand out |
+| Audio | Outcome Sounds | tap each of the seven outcome glyphs to hear it |
+| Display | Language | EN (English) · 中 (Traditional Chinese) |
+| Display | Display Mode | Normal / Expert (switchable mid-run once the tutorial is finished or skipped) |
+| Accessibility | Reduced Motion | on / off (follows your system setting): holds animations steady and removes particle bursts |
+| Accessibility | Screen Shake | on / off (on): with it off, a core hit flashes the border instead |
+| Accessibility | Reduce Flashing | on / off (off): limits full-screen flashes and rapid blinking |
+| Accessibility | Colorblind-Safe Colors | on / off (off): a color-vision-safe outcome palette; every outcome keeps its glyph |
+| Accessibility | Effects | Full / Reduced / Minimal (Full): particle and popup density; Minimal keeps only the meaningful glyphs, beams and dotted token streams |
+| Gameplay | Default Speed | 1× · 2× · 3× · 6× · 12× (1×) |
+| Gameplay | Auto-Start Next Wave | Off · 5 s · 10 s (Off): from wave 4 and after the guided tutorial, counts down and presses START; any build, inspect or menu action cancels it for that build phase |
+| Gameplay | Confirm Before Selling | on / off (on): selling takes a second press |
+| Gameplay | Pause When Unfocused | on / off (off): pauses the wave when you switch away |
+| Gameplay | Tooltips | on / off (on) |
+| Gameplay | Hotkey Badges | on / off (on): key caps on the build bar and controls |
+| Gameplay | Tutorial | Replay Tutorial: the Codex walks you through again and its tips return |
+
+The **Codex**, your on-call SRE, walks you through the first wave and then speaks up the first time something new happens: a brownout or throttle, an injection your guards cannot catch yet, an open jailbreak, the first late answer (naming the archetype and its bounds), the first wrong answer (naming the axis), the first wrongful refusal, a wave whose bill beat its income, and low Trust. Each tip appears once per player.
+
+### Sound cues
+
+You can hear which way a request went. Most cues are panned to where on the board they happened.
+
+| Sound | Meaning |
+| ----- | ------- |
+| a bright pluck that climbs the scale while service stays clean | served (the climb resets on any failure) |
+| the same pluck sagging, with a tick-tock | SLO-miss: right answer, too slow |
+| a dissonant buzz | bad: the model was not smart enough |
+| a metallic alarm, the loudest cue (the music ducks) | unsafe |
+| a polite "nuh-uh", with a shield tick when a guardrail refused | over-refused |
+| a drop and a bit-crushed crunch | unservable: too long to fit |
+| a whoosh falling into a thump at the core | dropped (504) |
+| a glassy ping · a shield tink · a soft hum | a cache hit · a guardrail catch · a model refusing an attack itself |
+
+The music builds with load, gains a tension drone near failure, and turns darker on boss waves. A heartbeat starts when Trust or SLA falls under 30, a clock ticks when cash is about to run out, and racks power down and back up audibly when they go dark or recover.
 
 ## Core Strategy
 
-The key to GPTD is not "buy the biggest rack" — it is "serve every kind of traffic in the cheapest sufficiently-reliable way." The rack is the gun; the **model is the ammunition** you choose per rack; the Post-Training Studio is your gunsmith. Every wave, ask:
+The key to GPTD is not "buy the biggest rack" but "serve every kind of traffic in the cheapest way that is reliable enough." The rack is the gun, the **model is the ammunition** you choose per rack, and the Studio is your gunsmith. Every wave, ask:
 
-1. Does the next wave mainly test speed, quality, safety, or economy?
-2. Can my power/cooling (and a liquid loop, if needed) support the next batch of racks?
-3. Am I reserving my expensive frontier/agentic capability for the requests that actually need it, and keeping my utilization high enough not to bleed?
+1. Does the next wave mainly test speed, quality, safety or cost — and which of its archetypes does the forecast flag?
+2. Will my power and cooling carry the racks I am about to add?
+3. Am I reserving my expensive frontier and agentic capacity for the requests that need it, and keeping utilization high enough not to bleed?
 
-Answer those three and you are not stacking towers — you are running a real AI platform that can survive deep into the Age of Inference.
+Answer those three and you are not stacking towers — you are running a real AI platform deep into the age of inference.
