@@ -924,7 +924,7 @@ export const zhTW: Record<string, string> = {
   "set.back": "返回",
   "set.reset": "回復預設值",
 
-  // ===== [ws:sim] sim rules: outcome causes, ledgers, guard/safety copy, agent diagnostics =====
+  // --- outcome causes, refusals, hazards, guard families, handled attacks ---
   // the latency bound an SLO-miss violated first (SloCause)
   "slo.cause.ttft": "TTFT",
   "slo.cause.tpot": "TPOT",
@@ -953,9 +953,8 @@ export const zhTW: Record<string, string> = {
   // the request inspector's account of a handled attack
   "attack.blocked": "攻擊在任何運算之前就被 guardrail 攔下",
   "attack.refused": "攻擊被模型拒絕",
-  // ===== [/ws:sim] =====
 
-  // ===== [ws:models] model roster: new models, provenance labels =====
+  // --- model detail: attention, KV, precision, benchmark provenance, thinking support ---
   "attn.MHA": "MHA",
   "attn.MQA": "MQA",
   "attn.GQA": "GQA",
@@ -994,9 +993,8 @@ export const zhTW: Record<string, string> = {
   "reqi.n.mode.thinking": "它會先思考（約 {n} 個隱藏 token）再回答",
   "studio.prev.hybrid": "→ 成為混合思考模型：對話即時回答，其餘先思考",
   "codex.row.hybrid": "混合思考",
-  // ===== [/ws:models] =====
 
-  // ===== [ws:physics] serving physics: thinking tokens, parallelism, batching, infra nodes =====
+  // --- serving physics: weight formats, multi-GPU split, deploy blockers ---
   "fmt.bf16": "BF16",
   "fmt.fp8": "FP8",
   "fmt.int4": "INT4",
@@ -1015,9 +1013,8 @@ export const zhTW: Record<string, string> = {
   "deny.needsTp": "{model} 必須跨這座機架的多顆 GPU——請先研究 Tensor Parallelism。",
   "deny.needsPp": "{model} 每份需要超過 8 顆 GPU——請先研究 Pipeline Parallelism。",
   "deny.precision": "這座機架不能用這個權重格式，或模型用這個格式放不下。格式要在兩波之間切換。",
-  // ===== [/ws:physics] =====
 
-  // ===== [ws:economy] economy, campaign waves (names/briefs/teaches), incidents, studio =====
+  // --- economy: research lending, Studio merge and ceiling, cooling pools, novel attacks ---
   "econ.time.sec": "約 {sec} 秒的波次時間",
   "econ.lend": "借出 {n} 座機架去訓練：服務算力 −{loss}%",
   "econ.lend.blocked": "需要至少 2 座上線機架——研究會等待，服務永不中斷",
@@ -1034,6 +1031,7 @@ export const zhTW: Record<string, string> = {
   "deny.mergePartner": "再選一個同基底、但不同的 checkpoint。",
   "deny.mergeRoot": "這些 checkpoint 來自不同的基底模型——權重無法取平均。",
   "deny.mergeBody": "這些 checkpoint 架構不同——沒有可以共同取平均的權重。",
+  // --- incidents and per-wave lessons (English lives in content.ts / campaign-data.ts) ---
   "inc.inc_grid_curtailment.name": "電網限電令",
   "inc.inc_grid_curtailment.desc": "電網緊急命令在輪流停電前先削減大型負載。本波你的電力供應被砍掉 15%（超出的機架熄燈），其餘部分則有一部分靠昂貴的備用發電運轉。",
   "inc.inc_interconnect_queue.name": "併網凍結",
@@ -1138,9 +1136,8 @@ export const zhTW: Record<string, string> = {
   "wave.97.teaches": "相關聯的停機讓你的容量成為所有人的備援：溢出的流量集中從同一道門湧入，強度堪比重試風暴。",
   "wave.98.teaches": "每一次前沿降價都重設市場的 $/Mtoken；只有靠利用率與便宜的 decode，利潤才保得住。",
   "wave.99.teaches": "agent 佔多數的負載下的全套功夫：路由每一種請求、守住 SLO 與 Goodput、擋住注入，並同時撐過電力、Cooling 與供給的上限。",
-  // ===== [/ws:economy] =====
 
-  // ===== [ws:render] board FX: outcome popups, banners, rack/request state =====
+  // --- board FX: outcome popups, banners, rack/request state ---
   "fx.served": "成功",
   "fx.sloMiss": "太晚",
   "fx.bad": "答錯",
@@ -1167,9 +1164,8 @@ export const zhTW: Record<string, string> = {
   "fx.boss": "BOSS",
   "world.noRackInRange": "範圍內沒有機架",
   "world.powerPreview": "電力 {used}/{cap} kW",
-  // ===== [/ws:render] =====
 
-  // ===== [ws:audio] audio: cue names, settings labels =====
+  // --- audio settings ---
   "set.muteInBackground": "背景時靜音",
   "set.muteInBackground.sub": "分頁隱藏或視窗失焦時暫停聲音",
   "set.sfxDensity": "服務提示音",
@@ -1178,9 +1174,7 @@ export const zhTW: Record<string, string> = {
   "set.sfxDensity.sub": "精簡會減少一般成功與 Cache 命中的提示音，讓失敗更明顯",
   "set.outcomeSounds": "結果音效",
   "set.outcomeSounds.sub": "點擊試聽每種請求結果的聲音",
-  // ===== [/ws:audio] =====
 
-  // ===== [ws:shell] UI shell: HUD, hotkeys, notifications, next-wave card, wave summary, end screen, settings =====
   // --- outcome causes (OUTCOME_STYLE.causeKey) ---
   "cause.served": "回答正確、安全，且在延遲 SLO 之內。",
   "cause.sloMiss": "答案正確但太慢——錯過了延遲上限（首 token 時間、每 token 速度或端到端）。",
@@ -1408,9 +1402,7 @@ export const zhTW: Record<string, string> = {
   "hud.runLost": "本局結束",
   "hud.runWon": "戰役完成",
   "hud.incidentLine": "{icon}  {label}：{name}",
-  // ===== [/ws:shell] =====
 
-  // ===== [ws:panels] UI panels: inspect, deploy picker, model overview, request inspector, studio, research cards =====
   // --- 共用標籤：能力軸、請求類型、風險、硬體、白話結果 ---
   "axis.short.chat": "對話",
   "axis.short.coding": "程式",
@@ -1619,5 +1611,4 @@ export const zhTW: Record<string, string> = {
   "research.tip.requires": "需要：{v}",
   "research.tip.conflicts": "互斥：{v}",
   "research.trackBusy": "（軌道忙碌中）",
-  // ===== [/ws:panels] =====
 }

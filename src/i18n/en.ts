@@ -565,7 +565,7 @@ export const en: Record<string, string> = {
   // --- misc ---
   'boot.loading': 'BOOTING GIGAPROMPT…',
 
-  // ===== [ws:sim] sim rules: outcome causes, ledgers, guard/safety copy, agent diagnostics =====
+  // --- outcome causes, refusals, hazards, guard families, handled attacks ---
   // the latency bound an SLO-miss violated first (SloCause)
   'slo.cause.ttft': 'TTFT',
   'slo.cause.tpot': 'TPOT',
@@ -594,9 +594,8 @@ export const en: Record<string, string> = {
   // the request inspector's account of a handled attack
   'attack.blocked': 'Attack blocked by a guardrail before any compute',
   'attack.refused': 'Attack refused by the model',
-  // ===== [/ws:sim] =====
 
-  // ===== [ws:models] model roster: new models, provenance labels =====
+  // --- model detail: attention, KV, precision, benchmark provenance, thinking support ---
   'attn.MHA': 'MHA',
   'attn.MQA': 'MQA',
   'attn.GQA': 'GQA',
@@ -635,9 +634,8 @@ export const en: Record<string, string> = {
   'reqi.n.mode.thinking': 'It thinks first (~{n} hidden tokens), then answers',
   'studio.prev.hybrid': '→ becomes a hybrid: instant on chat, thinks on the rest',
   'codex.row.hybrid': 'Hybrid thinking',
-  // ===== [/ws:models] =====
 
-  // ===== [ws:physics] serving physics: thinking tokens, parallelism, batching, infra nodes =====
+  // --- serving physics: weight formats, multi-GPU split, deploy blockers ---
   // weight formats (a per-rack choice among the researched ones)
   'fmt.bf16': 'BF16',
   'fmt.fp8': 'FP8',
@@ -660,9 +658,8 @@ export const en: Record<string, string> = {
   'deny.needsTp': '{model} has to span several GPUs of this rack — research Tensor Parallelism first.',
   'deny.needsPp': '{model} needs more than 8 GPUs per copy — research Pipeline Parallelism first.',
   'deny.precision': 'That weight format is not available on this rack, or the model would not fit in it. Formats change between waves.',
-  // ===== [/ws:physics] =====
 
-  // ===== [ws:economy] economy, campaign waves (names/briefs/teaches), incidents, studio =====
+  // --- economy: research lending, Studio merge and ceiling, cooling pools, novel attacks ---
   'econ.time.sec': '≈{sec} s of wave time',
   'econ.lend': 'Lends {n} rack(s) to training: −{loss}% serving compute',
   'econ.lend.blocked': 'Needs ≥2 online racks — research waits so serving never stops',
@@ -679,9 +676,8 @@ export const en: Record<string, string> = {
   'deny.mergePartner': 'Pick a second, different checkpoint of the same base.',
   'deny.mergeRoot': 'Those checkpoints come from different base models — their weights cannot be averaged.',
   'deny.mergeBody': 'Those checkpoints have different architectures — there are no shared weights to average.',
-  // ===== [/ws:economy] =====
 
-  // ===== [ws:render] board FX: outcome popups, banners, rack/request state =====
+  // --- board FX: outcome popups, banners, rack/request state ---
   'fx.served': 'OK',
   'fx.sloMiss': 'LATE',
   'fx.bad': 'WRONG',
@@ -708,9 +704,8 @@ export const en: Record<string, string> = {
   'fx.boss': 'BOSS',
   'world.noRackInRange': 'no rack in range',
   'world.powerPreview': 'power {used}/{cap} kW',
-  // ===== [/ws:render] =====
 
-  // ===== [ws:audio] audio: cue names, settings labels =====
+  // --- audio settings ---
   'set.muteInBackground': 'Mute in Background',
   'set.muteInBackground.sub': 'Silence audio while the tab is hidden or unfocused',
   'set.sfxDensity': 'Serve Chimes',
@@ -719,9 +714,7 @@ export const en: Record<string, string> = {
   'set.sfxDensity.sub': 'Reduced thins routine serve and cache chimes so failures stand out',
   'set.outcomeSounds': 'Outcome Sounds',
   'set.outcomeSounds.sub': 'Tap to hear how each request outcome sounds',
-  // ===== [/ws:audio] =====
 
-  // ===== [ws:shell] UI shell: HUD, hotkeys, notifications, next-wave card, wave summary, end screen, settings =====
   // --- outcome causes (OUTCOME_STYLE.causeKey): one plain-language line per outcome ---
   'cause.served': 'Answered correctly, safely and within its latency SLO.',
   'cause.sloMiss': 'Right answer, but too late — it missed a latency bound (first token, per-token speed or end-to-end).',
@@ -962,9 +955,7 @@ export const en: Record<string, string> = {
   'hud.runLost': 'Run over',
   'hud.runWon': 'Campaign cleared',
   'hud.incidentLine': '{icon}  {label}: {name}',
-  // ===== [/ws:shell] =====
 
-  // ===== [ws:panels] UI panels: inspect, deploy picker, model overview, request inspector, studio, research cards =====
   // --- shared labels: axes, archetypes, hazards, hardware, plain outcome words ---
   'axis.short.chat': 'Chat',
   'axis.short.coding': 'Code',
@@ -1176,5 +1167,4 @@ export const en: Record<string, string> = {
   'research.tip.requires': 'Requires: {v}',
   'research.tip.conflicts': 'Conflicts with: {v}',
   'research.trackBusy': '(track busy)',
-  // ===== [/ws:panels] =====
 }
