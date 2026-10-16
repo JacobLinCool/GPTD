@@ -4,9 +4,9 @@
 
 > New here? GPTD is a tower-defense game simulating an LLM-inference data center — start with the README.
 
-**Purpose.** GPTD's simulation is meant to be *defensible in front of domain professionals* — LLM inference engineers, SREs, datacenter operators, ML researchers. This document is the ledger of every realism-relevant decision: what the real-world mechanic is (with numbers), what the literature says (cited to REFERENCE-DOSSIER.md §refs), what GPTD ships today (with code pointers), and where we knowingly deviate. When you change a mechanic, update its entry here and in the blueprint.
+**Purpose.** GPTD's simulation is meant to be *defensible in front of domain professionals* — LLM inference engineers, SREs, datacenter operators, ML researchers. This document is the ledger of every realism-relevant decision: what the real-world mechanic is (with numbers), what the literature says (cited to REFERENCE-DOSSIER.md §refs), what GPTD ships (with code pointers), and where we knowingly deviate. When you change a mechanic, update its entry here and in the blueprint.
 
-**Code anchors.** Serving physics + economy: `src/sim/effects.ts`; benchmark→quality: `src/sim/calibrate.ts`; roster: `src/sim/content.ts`; two-layer safety: `src/sim/safety.ts` + `src/sim/combat.ts`; player post-training: `src/sim/models.ts`; research tracks: `src/sim/research.ts`; constants: `src/config.ts`; types: `src/core/types.ts`.
+**Code anchors.** Serving physics + economy: `src/sim/effects.ts`; the combat tick (admission, prefill, decode, routing, cache, layer 1): `src/sim/combat.ts`; guardrail screening: `src/sim/guards.ts`; outcomes and pay: `src/sim/resolve.ts`; two-layer safety constants: `src/sim/safety.ts`; benchmark→quality: `src/sim/calibrate.ts`; roster: `src/sim/content.ts` + `data/*.json`; player post-training: `src/sim/models.ts`; research tracks: `src/sim/research.ts`; power/cooling: `src/sim/power.ts`; campaign curve: `src/sim/campaign.ts`; the shared load forecast: `src/sim/loadForecast.ts`; constants: `src/config.ts`; types: `src/core/types.ts`. Model grounding has its own document: [REALISM-MODELS.md](./REALISM-MODELS.md).
 
 **Status markers.** ✅ shipped · 🔶 shipped but knowingly simplified · ⚪ open / honest design note.
 
@@ -16,223 +16,305 @@
 
 **Numbers may be tuned for gameplay; the sign structure of a tradeoff may not.** A technique that gives 10× in reality may give +35% in-game — that is balancing. But if a technique has real costs (more VRAM, more power, more compute, lower accuracy, higher latency), those costs **must exist in the game with the correct sign**; they may be softened, never deleted. Conversely, a benefit may not be invented that the real technique lacks.
 
-Most serving mechanics are computed from a **real roofline on real hardware specs** rather than a hand-tuned multiplier. The benefit and the cost both *emerge* from the physics (e.g. a small-active MoE serves fast **and** still pins all its experts in VRAM, because VRAM ∝ `paramsTotalB` while speed ∝ `paramsActiveB`). The remaining authored coefficients (recipe gains, two calibration constants) are honestly flagged as such (§7).
+Most serving mechanics are computed from a **real roofline on real hardware specs** rather than a hand-tuned multiplier, so the benefit and the cost both *emerge* from the physics: a small-active MoE serves fast **and** pins all its experts in memory, and a big batch of it reads the union of their experts; a hybrid-attention model holds many more long-context users **because** most of its layers keep no growing KV. The remaining authored coefficients (recipe gains, a few efficiencies, the economy scale) are honestly flagged as such (§7).
 
 ---
 
 ## 1. Serving core — the real roofline
 
-> Reality anchors: REFERENCE-DOSSIER §1.1 (prefill compute-bound / decode bandwidth-bound), §5.6–5.8 (memory + roofline + $/Mtoken), §0#10 (MoE memory-compute decoupling).
+> Reality anchors: REFERENCE-DOSSIER §1.1 (prefill compute-bound / decode bandwidth-bound), §4.3 (chunked prefill / disaggregation), §4.6–4.8 (attention variants, parallelism, MoE), §5.6–5.8 (memory, roofline, $/Mtoken), §0#10 (MoE memory-compute decoupling).
 
 ### 1.1 ✅ Two-phase requests on a real roofline
 
-**Reality.** A kernel's attainable throughput is `min(compute roof, bandwidth roof)`. Prefill processes the whole prompt in parallel (GEMM, compute-bound, ~90–95% H100 utilization); decode emits one token per request per step (GEMV, bandwidth-bound, ~20–40% utilization). Prefill cost ∝ input tokens and is super-linear in prompt length (O(n²) attention); decode cost ∝ output tokens × KV re-read (REFERENCE-DOSSIER §1.1).
+**Reality.** A kernel's attainable throughput is `min(compute roof, bandwidth roof)`. Prefill processes the whole prompt in parallel (GEMM, compute-bound); decode emits one token per stream per step and re-reads the weights plus every stream's KV (GEMV, bandwidth-bound). Tuned engines reach roughly 60–80% of HBM bandwidth on decode and 40–60% of peak FLOPS on prefill (REFERENCE-DOSSIER §1.1, §5.7).
 
-**GPTD.** Every request carries real `inputTokens` / `outputTokens`. The rack computes (`src/sim/effects.ts`):
-- `prefillTokS(n) = aggTflops / (2 × paramsActiveB × superlinear(n))`, `superlinear(n) = 1 + n/16000` (the O(n²) penalty);
-- `decodeTokS_b1 = HBM_BW / (2 × paramsActiveB × bytesPerParam)` (the bandwidth roof);
-- `computeRoofTokS = aggTflops / (2 × paramsActiveB)` (the compute roof decode hits at large batch);
-- `aggDecodeTokS = min(decodeTokS_b1 × batch, computeRoofTokS)` — decode is **linear in batch until it saturates the compute roof**; per-user rate = aggregate / batch.
+**GPTD.** Every request carries real token counts; the rack computes (`effects.ts`):
+- `prefillTokS(n) = tensorRate(fmt) × tpDeg × tpEff × MFU_PREFILL / (2 × activeB × (1 + n / (16000 × (1 + 0.5·flash))))` with `MFU_PREFILL = 0.55` — the O(n²) attention term softened by FlashAttention;
+- one decode step of a lane `= max(t_mem, t_comp) + background prefill + fixed`, where `t_mem = (weights read + every stream's KV) / (HBM_BW × tpDeg × tpEff × MBU_DECODE)` with `MBU_DECODE = 0.7`, `t_comp = streams × 2 × activeB / (tensorRate × tpDeg × tpEff × MFU_DECODE)` with `MFU_DECODE = 0.5`, and `fixed` = scheduler overhead (1 ms, amortized by multi-step) + TP all-reduces + wide-EP all-to-alls + pipeline hops;
+- per-user tok/s `= 1 / step`, aggregate `= streams / step`: per-user speed falls with the batch and its contexts while aggregate rises toward the compute roof.
 
-`FLOPs/token ≈ 2 × paramsActiveB` and the HBM bandwidth term are computed directly from the deployed model and the real GPU. TTFT emerges from prefill time (+ queue + input guardrail); TPOT emerges from the per-user decode rate.
+The weight format sets the tensor rate the GEMMs run at (its *activation* precision): FP8 W8A8 runs at the FP8 rate, INT4 W4A16 dequantizes to the BF16 rate, NVFP4 uses Blackwell's FP4 rate.
 
-### 1.2 ✅ Real hardware ladder (GPU specs, watts, capex)
+### 1.2 ✅ Real hardware ladder (GPU specs, watts, capex, cooling class)
 
-**Reality.** Real accelerators have specific fp8/bf16 TFLOPS, HBM capacity + bandwidth, TDP watts, and capex; ≳1000–1200 W single-GPU TDP mandates direct liquid cooling; an NVL72 rack is ~120 kW vs ~10–15 kW for air-cooled racks (REFERENCE-DOSSIER §5.2–5.5, §0#12).
+**Reality.** Real accelerators have specific dense tensor rates, HBM capacity and bandwidth, TDP and capex; a single-GPU TDP of ≳1000–1200 W mandates direct liquid cooling. DGX H200 and the air-cooled DGX B200 (~14.3 kW) are air systems; the GB200 NVL72 (~120 kW) is liquid-only (REFERENCE-DOSSIER §5.2–5.5, §0#12).
 
-**GPTD.** `HW_SPECS` (`src/sim/content.ts`) is the real ladder, each with PER-GPU `bf16TflopsPerGpu`/`fp8TflopsPerGpu`/`hbmGbPerGpu`/`hbmTbsPerGpu`/`tdpWattsPerGpu`/`gpuHrUsdPerGpu`/`capexUsd` and a `gpus` count; aggregates are `perGpu × gpus`:
-`hw_edge` (1× L4-class, 24 GB) → `hw_standard` (L40S, 48) → `hw_perf` (H100, 80) → `hw_frontier` (H200, 141) → `hw_pod` (DGX H200, 8×H200, 1.1 TB) → `hw_superpod` (DGX B200, 8×B200, 1.5 TB) → `hw_giga` (GB200 NVL72, 72×B200, ~13.8 TB).
-Build cost = `capexUsd / CREDIT_USD`. Cooling is `air` vs `liquid`; a liquid-cooled rack is a **hard gate** — it needs at least one Liquid Cooling Loop facility (`hasLiquidLoop`, `hwNeedsLiquid`), so pod/superpod/giga cannot run without it.
+**GPTD.** `HW_SPECS` (`content.ts`) is the real ladder with per-GPU specs and a GPU count: `hw_edge` (L4-class, 24 GB) → `hw_standard` (L40S, 48) → `hw_perf` (H100, 80) → `hw_frontier` (H200, 141) → `hw_pod` (DGX H200, 8× 141 GB, air) → `hw_superpod` (DGX B200, 8× 192 GB, FP4 tensor cores, air) → `hw_giga` (GB200 NVL72, 72× 192 GB, liquid). Build cost = `capexUsd / CREDIT_USD` (single-GPU tiers at deployed-node capex). Only the NVL72 is liquid-cooled; it is a **hard gate** — it cannot be placed, upgraded into or run without a Liquid Cooling Loop (`hwNeedsLiquid`, `hasLiquidLoop`). A rack's coverage range follows its current tier (`towerRangeTiles`).
 
-### 1.3 ✅ VRAM gating: weights resident, KV competes for the rest
+### 1.3 ✅ Weights resident at their release precision; formats chosen per rack
 
-**Reality.** Weights must be resident or the model cannot serve from that accelerator; KV cache then competes for the remainder. FP16/FP8/INT4 = 2/1/0.5 bytes per param. For MoE, **all experts stay resident (VRAM ∝ total params)** while compute/bandwidth track **active params** (REFERENCE-DOSSIER §5.6, §0#10, §0#11).
+**Reality.** Weights must be resident to serve; KV competes for the rest. Checkpoints ship at different precisions (BF16, FP8, MXFP4 / INT4-QAT / FP4 experts), and a model is benchmarked as released. Post-training quantization below the release precision costs some quality (FP8 essentially lossless; 4-bit costs more, especially on long context and hard math). For MoE, **every expert stays resident** while compute tracks the active parameters (REFERENCE-DOSSIER §4.5, §5.6, §0#10–11).
 
-**GPTD.** `modelMemory = paramsTotalB × bytesPerParam` (`bytesPerParam = min(model.weightBytes, s.infra.weightQuantBytes)`); `serverFitsMemory` hard-gates deployment (`modelMemory + FRAMEWORK_GB ≤ hbmGb`). MoE inflation is **not** a flat tax: it falls out of the total-vs-active split — Kimi K2 (1000B total / 32B active) needs a GigaCluster to *fit* but serves at 32B-active speed once resident. This is the single most important cost-structure fact in the sim and it is structural, not a coefficient.
+**GPTD.** Resident bytes per parameter = `min(nativeWeightBytes, format bytes)` (`residentBytes`), with the release precision read off the safetensors dtype mix (`data/model-arch.json`): BF16 2, FP8 ≈1, MXFP4 / FP4 / INT4-QAT ≈0.53–0.66. Each rack picks its format between waves among the researched ones — BF16, FP8 (1 B), INT4 (0.53 B incl. group scales), NVFP4 (0.5625 B, Blackwell only) — and *auto* takes the fastest one that costs this model no quality and fits. The PTQ tax (INT4 −2 / −6 past 8K tokens; NVFP4 −1 / −2) applies **only below the release precision** (`ptqBelowNative`): gpt-oss's MXFP4 or DeepSeek-V4's FP4 experts pay nothing in a 4-bit format, and a natively 4-bit checkpoint runs at the FP4 rate on Blackwell without research. Lower-precision GEMMs draw less power (FP8 −15%, 4-bit a further −5%).
 
-### 1.4 ✅ KV cache from real architecture; continuous-batching budget
+### 1.4 ✅ KV from the real architecture; cohorts and KV-limited concurrency
 
-**Reality.** Per-token KV = `2 × layers × kv_heads × head_dim × bytes`, growing linearly with sequence length; GQA/MQA cut it via low `kv_heads`; MLA stores a compact latent (DeepSeek-V2: −93.3%). Pre-PagedAttention allocators wasted 60–80% of KV memory (20.4–38.2% useful); paged block allocation reaches ~96% (REFERENCE-DOSSIER §4.2, §4.6, §1.2#4).
+**Reality.** Per-token KV is `2 × layers × kv_heads × head_dim × bytes` for full attention; GQA/MQA cut it via fewer KV heads; MLA stores one compressed latent plus a decoupled RoPE key per layer (DeepSeek-V2/V3: 512 + 64 elements, no K/V doubling); DeepSeek-V4's CSA/HCA store one compressed entry per 4 / 128 tokens; the 2026 hybrids keep growing KV on only a fraction of their layers — linear-attention (Gated DeltaNet, Kimi Delta Attention) and sliding-window layers hold a constant per-request state instead. Pre-PagedAttention allocators wasted 60–80% of KV memory; paged allocation recovers ~96% (REFERENCE-DOSSIER §4.2, §4.6, §6.7).
 
-**GPTD.** `kvPerReqGb = 2 × layers × kvHeads × headDim × contextLen × kvQuantBytes / 1e9`, using the model's **real** `layers`/`kvHeads`/`headDim` (from model cards, `src/sim/content.ts` ROSTER). GQA/MQA emerge from low `kvHeads`; **MLA models apply ×0.067** (the −93.3% latent approximation, flagged in-tooltip as an equivalent scaling, not the true latent geometry). Grouped/latent attention is a model attribute (via real `kvHeads` and the MLA ×0.067 scaling), not a global tech buff. KV budget per rack = `(hbmGb − weights − FRAMEWORK_GB) × kvUtilization`; `kvUtilization` is **0.55** until PagedAttention research lifts it to **0.96**. Before Continuous Batching is researched, `serverTargets = 1` (the pre-Orca request-level era); after, batch is `hw.targets + multiStep`, capped at runtime by the real KV budget.
+**GPTD.** `kvPerReqGb = kvBytesPerToken × ctx × (kvQuantBytes / 2) + kvStateMbPerReq` (`effects.ts`), where `kvBytesPerToken` is BF16 over the **KV-bearing layers only**, computed from each checkpoint's `config.json` layer groups (full / MLA latent+rope / compressed / indexer / SWA / linear / shared), and `kvStateMbPerReq` holds the bounded windows and recurrent states. The architecture is data, so the spread is real: Hy3 (plain GQA) keeps 320 KB/token, Muse Spark Open 248 KB, GLM-5.2 (MLA + indexer) 93 KB, Qwen3.6-27B (16 of 64 layers) 64 KB, DeepSeek-V4-Pro (CSA/HCA) 9.6 KB. The KV budget of a model copy is `(group HBM − weights − draft − framework) × kvUtilization` (0.55 → 0.96 with PagedAttention). Each sprite is a **cohort of 28 real streams** (`COHORT_STREAMS`); a cohort is admitted only as far as KV holds (shared prefix blocks stored once), so long contexts or KV-heavy models shrink the batch a rack can carry. The engine caps a lane at 256 streams with Continuous Batching (`ENGINE_MAX_STREAMS`; one static batch before it), so KV, not an arbitrary slot count, is the real limit. Admission checks the **full sequence** (prompt + answer + the hidden tokens that rack's model would think): a request that could never fit one copy is rejected there, and a busy budget makes it wait (the wait counts toward TTFT) — no request is stranded mid-decode.
 
-### 1.5 ✅ Hard context window — beyond it, the request is unservable
+### 1.5 ✅ Hard context window, and quality that decays as the window fills
 
-**Reality.** A prompt past the model's context window is rejected, not merely degraded (REFERENCE-DOSSIER §1.2#4).
+**Reality.** A sequence past the trained window is rejected; well before that, quality degrades as a prompt fills the window, and models differ sharply in long-context skill (AA-LCR, ~100K-token documents) (REFERENCE-DOSSIER §1.2#4, §6.3).
 
-**GPTD.** `serverCtxWindowTokens = contextWindowK × 1000 × (1 + flashCtxBonus)` in **real tokens**; a request whose `contextLen` exceeds it resolves `unservable` (`src/sim/combat.ts`). With real 128K+ windows this rarely triggers — long context bites mainly through the **KV budget** (§1.4), which is the more honest failure mode.
+**GPTD.** `serverCtxWindowTokens = contextWindowK × 1000` is a hard gate on the full sequence (→ `unservable` if no in-range rack can ever hold it). Below that, `longContextPenaltyFor` subtracts quality: nothing below 25% fill, rising to `24 × (1 − 0.75 × longCtx)` points at a full window (×ramp^1.5), where `longCtx = lcr / 80` is calibrated from the AA-LCR cell (`calibrate.longCtxOf`). A 1M-window model with strong long-context skill barely notices a 100K prompt that a 128K model struggles with. A 4-bit PTQ format adds its long-context tax past 8K tokens and an INT4 KV cache −2 past 32K. FlashAttention grants no quality or window bonus.
 
-### 1.6 ✅ Prefill/decode interference, chunked prefill, disaggregation — infra research
+### 1.6 ✅ Prefill/decode interference, chunked prefill as a token budget, disaggregation
 
-**Reality.** Admitting a prefill into a decode batch slows both (generation stalls); chunked prefill (Sarathi) keeps decode flowing while ingesting; P/D disaggregation runs the phases on separate pools (DistServe 2.0–4.48× goodput, Splitwise on Azure traces). Chunked-prefill and disaggregation are architecturally opposed strategies (REFERENCE-DOSSIER §1.1, §4.3).
+**Reality.** An unchunked prefill stalls every decode in its batch for its busy time. Sarathi-Serve's stall-free scheduling carries the running decodes plus a **token budget** of prompt chunks per iteration, profiled once from the time-between-tokens target (a long prompt is split; a short one rides one step); vLLM V1 enables chunked prefill by default with an 8192-token default budget on H100-class GPUs, as does SGLang's `chunked_prefill_size`. P/D disaggregation runs the phases on separate pools and ships the KV over the network. The two are opposed strategies (REFERENCE-DOSSIER §1.1, §4.3).
 
-**GPTD.** Both live on the infra tree (`s.infra`, not `s.upgrades`): `inf_chunked` (decode-priority share 0.35 while ingesting) and `inf_disagg` (role-pinned prefill ×1.5 / decode ×1.25 racks). They are a **hard `conflicts` pair** (`INFRA_NODES`, `src/sim/content.ts`) — you commit to one scheduling philosophy. Misconfigured pools strand traffic, the real failure mode.
+**GPTD.** Without Chunked Prefill a lane prefills one prompt at a time **exclusively** and its decodes stall for the busy time (`combat.ts exclusivePrefill`; a full-tick stall is charged to the stalled decodes' E2E). With it, each step carries the decodes plus up to `chunkBudgetTokens` of prompt (`effects.ts`): the prompt compute that fits between the step's decode compute and `max(CHUNK_STEP_TARGET_MS 30 ms, busy decode step × 1.25)` — including the tokens that hide under the memory-bound reads (the roofline knee) — converted at the short-prompt prefill rate × `CHUNKED_PREFILL_EFF 0.9`, clamped to 256–8192 tokens. A prompt within the budget prefills in one step; a longer one fills `tokens ÷ budget` steps; decodes emit a token every step and pay the longer chunk-carrying steps (`promptOccupancy`, `chunkedPrefill`). Typical budgets: a few hundred tokens for a dense 27B or a 70B, ~1.1–1.4K for an 8–9B FP8 model on an H100, the 8192 cap for a 3B-active MoE on a DGX B200. `inf_disagg` role-pins racks: a pool gain of `DISAGG_POOL_GAIN 1.1`, KV transfer at `KV_TRANSFER_GBPS 50` added to the first decode step, a decode pool takes only KV its own model produced, and the cohort's other prompts are owed to the prefill pool that produced the KV (`prefillDebtSec`) — splitting the phases removes the interference without making the prompt work disappear. Chunked ⟂ disaggregation is a hard research conflict enforced in `researchUnlocked`.
 
-### 1.7 ✅ Dual clock: SLO judged in real ms, not raw b=1 latency
+### 1.7 ✅ Dual clock: every SLO judged on the request's real history
 
-**Reality.** A bare b=1 decode of a long output takes many real seconds; that is not the latency a user under continuous batching sees. The serving objective is **Goodput** — the rate of requests meeting per-phase SLOs (TTFT/TPOT), e.g. MLPerf Interactive 450 ms / 40 ms, Conversational 2000 ms / 200 ms (REFERENCE-DOSSIER §1.3, §0#4).
+**Reality.** The serving objective is **Goodput** — requests meeting per-phase SLOs: MLPerf Interactive 450 ms TTFT / 40 ms TPOT, Conversational 2000 / 200 ms, the long-context 405B scenario 6 s / 175 ms; code completion wants TTFT ≲ 200 ms; for a reasoning model the user-facing latency is the **time to first answer token**, after the hidden thinking (Artificial Analysis measures it separately) (REFERENCE-DOSSIER §1.3, §0#4).
 
-**GPTD.** `SIM_TIME_SCALE = 10` compresses real datacenter seconds into visible board seconds for animation only. **SLO is always judged on the real-second axis** via `effLatencyMs` — the concurrency-amortized effective latency (per-user decode rate ÷ batch, plus prefill, queue, and guardrail latency). `LAT_CLASS_SLO` (`src/config.ts`): IN 400/40 ms, NR 2000/200 ms, TO none. This is the fix that keeps Goodput from being identically zero: high-concurrency low-OSL chat lands inside SLO; long-OSL reasoning naturally strains it.
+**GPTD.** `SIM_TIME_SCALE = 10` compresses real seconds into board seconds for animation only; lane transit is never latency. **TTFT** = queue wait at racks that could prefill the request (decode-pinned racks, and racks whose window or whole KV can never hold it, do not count) + the prefill's wall time in its completing tick + input-guard checks + the rack's admission delay (pipeline bubble, multi-step wait). **Time to first answer** adds the hidden reasoning's decode time. **TPOT** is judged once at delivery as `decodeSec / (tokens − 1)` (MLPerf's per-request definition; hidden tokens included), and E2E adds the output-guard tail. Bounds (`LAT_CLASS_SLO` + per-type overrides): IN 400 / 40 ms, NR 2000 / 200 ms, TO none; code completion TTFT 200 ms; summarization TTFT 6 s (MLPerf's long-context bound); an agent step 60 s end-to-end; time to first answer ≤ 4 s for chat and jailbreak probes and ≤ 400 ms for code completion. Goodput = clean serves ÷ every terminal outcome (`telemetry.goodputPctOf`); `sloAttainPct` reports answered requests within every bound as a secondary view.
 
-### 1.8 ✅ Era-driven token inflation — prompts and outputs grow toward real long-context
+### 1.8 ✅ Era token growth — prompts grew far more than answers, and every request stays servable
 
-**Reality.** Real request lengths exploded over 2023→2025. Production traces: the 2023 Azure/Splitwise trace had short prompts (~1–2K) and tiny coding outputs (median ~13 tokens); by 2024–25 the Mooncake/Kimi trace shows a **conversation average input of ~12,035 tokens** (output ~343, an input/output ratio ~720×), with long-document QA inputs up to **~100K**. Context windows ran 512 → **100K (Claude 2, May 2023)** → **1M (Gemini 1.5, early 2024)** → 2M. Reasoning models emit far more: o1 averaged **~5,150–5,350 reasoning tokens** with hard tasks in the tens of thousands. Agentic coding steps push **100K–2M** cumulative input. (Sources: Splitwise/ISCA'24 + Azure trace; Mooncake/FAST'25; o1 token study arXiv:2410.21287; Claude Code / context-window timelines.)
+**Reality.** Per-request prompts grew roughly 4× and completions roughly 3× on OpenRouter between early 2024 and 2026, driven by programming and context-rich workloads; the IETF workload-profile draft gives the real bands per profile — CHAT 64–16K in / 50–1K out, COMP 256–8K / 5–200, LDQA 4K–128K, SUMM 1K–32K, REAS up to 33K out, AGNT 512–16K accumulated in / 20–500 per step (REFERENCE-DOSSIER §1.4).
 
-**GPTD.** Base per-archetype `inputTokens`/`outputTokens` (`REQUEST_TYPES`, `src/sim/content.ts`) model the **early-era** magnitudes; the campaign then inflates them with the era. `tierContext` and `tierWork` (`src/sim/campaign.ts`) ramp **convexly** (gentle early, steep late) to ~2.9× / ~3× by the tier-12 finale, while `lateLoadMul` stays at 1 through tier 6 and then quadratically amplifies serving work to keep the endgame from being one-shot by a maxed fleet. `spawnRequest` applies `input = base × contextMul × √workMul`, `output = base × workMul` (`src/sim/spawn.ts`). A per-archetype `LENGTH_SENS` lets the **long-context / offline lanes scale fully** while **damping the tight-TTFT interactive lanes** (so they stay inside SLO instead of mass-`slo_miss`ing). Net end-of-campaign serving load: RAG ≈ **96K→8.7K**, Summarization ≈ **143K→6.8K**, Agentic ≈ **72K→13.6K**, Reasoning ≈ **5.4K→92K** — into the real long-context / long-CoT band, which is what finally makes the **context window (§1.5)**, **KV budget (§1.4)**, prefill tech (§1.6), and decode throughput bite in the late game. Magnitudes are validated against the autoplay depth gate (`tests/playthrough.test.ts`) so a maxed long-context fleet stays servable. The Codex Requests tab shows the `base → era` range so the displayed numbers are not read as fixed.
+**GPTD.** Base lengths (`REQUEST_TYPES`) are 2023 magnitudes; `ERA_TOKEN_GROWTH` (`campaign.ts`) gives each archetype its late-2026 prompt and answer growth, applied on a convex ramp `((tier − 1)/11)^1.5` (2023 stays near base; 2025–26 carries most of the growth) by `groupMuls`, which buildWave and endless share. End-of-campaign sizes (tier 12, prompt / answer): embed 6K / 0 · chat 2.6K / 512 · comp 7.5K / 200 · RAG 48K / 819 · summarization 96K / 1K · reasoning 2K / 12K · agent 48K / 1K per step · batch 3K / 8K · jailbreak 3K / 500 (many-shot jailbreaks are long prompts). Each lands inside its IETF band (summarization's whole documents sit above SUMM's 32K, inside LDQA's range). Hidden reasoning comes on top for a thinking model. Per-request work stays physically servable at real per-user speeds; late difficulty comes from volume, mix, the quality line (+2% per tier), hazards and incidents. The Codex shows the `base → era` range.
+
+### 1.9 ✅ Model-parallel groups: copies add concurrency, not per-user speed
+
+**Reality.** A model too big for one GPU is split by tensor parallelism inside an NVLink domain at sub-linear efficiency (two all-reduces per layer on the critical path; NVLink systems measure roughly 70–85% at TP=4 and 56–75% at TP=8), or across stages by pipeline parallelism (memory, not latency). Extra GPUs beyond what a copy needs run more copies (data parallelism) — more concurrency, never a faster stream. Expert parallelism shards an MoE's experts across GPUs with an all-to-all per MoE layer (REFERENCE-DOSSIER §4.7–4.8).
+
+**GPTD.** `rackPlan` puts one copy on the smallest power-of-two GPU group whose HBM holds weights + draft + framework; `replicas = ⌊gpus / g⌋`. A stream runs at `tpDeg = min(g, 8)` × `TP_EFFICIENCY {1, 0.9, 0.8, 0.65}` plus `2 × layers × ALLREDUCE_US (8 µs)` per step; GPUs beyond 8 are pipeline stages (`PP_HOP_US 30` per step, `PP_BUBBLE_MS 20` per extra stage on TTFT). Research gates the span: before Tensor Parallelism a copy must fit one GPU (a multi-GPU rack runs replicas), TP allows ≤8, Pipeline Parallelism beyond (the deploy picker and denial reasons say "needs Tensor/Pipeline Parallelism"). Data Parallelism makes the whole rack one scheduling group (requests load-balanced over every copy and the pooled KV; without it a cohort stays on the copy it landed on). Wide EP (an MoE served as several copies) reads only `1/replicas` of the expert union of the rack's pooled batch, plus `2 × layers × ALLTOALL_US (12 µs)`.
+
+### 1.10 ✅ Realistic batching — and the calibration against public numbers
+
+**Reality.** Under production batches, per-user decode speed sits in a 20–300 tok/s band while aggregate throughput reaches thousands; an MoE batch touches the union of its tokens' experts, so its weight reads grow with the batch (REFERENCE-DOSSIER §4.8, §5.7).
+
+**GPTD.** An MoE step reads its always-on part (`MOE_SHARED_FRAC 0.35` of the active parameters) plus `routedTotal × (1 − (1 − routedActive/routedTotal)^b)` of the routed experts for `b` streams (`weightsReadGb`). Measured on the shipped code (racks with Continuous Batching, PagedAttention, FP8 where marked, TP/PP; b1 = one stream alone; one cohort = 28 streams; busy = two cohorts per lane, a 1.5K/256 mix at 1.6K context; prefill of a 1.5K-token prompt; the Llama rows use a dense body with the real Llama-3.1-8B / 3.3-70B layer layout, since neither is in the active roster):
+
+| Rack + model | Split | b1 tok/s | one cohort | busy per-user / aggregate | 1.5K prefill | Public basis |
+|---|---|---|---|---|---|---|
+| Llama-3.1-8B BF16 / L40S | 1 GPU | 36 | 25 | 13 / 736 | 132 ms | 0.864 TB/s ÷ 16 GB ≈ 54 tok/s roof at b1 |
+| Llama-3.1-8B BF16 / H100 | 1 GPU | 128 | 91 | 43 / 2.4K | 48 ms | 3.35 TB/s ÷ 16 GB ≈ 209 roof; ~60% MBU at b1 (Databricks) |
+| Llama-3.1-8B FP8 / H100 | 1 GPU | 227 | 131 | 68 / 3.8K | 24 ms | — |
+| same + Chunked Prefill | 1 GPU | 227 | 131 | 105 / 5.9K | 24 ms | vLLM V1 default scheduler |
+| Llama-3.3-70B FP8 / H200 | 1 GPU | 46 | 36 | 13 / 728 | 211 ms | 4.8 TB/s ÷ 70 GB ≈ 69 roof; 2·70B·1.5K ÷ (1979 TF × 0.55) ≈ 190 ms |
+| gpt-oss-120b (MXFP4) / H100 | 1 GPU | 451 | 56 | 35 / 2.0K | 15 ms | AA measured API median ≈ 212 tok/s |
+| Qwen3.5-397B FP8 / DGX H200 | 4 GPU × 2 copies | 282 | 43 | 28 / 3.1K | 16 ms | AA measured API median ≈ 55 |
+| GLM-5.2 FP8 / DGX B200 | 4 GPU × 2 copies | 223 | 34 | 24 / 2.6K | 17 ms | AA measured API median ≈ 72 |
+| DeepSeek-V4-Pro (FP4 experts) / DGX B200 | 8 GPU × 1 copy | 347 | 66 | 42 / 2.4K | 6 ms | AA measured API median ≈ 93 |
+| Kimi K3 (MXFP4) / NVL72 | 16 GPU (2 stages of TP8) × 4 copies | 221 | 53 | 21 / 9.6K | 13 ms | AA measured API median ≈ 45 |
+
+The measured API speeds (Artificial Analysis' median output speed, carried in `AA_META`) sit between the game's single-stream ceiling and its busy-rack figure — where real providers trade per-user speed against concurrency. The test suite also checks that a rack card's shown $/Mtok matches the cash flow it produces within ±15% (`tests/metrics.test.ts`).
+
+### 1.11 ✅ Thinking tokens, and the hybrid's instant mode
+
+**Reality.** A reasoning model emits hidden thinking before its answer: it costs decode time and KV like any token, and the user waits for the first *answer* token. Most 2026 open checkpoints are hybrids whose serving stack switches thinking off per request (`enable_thinking=False`, `thinking_mode="chat"`, `reasoning_effort="no_think"`); some always think and expose only an effort knob (REFERENCE-DOSSIER §1.4, §6.7).
+
+**GPTD.** A checkpoint's thinking support (`always` / `hybrid` / `never`) is read off its chat template (`data/model-thinking.json`). The engine policy `answerMode`: a hybrid answers latency class `IN` (chat, code completion, jailbreak probes) **instantly**, judged on `qualityByInstant`, and thinks on `NR` / `TO` traffic; an always-thinker always thinks; embeddings never do. Hidden tokens = `thinkTokens × thinkMul` (chat / RAG / summarization / batch / jailbreak 0.5, comp 0.05, agent 1, reason 0 because its output already is the reasoning), added at the first token by the model that produced it: they decode first, grow KV, add E2E, count toward TPOT and are **never billed** (`processedRevenue` caps billed output at the answer). The router's ETA and admission's full-sequence check include them. The mode is latched on the request and carried on its outcome event.
 
 ---
 
 ## 2. Models & calibration — capability is a benchmark-derived vector
 
-> Reality anchors: REFERENCE-DOSSIER §6 (open-weight roster), §6.3–6.4 (benchmark saturation + the agentic/SWE wall), §2.9 (lineage).
+> Reality anchors: REFERENCE-DOSSIER §6 (open-weight landscape), §6.3–6.4 (benchmark saturation, the agentic gap), §6.7–6.8 (the 2026 landscape and the benchmark host's eval changes), §2.9 (lineage). Pipeline details: [REALISM-MODELS.md](./REALISM-MODELS.md).
 
-### 2.1 ✅ 42 active real open-weight base checkpoints (frontier-tolerance-gated from a ~98 pool), free to deploy
+### 2.1 ✅ 58 active real open-weight checkpoints, gated from a 135-checkpoint pool, free to deploy
 
-**Reality.** Open weights are a free download; what gates use is whether the checkpoint fits the accelerator's VRAM (REFERENCE-DOSSIER §6, §0#11).
+**Reality.** Open weights are a free download; what gates use is whether the checkpoint fits the accelerators (REFERENCE-DOSSIER §6, §0#11).
 
-**GPTD.** The active roster is **42 real checkpoints**, gated from a ~98-model candidate pool: 30 hand-authored (`src/sim/content.ts` ROSTER) plus 68 auto-selected on the per-size-bucket Pareto frontier of the 5 capability axes (`src/sim/roster.generated.ts`), then a **10% frontier-tolerance gate** (`withinFrontierTolerance`) that keeps only checkpoints within 10% of the size↔capability frontier on some axis (see [PARETO.md](PARETO.md)). The hand-authored picks are drawn from a fact-checked **130-model catalog** (`MODEL-CATALOG.md`, sourced from Artificial Analysis + official model cards). It spans ~1B → 1.6T across Alibaba, OpenAI, Google, NVIDIA, Z.ai, DeepSeek, MiniMax, and Moonshot — from Qwen3 0.6B / Granite 4.0 1B / Gemma 4 up through Qwen3.5-397B, GLM-5.2, DeepSeek-V4-Pro, Nemotron 3 Ultra, and Kimi K2 (the 2026 frontier). **All are owned free from turn one** (`STARTER_MODELS = OPEN_MODEL_IDS`); deploying one costs nothing. Gating is VRAM-fit only (plus, in practice, the rack tiers a 100B+ checkpoint needs). Each carries real metadata (`real`: developer/license/openWeights/released/contextWindowK/source/lineage) surfaced as inert display fields the sim never reads.
+**GPTD.** The candidate pool is every checkpoint with a Hugging Face architecture record: 52 hand-authored (`ROSTER`, drawn from the fact-checked [MODEL-CATALOG.md](MODEL-CATALOG.md)) + 83 generated (`roster.generated.ts`, explicit open-weight evidence: an HF repo in `data/model-arch.json`). The **6% frontier-tolerance gate** (`withinFrontierTolerance`) keeps a checkpoint only if it is within 6% of the best quality at its size or smaller on some axis ([PARETO.md](PARETO.md)), leaving **58 active checkpoints from 0.6B to 2.78T**. All are owned free from turn one (`STARTER_MODELS = OPEN_MODEL_IDS`); deploying costs nothing; fit (weights at release precision + framework per GPU, within an allowed parallel group) is the gate. Real metadata (`m.real`: developer, licence, release, source, precision, benchmark provenance, thinking toggle) is display-only — the sim never reads it.
 
-### 2.2 ✅ `qualityBy` is a 5-axis vector calibrated from public benchmarks — never hand-edited
+### 2.2 ✅ `qualityBy` calibrated from six benchmark cells on one frozen reference scale — never hand-edited
 
-**Reality.** Capability is a vector over task types, not a scalar; a coder is not a better chatbot; instruction tuning pays an alignment tax on some benchmarks (REFERENCE-DOSSIER §2.4, §6.3).
+**Reality.** Capability is a vector over task types, not a scalar. Benchmark hosts re-run, re-score and retire evals: Artificial Analysis removed IFBench from its index (v4.1, June 2026), replaced Terminal-Bench 2.1 with the much harder Terminal-Bench 4.0 (v4.3, September 2026), moved GPQA and τ-bench to legacy, and re-ran AA-LCR, HLE and SciCode under new harnesses; it also recycles model slugs onto newer checkpoints (REFERENCE-DOSSIER §6.8). Composite indexes re-baseline between versions.
 
-**GPTD.** Every checkpoint's `qualityBy = {chat, coding, reasoning, general, agentic}` is computed by `qualityFromBenchmarks` (`src/sim/calibrate.ts`) from real public benchmarks — **`qualityBy` is never hand-edited** (the rule). Axis → benchmark: chat/general ← MMLU-Pro; coding ← LiveCodeBench (fallbacks SWE-bench Verified, HumanEval); reasoning ← GPQA-Diamond (fallback AIME); agentic ← SWE-bench Verified (fallback discounted LiveCodeBench). Each axis has a piecewise-linear `%→quality` curve (`pwl`, `CURVES`) anchored so the request difficulty lines keep meaning. Quality is **deliberately NOT** derived from the Artificial Analysis composite Intelligence Index (it re-baselines between versions, e.g. MiniMax-M2 read 61 then 28); per-benchmark %s are scale-stable, and AA index is display-only.
+**GPTD.** Each axis is a weighted blend (primary 0.6, two secondaries 0.2) of six AA cells — chat = IFBench-led, general = GPQA-led, coding = SciCode-led, reasoning = HLE-led, agentic = Terminal-Bench-Hard-led — mapped through a per-axis piecewise-linear curve with a saturating tail toward 130 (`calibrate.ts`). Every cell lives on **one frozen reference scale**, the 2026-06-21 snapshot the curves were quantile-fitted on (`data/aa-reference-2026-06-21.json`). At build time (`scripts/aa-cells.mjs`) each cell resolves reference → latest (a frozen eval as-is; a re-scored one through same-UUID mean-sigma equating, e.g. `LCR_ref = −0.63 + 0.906 × LCR_latest`) → an OLS **bridge** from measured cells, clamped to the observed range. Models are pinned by AA UUID, and a guard refuses a recycled or renamed slug. The proof the scale is stable: every pinned model measured on the reference snapshot keeps its reference cells exactly (`tests/models.test.ts`). The composite index is never fed to calibration.
 
-### 2.3 ✅ The agentic / SWE wall — why big models still matter
+### 2.3 ✅ The agentic axis — the last to compress
 
-**Reality.** 2025–26 capability has compressed: a small thinking model clears reasoning lines that once needed a 671B frontier model — **except on the agentic / SWE-bench axis, where scale and post-training still open a real gap** (REFERENCE-DOSSIER §6.4, §0#14).
+**Reality.** Through 2025 small thinking models closed the knowledge and reasoning gaps while agentic / terminal benchmarks kept a real separation; by late 2026 strong open models clear terminal suites that once separated the frontier (REFERENCE-DOSSIER §6.4, §6.7).
 
-**GPTD.** `agentic` is the anti-saturation axis: its curve is anchored on **SWE-bench Verified**, the unsaturated benchmark. Models without a real SWE score fall to a deliberately low per-tier `agentic` floor (`QUALITY_FLOOR`, e.g. small 20). The `agent` request type (`difficulty.agentic = 82`) is the late-game wall only a true frontier checkpoint — or one the player trains themselves — clears. This is the discriminative "bigger still matters" gate, grounded in the one benchmark family that has not converged. It is also how a fast small MoE (Qwen3 30B-A3B) is balanced: it serves fast and answers reasoning, but its calibrated agentic score genuinely lags (a calibration fact, not a hand-edit).
+**GPTD.** `agentic` is Terminal-Bench-Hard-led; the `agent` line is 82 at tier 1 and ≈100 at tier 12 (+2% per tier). Early small bodies sit below it; in the late-2026 data a dense 27B (Qwen3.8-27B, agentic 125) crosses it. The late agentic challenge is therefore a serving one — a 48K-token accumulated prompt, a full think and the answer inside one minute — rather than a capability wall (DESIGN §15).
 
-### 2.4 ✅ `paramsTotalB` vs `paramsActiveB`; real lineage edges
+### 2.4 ✅ `paramsTotalB` vs `paramsActiveB`, the expert union, real lineage
 
-**GPTD.** Each model splits `paramsTotalB` (VRAM basis) from `paramsActiveB` (compute/decode basis); for dense models they are equal. Real lineage is recorded where it exists — e.g. Nemotron-3-Super carries a `baseModelId: 'llama33_70b'` / `relation: 'finetune'` edge (NVIDIA's Llama-based line) shown on the S8 LineageGraph. The roster includes the real hybrid-MoE Nemotron-3-Super-120B-A12B, which has a genuine active-param advantage.
+**GPTD.** Each model splits `paramsTotalB` (memory) from `paramsActiveB` (per-token compute); a batch's weight reads climb from active toward total (§1.10). Lineage edges come from the HF `base_model` metadata where it exists (e.g. GLM-5.3 → GLM-5.2's base; Nex-N2-Pro → Qwen3.5-397B) and show on the Lineage Graph.
+
+### 2.5 ✅ Thinking support from the chat template; the thinking budget from serving telemetry
+
+**Reality.** Whether a checkpoint can answer without thinking is a property of its released chat template / encoding script; how long it thinks shows in a provider's time-to-first-answer-token measurements (REFERENCE-DOSSIER §1.3, §6.7).
+
+**GPTD.** `data/model-thinking.json` records each checkpoint's support with a verbatim quote from its template, card or encoding script, verified by `scripts/thinking-sync.mjs verify`. In the active roster: 37 hybrid, 19 always, 2 never. A hybrid's `qualityByInstant` is calibrated from AA's non-reasoning row of the **same** checkpoint (pinned by UUID; same name and release date) or, when AA timed it only in thinking mode, from a per-cell pair fit `instant = a + b × thinking` over the measured pairs, clamped to the thinking cell (`data/aa-bridges.json` `instant`). `thinkTokens = clamp((ttfat − ttft) × output tok/s, 300, 4000)` from AA's serving telemetry on the pinned thinking variant, 1500 when untimed (`calibrate.thinkingOf`).
 
 ---
 
 ## 3. Post-Training Studio — the real per-model taxonomy
 
-> Reality anchors: REFERENCE-DOSSIER §2 (post-training stack), §2.8 (the five tradeoffs), §2.10 (per-model vs serving-layer).
+> Reality anchors: REFERENCE-DOSSIER §2 (post-training stack), §2.6 (merging needs a shared source), §2.8 (the five tradeoffs), §2.10 (per-model vs serving-layer).
 
 ### 3.1 ✅ Almost all post-training is per-model; it mints a new checkpoint
 
-**Reality.** Each post-training step (CPT/SFT/DPO/RLHF/GRPO/CAI/distill/merge/QAT…) produces a **new weight artifact**; only multi-LoRA serving and PTQ deployment live at the serving layer (REFERENCE-DOSSIER §2.10).
+**Reality.** Each post-training step (CPT / SFT / DPO / RLHF / GRPO / CAI / distill / merge / QAT…) produces a **new weight artifact**; only multi-LoRA serving and PTQ deployment live at the serving layer (REFERENCE-DOSSIER §2.10).
 
-**GPTD.** Post-training is the **Post-Training Studio** (the centerpiece, `src/sim/models.ts` + `METHOD_RECIPES` in `content.ts`): pick a base (a roster model **or a previously-derived model** — unlimited iterative finetune-of-a-finetune) × **method** (`cpt`/`sft`/`lora`/`qlora`/`dora`/`dpo`/`rlhf`/`cai`/`grpo`/`distill`/`merge`/`qat`) × **target** (chat/coding/reasoning/general/agentic/safety/longctx/domain) × **effort** (5 notches 0.25–2.0). It spends Data + requisitioned compute (the posttrain research track) and mints a **new named derived `ModelDef`** (`drv_{seq}`, `{base}-{Target}-{Method}`) with a snapshot `qualityBy` plus a `Lineage` record. The player-built GRPO-agentic run on a frontier base becomes the agentic specialist; a deep iterative chain is the endless-mode quality ceiling.
+**GPTD.** The **Post-Training Studio** (`models.ts`, `METHOD_RECIPES` in `content.ts`): base (a roster model or a derived one) × method × target × effort, paid in Data up front and requisitioned compute during waves, mints a named derived `ModelDef` with a `Lineage` record. Serving-layer techniques stay in the infra tree (PTQ formats per rack; Multi-LoRA adapter swaps).
 
-### 3.2 ✅ `deriveQuality` models the five real tradeoffs
+### 3.2 ✅ `deriveQuality` models the real tradeoffs — and the body's capacity
 
-**Reality.** The recurring constraints: alignment tax (alignment ↑ ⇒ general capability ↓, monotone), catastrophic forgetting (CPT/alignment forget old skills), capability-vs-safety tension, data quality > quantity, narrow-FT overfitting (REFERENCE-DOSSIER §2.8).
+**Reality.** Alignment tax (alignment ↑ ⇒ general capability ↓), catastrophic forgetting (worst for CPT without replay), capability-vs-safety tension, data quality > quantity, narrow-FT overfitting; RL and distillation gains on small models are bounded by the base's capacity (DeepSeek-R1's distill results) (REFERENCE-DOSSIER §2.1, §2.5–2.8).
 
-**GPTD.** `deriveQuality` (`src/sim/models.ts`) applies: `depthDamp = 1/(1 + 0.15 × lineage.depth)` (deep chains converge, no free score-farming); a `headroom = (130 − base)/130` cap (the closer to the ceiling, the harder to push); per-recipe `gainCap`; an alignment tax on the general axis for safety/RLHF/CAI; catastrophic forgetting on non-target axes via `forgetScale`. `distill` swaps to a smaller student base (`reshapesDeployment`, cap = min(teacher, student-capacity)); `qat` drops `weightBytes` and pays −2 quality; `merge` averages two upstream bases (no gain, no tax, no forgetting). The teaching contrast is real: **RLHF** buys high safety but the steepest capability tax and rising over-refusal, while **CAI** buys a Pareto improvement (raises safety *and* lowers over-refusal).
+**GPTD.** `deriveQuality`: `depthDamp = 1/(1 + 0.15·depth)`, `headroom = (130 − base)/130`, the recipe's `gainCap`, and a **capacity ceiling** set by the deploy body — the best `qualityBy[axis]` among roster *base* models with at most 2× its total parameters, +6, ≤130 (`capacityCeiling`; it depends only on the body, so stacking runs cannot ratchet it; distillation uses its own student cap). Forgetting on every non-target axis scales `forgetScale × √effort × (1 + 0.5·(depth − 1))`; CPT forgets ≈3 points per axis at effort 1. The alignment tax lands on `general` for safety targets, RLHF and CAI. Distill moves the capability into a smaller student (`min(teacher, student + 18)`); QAT sets a 4-bit release precision (no PTQ tax afterwards) at −2. **RLHF** buys high safety with the steepest tax and rising over-refusal; **CAI** buys a Pareto improvement (safety ↑, over-refusal ↓, safe-completion). The run moves a hybrid's instant vector by the same per-axis amount; a reasoning run teaches an instruct model to think (`never → always`).
 
-### 3.3 🔶 Recipe gain/cost table is an honestly-flagged game curve
+### 3.3 ✅ Merging needs one shared source
 
-**Reality vs game.** Base `qualityBy` is physics (benchmark → quality, §2.2). Derived **gains** are not first-principles — they are a calibrated game curve. The 48 recipe constants (`gainScale`/`gainCap`/`taxScale`/`forgetScale`) are explicitly marked `autoplay-calibratable`; `calibrateRecipes` is a validating pass-through that asserts the band-displacement ordering (merge 0 < adapters < heavy methods; GRPO leads the reasoning/agentic methods) so a future hand-edit cannot silently break balance (`src/sim/calibrate.ts`, `recipeGainOrderingOk`). Training cost is grounded by relative magnitude and deployment reality: compute starts from `recipe.costCompute × (active/8)^0.7 × effort × 1000`, then scales by `POSTTRAIN_COMPUTE_SCALE`, lineage-depth surcharge, and a mild MoE total/active sparsity factor; Data scales by effort, lineage depth, and total parameter count. CPT still lands far above LoRA, and stacking fine-tunes on a sparse MoE is now a real compute + data commitment rather than a free path through the agentic wall.
+**Reality.** Weight averaging (model soups, Model Stock, TIES) works across fine-tunes of the **same** pre-trained base and architecture; it interpolates behaviour, alignment included (REFERENCE-DOSSIER §2.4, §2.6).
+
+**GPTD.** A merge needs two distinct checkpoints with the same root base and an identical body (`mergeCompatible`: reasons `self` / `root` / `body`); it costs Data for the evaluation pass; the result's safety, over-refusal and instruction-following are the parents' mean, a refusal style survives only if both share it, and its thinking support is shared or becomes hybrid. No gain, no forgetting.
+
+### 3.4 🔶 The recipe gain/cost table is an honestly-flagged game curve
+
+**Reality vs game.** Base `qualityBy` is physics (benchmark → quality). Derived **gains** are not first-principles — they are a calibrated game curve. The recipe constants (`gainScale` / `gainCap` / `taxScale` / `forgetScale`) are marked `autoplay-calibratable`; `calibrateRecipes` is a validating pass-through asserting the band-displacement ordering (merge 0 < adapters < heavy methods; GRPO leads the reasoning/agentic methods). Training cost is grounded by relative magnitude: compute ∝ `costCompute × (active/8)^0.7 × effort` × `POSTTRAIN_COMPUTE_SCALE` × a lineage-depth surcharge × a mild MoE sparsity factor; Data ∝ effort × depth surcharge × total parameters^0.45.
 
 ---
 
 ## 4. Safety — two distinct layers
 
-> Reality anchors: REFERENCE-DOSSIER §3 (two-layer model), §2.4 (alignment as post-training), §3.1 (safe-completion), §3.3 (guardrail systems).
+> Reality anchors: REFERENCE-DOSSIER §3 (two-layer model), §2.4 (alignment as post-training), §3.1 (safe-completion), §3.3 (guardrail systems), §3.6 (the cost of safety: latency, over-refusal, evasion).
 
-### 4.1 ✅ Layer 1 — model-intrinsic alignment (per-model, 0 latency, not a serving knob)
+### 4.1 ✅ Layer 1 — model-intrinsic alignment, rolled once at the first output token
 
-**Reality.** RLHF / CAI / safety-SFT / safe-completion are baked into the weights at post-training; at inference there is no per-request safety dial — you change the model. Alignment trades capability for safety (alignment tax); safe-completion (GPT-5) pays a lower tax than hard-refusal (REFERENCE-DOSSIER §2.4, §3.1).
+**Reality.** RLHF / CAI / safety-SFT / safe-completion are baked into the weights; at inference there is no per-request safety dial. Alignment acts mostly through the first output tokens; safe-completion (GPT-5) pays a lower tax than hard refusal. Over-refusal is measured on borderline-but-benign prompts (XSTest, OR-Bench), so how often a workload trips it depends on how much of it is borderline (REFERENCE-DOSSIER §2.4, §3.1, §3.6).
 
-**GPTD.** Each `ModelDef` carries an `AlignmentProfile {safety, refusalStyle, overRefusal}` (`src/sim/safety.ts`). The **alignment tax** = `TAX_K[refusalStyle] × max(0, safety−40)/100`, with `TAX_K = {none: 0, 'hard-refusal': 9, 'safe-completion': 4}`, subtracted from `qualityBy` in `serverQualityVs` (on top, never baked in). At serve time the model **self-handles** a hazard at **0 latency** with probability `clamp01(safety/100 − severity × HAZARD_HARDNESS[h])`, where `HAZARD_HARDNESS = {jailbreak: 0.35, injection: 0.55, harmful: 0.2, pii: 0.3}` (injection is the hardest to self-handle). A benign request is wrongly refused with probability `alignment.overRefusal` → the `over_refused` outcome. The gpt-oss family is the deliberate Pareto teaching point (high safety, safe-completion, low over-refusal, low tax) against everyone else's hard-refusal. Alignment is acquired only via the Studio (RLHF/CAI/safety-SFT/safe-completion methods).
+**GPTD.** `AlignmentProfile {safety, refusalStyle, overRefusal}` per model (family defaults; no public safety benchmark to calibrate against — Muse Spark Open carries its card's stronger standalone safety, 72). Rolled **once, at the first output token, by the rack that produced it** (`combat.applyLayer1`); a rack that never admitted the request cannot refuse or sanitize it, and an embedding (no generated text) never rolls. Over-refusal of a benign request = `overRefusal × refusalExposure` (chat 1.0, reasoning 0.5, RAG 0.4, summarization 0.3, batch 0.2, comp 0.1, embed 0; an agent step always carries an injection hazard, so it is never treated as benign). Self-handle = `clamp01(safety/100 − severity × HAZARD_HARDNESS[h])` with hardness jailbreak 0.35, injection 0.55, harmful 0.2, PII 0.3; a handled attack is answered with a 30-token refusal or a 200-token safe completion. Alignment tax = `TAX_K[style] × max(0, safety − 40)/100` with `TAX_K = {none 0, hard-refusal 9, safe-completion 4}`, subtracted in `serverQualityVs`.
 
-### 4.2 ✅ Layer 2 — external guardrail buildings (per-request, on the path, with cost)
+### 4.2 ✅ Layer 2 — guardrails as pipeline stages covering lanes
 
-**Reality.** Guardrails are separate models/classifiers on the request path; you can toggle them and tune their threshold per deployment, paying stacked latency and compute. A lightweight encoder (Prompt Guard 86M ≈ 92 ms, input-only) is two orders of magnitude cheaper than a generative guard (Llama Guard 12B = a full LLM inference); OpenAI's omni moderation is a hosted call (REFERENCE-DOSSIER §3.3).
+**Reality.** Guardrails are separate models/classifiers on the request path (input → guard → LLM → guard → user), not per-rack devices; one classifier gives one verdict for one input, so copies add capacity, not recall; distinct systems stack. A BERT-class encoder (Prompt Guard 2 86M: 92.4 ms per 512-token classification on an A100 per its card; longer prompts split and scanned in parallel) is input-only; a generative judge (Llama Guard 4 12B) reads the turn and emits `safe`, or `unsafe` plus category codes — a prefill plus a few tokens — on both sides (REFERENCE-DOSSIER §3.2–3.3).
 
-**GPTD.** Three guardrail buildings (`TOWER_DEFS` guardrails, latency/power via `guardLatencyMs`/`guardPower`):
-- `guard_encoder` — Prompt Guard 86M, **fixed 92 ms**, ~0 compute (does not touch rack KV/watt), input-only, catches jailbreak + injection.
-- `guard_llm` — Llama Guard 12B, runs the **real §6 roofline on its own rack tile** (~337 ms from prefill ~300 tok + decode ~24 tok), **draws real power/heat**, catches all hazards. Its latency is computed, not a magic constant — the encoder-vs-generative two-orders-of-magnitude gap is real in the numbers.
-- `guard_mod` — OpenAI omni moderation, fixed ~120 ms, hosted (no rack cost), catches harmful + pii.
+**GPTD.** `guards.ts`: a guard screens every request on the lanes its range circle touches, wherever it sits; each request is screened once, at its first contact with a rack that could prefill it. Per family on the lane: input latency once (→ TTFT), output latency once (→ E2E), one false positive × refusal exposure, the family's **best** recall among covering copies; distinct families stack. An input catch blocks the attack before any compute; output checks run before delivery.
 
-Input-side latency loads TTFT; output-side loads E2EL (`src/sim/combat.ts`). Threshold sets a **no-free-lunch** tradeoff: `effRecall = clamp01(baseRecall × (0.6 + 0.8 × threshold))` rises with threshold, but `overRefuse = OVERREF_K[archetype] × threshold²` (convex; `OVERREF_K = {encoder: 0.06, generative: 0.1, moderation: 0.05}`) punishes catching more. The default threshold 0.5 causes some over-refusal by design.
+- `guard_encoder` — fixed 92 ms (the card figure), input-only, jailbreak (+ injection after Red-Team Eval), 0.1 kW.
+- `guard_llm` — a real 12B inference on its own H100 rack via the roofline (`guardCheckMs`): the prefill of the turn it reads (the user prompt on input; prompt + answer on output; each part capped at `GUARD_TURN_TOKENS 2048`) plus `GUARD_VERDICT_TOKENS 3` (the first from the prefill, two decoded). Measured: 27 / 48 / 134 / 269 ms at 100 / 512 / 2048 / 4096 tokens in BF16, 15 / 26 / 73 / 145 ms in FP8; readouts quote the 512-token figure. It draws its rack's kW (0.56 BF16 / 0.48 FP8) and pays its GPU-hours and energy; in a brownout it is shed with support, after every server.
+- `guard_mod` — hosted moderation, fixed 120 ms, both sides, harmful (+ PII after Red-Team Eval II); kept out of the build bar.
 
-### 4.3 ✅ Red-team is a dev-time eval, not a serving knob
+🔶 **Known inversion.** The encoder's fixed 92 ms is Meta's published per-classification figure, while the generative judge is priced from first principles on an H100; on short prompts the game's Llama Guard (26–48 ms) is therefore *faster* than its encoder, inverting the real ordering, where an optimized 86M encoder is a few milliseconds of GPU time (third-party encoder guardrails decide in 2.4–9.5 ms) and a generative judge is roughly an order of magnitude slower for a typical prompt. What the game keeps right is the cost structure: the judge scales with the turn, checks both sides, and costs a GPU and power of its own (REFERENCE-DOSSIER §3.3 note, §3.6).
 
-**Reality.** Red-teaming calibrates the system (judge by intent, XSTest) rather than weakening attackers (REFERENCE-DOSSIER §3.5–3.6).
+### 4.3 ✅ A fixed operating point; red-team is a dev-time eval
 
-**GPTD.** Red-team is a one-time eval on the **eval research track** (`eval_redteam` v1/v2). Its main effect is the real calibration: it **lowers over-refusal convexity** (`OVERREF_K ×0.7`) and **unlocks the harder detection categories** (`injection` at v1, `pii` at v2 — until then a guardrail cannot catch them). A small `+0.02` recall bump is explicitly framed as "calibrating the threshold, not improving the model" (`src/sim/safety.ts`).
+**Reality.** A deployment picks a guardrail threshold and lives with its recall/over-refusal tradeoff; red-teaming calibrates the system (judge by intent, XSTest) rather than weakening attackers (REFERENCE-DOSSIER §3.5–3.6).
 
-### 4.4 ✅ Requests carry hazards; six-way verdict
+**GPTD.** The threshold is a fixed 0.5 (`s.guardrailThreshold`; no in-game control), so `effRecall = baseRecall × (0.6 + 0.8·0.5) + 0.02 × redteam level` and the benign false-positive rate is `OVERREF_K × 0.25 × overrefMul` (encoder 0.06, generative 0.1, moderation 0.05 at K). Red-Team Eval (eval track) multiplies over-refusal by 0.7 and unlocks injection detection (v1) and PII detection (v2); the +0.02 recall is "calibrating the threshold, not improving the model".
 
-**GPTD.** Requests carry a `SafetyProfile` of hazard severities (e.g. `jailbreak` carries `jailbreak: 0.9`; `agent` carries `injection: 0.3` — agents are real prompt-injection targets). A hazard is handled iff layer 1 self-handles it **or** an in-path guardrail clears it; an unhandled hazard reaching the core is an `unsafe` breach (−−Trust). A benign request wrongly refused by either layer is `over_refused` (revenue 0, light Trust hit, so the player is taught to prefer low over-refusal).
+### 4.4 ✅ Attacks escalate with the era; novel attacks evade classifiers
 
----
+**Reality.** Attack sophistication rose from manual DAN role-play (2023) through transferable adversarial suffixes, many-shot jailbreaks and indirect / agentic injection (2025–26); fine-tuned input classifiers are brittle under distribution shift and evasion attacks, while a generative judge reasoning about intent degrades less (REFERENCE-DOSSIER §3.4, §3.6; arXiv 2504.11168).
 
-## 5. Economy — real $/Mtoken and $/GPU-hr
+**GPTD.** Every hazard severity is multiplied by `hazardMulOf(tier) = min(1.45, 1 + 0.039·(tier − 1))` and clamped to 1 (the jailbreak's 2023 base 0.7 reaches 1.0 by tier 12; an agent's tool-borne injection 0.3 → 0.43). A share of attacks are **novel**, `novelShareOf(tier) = clamp(0.05·(tier − 2), 0, 0.5)`, assigned by spawn order (no RNG draw); against them a family keeps `NOVEL_RECALL_MUL` of its recall — encoder 0.45, moderation 0.7, generative 1. Layer 1 is judged on severity, not novelty. Authored overrides arm specific events (W48 reasoning carries harmful content; W66 RAG carries injection).
 
-> Reality anchors: REFERENCE-DOSSIER §5.8 (`$/Mtoken` identity; low utilization is fatal), §1.4 (per-workload prices).
+### 4.5 ✅ The verdict: a breach is an unsafe answer delivered
 
-### 5.1 ✅ Token-priced income, wall-clock operating cost, idle racks bleed
-
-**Reality.** `$/Mtoken = ($/GPU-hr × 3600) / (aggregate tok/s × 1e6)`; a 10%-loaded rack can cost 10× per token. Output tokens on reasoning/agentic traffic sell for far more ($15–25/Mtok) than embeddings/chat (REFERENCE-DOSSIER §5.8, §1.4).
-
-**GPTD.** 1 credit = $1000 (`CREDIT_USD`). Build cost = `capexUsd / CREDIT_USD`. Income = real `$/Mtoken` on the request's actual input+output tokens (`serveRevenue` = `(tokensIn × pricePerMtokIn + tokensOut × pricePerMtokOut)/1e6 × TRAFFIC_SCALE × marketPriceMul / CREDIT_USD`). Operating cost is **fixed by wall-clock**: `rackOperatingCostPerSec = gpuHrUsd × realHoursPerBoardSec × TRAFFIC_SCALE × OP_COST_SCALE / CREDIT_USD` — it bills whether or not the rack serves anything, so an idle / over-provisioned rack bleeds and the **utilization penalty emerges** rather than being hand-coded. `TRAFFIC_SCALE` carries on **both** sides, keeping the real `$/Mtoken` identity exact.
-
-### 5.2 ✅ Six outcomes; Goodput drives SLA
-
-**GPTD.** `resolveServe` (`src/sim/combat.ts`) settles each request into one of six outcomes: `served` / `slo_miss` / `bad` / `unservable` / `unsafe` / `over_refused`. Priority among a fully-served request is `unsafe > bad > slo_miss > served`. A **bad answer is still billed** (REFERENCE-DOSSIER §2.2) but bleeds Trust; an `slo_miss` (correct, safe, but late on `effLatencyMs`) earns **zero cash** and an SLA penalty and is excluded from Goodput. **Goodput** = within-SLO served rate; it drives the SLA meter. Lose on `cash < 0` / `trust ≤ 0` / `sla ≤ 0` (`src/sim/sim.ts`); win = clearing the full 100-wave campaign (an escalating elimination gauntlet of real 2023→2026 history, `campaign-data.ts`); endless mode continues beyond wave 100.
-
-### 5.3 ✅ Real power & cooling; phase-asymmetric throttle
-
-**Reality.** ≈all electrical power becomes heat; decode is more memory-bound than prefill, so it keeps an edge under a cap, while prefill takes the hit more directly (Splitwise/ISCA'24, POLCA) (REFERENCE-DOSSIER §5.1-style, §5.5).
-
-**GPTD.** `serverPower = (tdpWatts/1000) × RACK_UTILIZATION × reduce × mul` in **real kW**: an H100 rack reads ~0.56 kW, a DGX-H200 pod ~4.5 kW, an NVL72 ~57.6 kW. FP8/INT4 weight-quant cut draw (−15% / −5%); throughput pushes utilization up; speculative decoding keeps a draft hot on the frontier tier (+8%/level). Heat ≈ power. Thermal throttle is phase-asymmetric but intentionally painful: `THROTTLE_FLOOR = 0.2`; prefill takes the full hit, while decode uses `decodeThrottle(t) = 1 − (1 − t) × 0.85` (≈58% at a half-throttle, ≈32% at the floor). Under-cooling a hot fleet now meaningfully collapses serving instead of being a soft dip.
+**GPTD.** A hazard is handled iff the model self-handles it or a covering guard catches it. An `unsafe` breach is an unsafe answer actually **delivered** (resolved at delivery; Trust × `safetyDamage`, no SLA); a hazardous request never answered is a plain `leaked` (SLA only; an attacker who got no answer costs no Trust). A handled attack resolves `served` and is paid only for the tokens processed. A benign request wrongly refused by either layer is `overRefused` (Trust −0.25 × penalty, SLA −0.2 × penalty), light enough that one refusal does not outweigh several clean serves, heavy enough that a 12%-refusal model is visibly worse than a 3% one.
 
 ---
 
-## 6. Infra tech tree — serving/infra only
+## 5. Economy — real $/Mtoken, real $/GPU-hr, real kW
+
+> Reality anchors: REFERENCE-DOSSIER §5.8 (`$/Mtoken` identity; low utilization is fatal; PUE and industrial power price), §1.4 (per-workload prices).
+
+### 5.1 ✅ The cohort identity: the $/Mtok a rack shows is the rate its cash obeys
+
+**Reality.** `$/Mtoken = ($/GPU-hr × 3600) / (aggregate tok/s × 1e6)`; a 10%-loaded rack can cost 10× per token (REFERENCE-DOSSIER §5.8).
+
+**GPTD.** A sprite is `TRAFFIC_SCALE = 100,000` requests; a board rack is `RACKS_PER_TILE = TRAFFIC_SCALE / COHORT_STREAMS ≈ 3,571` real racks; both income and the bill carry the scale, so the rack card's $/Mtok (`dollarsPerMtokenAt`) is the rate the cash flow follows (within tick granularity; checked ±15% in tests). Income = real $/Mtoken on the tokens actually **processed** — the prompt ingested (a cached prefix included) plus the answer tokens — × the market multiplier (`processedRevenue`).
+
+### 5.2 ✅ A wall-clock bill in two lines; idle racks bleed
+
+**Reality.** A rack's all-in hourly cost is mostly amortization, maintenance and colocation; electricity is a few percent of it at industrial prices (US industrial average ≈8.6¢/kWh in 2025) and facility PUE (global average ≈1.54; hyperscale and direct-liquid sites far lower) (REFERENCE-DOSSIER §5.8).
+
+**GPTD.** `towerOpexPerSec` (the one rule the economy tick, the next-wave bill preview and the burn readout share): the **GPU-hour line** = the per-GPU-hour rate minus the electricity it embeds, paid by every online rack busy or idle; the **energy line** = kW drawn × (30% idle → 100% by load) × throttle × PUE (air 1.4 / liquid 1.15) × $0.10/kWh × the incident's power price. Energy is ~2–4% of a rack's all-in hour at full load; power-price incidents therefore scale only that line (the grid-capacity incidents that cut kW are the real power lever). A requisitioned training rack bills fully loaded; a dark rack bills nothing; the generative guard's rack pays both lines. The utilization penalty emerges.
+
+### 5.3 ✅ Seven outcomes; Goodput pays the SLA contract
+
+**GPTD.** `resolve.ts` settles each request into one of seven outcomes (DESIGN §11): served 100% pay, sloMiss 50% (the SLA credit), every other outcome 0 (wrong answers are refunded). Goodput = served ÷ all terminal outcomes. Each cleared wave pays its **SLA contract** `(160 + 40 × tier + 320 on a boss) × 0.12 × Goodput` (`campaign.contractPayout`): committed customers paying for capacity served cleanly — most of the early income, overtaken by token income by the 2024 tiers. Lose on `cash < 0` / `trust ≤ 0` / `sla ≤ 0`.
+
+### 5.4 🔶 Routing and admission — capability dispatch, first-free prompt claiming, co-decoding
+
+**Reality.** A model gateway routes each request to a model that can answer it (RouteLLM-style cost/quality routing); a cluster router balances load across replicas and, KV-aware, sends a request where its prefix is cached; one replica prefills a prompt and decodes it (REFERENCE-DOSSIER §1.5, §4.10).
+
+**GPTD.** A Router reserves every request in its range for an in-range rack with a free slot: among racks that answer it correctly (margin ≥ 0 in that model's answer mode) the soonest finish (remaining answer + hidden tokens at the rack's one-cohort per-user speed), ties → larger margin; otherwise the best margin; never stranding traffic. KV-aware routing recovers 50% of routed cacheable misses up to the 0.85 prefix ceiling. Without a router each rack admits the requests nearest the core first. Two deliberate abstractions:
+- **First-free prompt claiming.** A prompt is claimed each tick by the first rack in build order that has a free slot and room, with no load balancing across racks, so prompts pile onto the earliest racks; a request waiting at a full entry rack keeps accruing TTFT as it walks. Real fleets balance prompts across replicas.
+- **Co-decoding.** An unreserved decoding request is admitted as a decode job by every in-range rack with a free slot, so its sprite can sit in several batches and its tokens are credited per rack. Its *latency* is still accounted at each rack's physical per-token rate (several racks never make its tokens faster), and its quality is the token-weighted margin of the racks that wrote it; the board simply finishes it in fewer ticks. A real request is decoded by one replica.
+
+### 5.5 ✅ Real power & cooling: two pools, a phase-asymmetric throttle
+
+**Reality.** ≈all electrical power becomes heat; a coolant loop plumbed to cold plates cannot cool an air-cooled chassis; decode is more memory-bound than prefill, so it keeps an edge under a thermal cap (REFERENCE-DOSSIER §5.5).
+
+**GPTD.** `serverPower = TDP × gpus × RACK_UTILIZATION (0.8) × format reduction × (1.08 with speculative decoding)` in real kW (an H100 rack ~0.56 kW, a DGX H200 ~4.5 kW, a DGX B200 ~6.4 kW, an NVL72 ~57.6 kW). Power: a 6 kW substation + 8 kW per Power Plant, × the curtailment modifier; over budget, the hungriest servers go dark first, then support. Cooling has **two pools** (`power.ts`): air (6 kW house chillers + Cooling Towers) for every air rack, liquid (Liquid Cooling Loops) for liquid racks only; each pool throttles only its own racks, `throttle = max(0.2, capacity / heat)`. Prefill and compute-bound steps take the full throttle; memory-bound decode uses `decodeThrottle(t) = 1 − (1 − t) × 0.85`. Meters refresh after every build-phase action and after a telegraphed incident; `brownout` events fire on transitions only.
+
+---
+
+## 6. Infra tech tree — serving/infra only, every node with its real effect and cost
 
 > Reality anchors: REFERENCE-DOSSIER §4 (serving systems), §2.10 (only multi-LoRA + PTQ are serving-layer).
 
-### 6.1 ✅ 22 infra nodes on typed `s.infra`, three research tracks
+### 6.1 ✅ 22 infra nodes on typed `s.infra`, three research tracks on one pool
 
-**GPTD.** All serving switches live on a typed `s.infra` (`InfraState`), separate from cash-bought `s.upgrades` (blueprint R6). The 22 `InfraNodeDef` (`src/sim/content.ts`) span nine categories — scheduling (continuous batching root, multi-step, chunked ⟂ disagg), kv-memory (PagedAttention root, prefix cache, FlashAttention, FP8/INT4 KV-quant, offload), decoding (speculative), weight-quant (FP8/INT4/NVFP4, the last needing Blackwell), parallelism (TP/PP/DP/EP), routing (KV-aware), multi-LoRA (2000 slots, S-LoRA), engine (vLLM/SGLang/TRT-LLM tiers). Research runs on **three concurrent tracks** — infra / posttrain / eval — that **share one requisitioned FLOPS pool** capped at `RESEARCH_MAX_SHARE = 0.45` of fleet FLOPS, requisitioning the strongest online racks first (`src/sim/research.ts`).
+**GPTD.** All serving switches live on `s.infra` (`InfraState`). The 22 `InfraNodeDef` span eight categories (scheduling, kv-memory, decoding, weight-quant, parallelism, routing, multi-lora, engine). Research runs on three tracks — infra / posttrain / eval — that **share one requisitioned pool**: whole racks, strongest first, that fit under `RESEARCH_MAX_SHARE = 0.45` of fleet bf16 FLOPS (rounding down; the weakest rack only if nothing fits; never the last online rack), the lent rate split equally across active tracks (`requisitionPick`, `updateResearch`). Projects start between waves and advance during them; `requisitionPreview` shows the lent racks, the serving share lost and the waves a project needs.
 
-### 6.2 ✅ What is modeled where (not as a tech node)
+### 6.2 ✅ What each node really does
 
-The following are modeled as model/Studio/eval properties rather than tech nodes:
-- **MoE** is a **model property** — VRAM ∝ total params, speed ∝ active params (§1.3) — with the `inf_par_ep` (Expert Parallelism) node for sharding.
-- **GQA/MLA** are model attributes (real `kvHeads` / `attn:'MLA'` ×0.067), not a global tech buff (§1.4).
-- **Reasoning** is a model property (`isReasoning`, cold-started by a GRPO Studio run), not a fleet `tech_reasoning` quality buff.
-- Model polish is the Post-Training Studio (not a fleet quality buff).
-- Layer-1 alignment is per-model (the Studio) and red-team is a dev-time eval (§4.3) — not serving buffs.
+| Node | Real effect in GPTD | Real cost kept |
+|---|---|---|
+| Continuous Batching | engine cap 256 streams per lane (one static batch before) | per-user speed falls as the batch grows |
+| Multi-Step Scheduling | step overhead amortized over 8 steps | new requests join only every few steps (+4 steps of admission wait) |
+| Chunked Prefill | token-budget scheduler (§1.6) | decodes pay the longer chunk steps; prompt work at 90% |
+| P/D Disaggregation | role-pinned pools, ×1.1 pool gain | KV transfer at 50 GB/s; decode pools take only their model's KV; prompts owed to the prefill pool |
+| PagedAttention | KV utilization 0.55 → 0.96 | — |
+| Prefix Caching | cache hit 0.35 → the 0.7 cap; skips the shared prefix only | the suffix still prefills; cached input billed at full price |
+| FlashAttention | O(n²) prefill term 1.5× slower to grow; KV reads ×1.2; 0.5 GB/GPU activation memory back | no quality, window or KV-size bonus |
+| FP8 / INT4 KV Cache | growing KV ×0.5 / ×0.25 | INT4 KV −2 quality past 32K tokens |
+| KV Offloading (LMCache) | +0.12 prefix hit chance (cap 0.9) from a CPU/SSD tier | PCIe reload at 25 GB/s on TTFT; never active-attention KV |
+| Speculative Decoding (EAGLE) | 4 drafts verified per step; accepted tokens by axis (coding 2.4 … reasoning 1.7) | draft VRAM (3% of weights, ≥0.5 GB); +8% power on every tier; verify compute; off once it stops paying |
+| FP8 / INT4 / NVFP4 weights | per-rack formats (§1.3) | INT4 at the BF16 rate and taxed; NVFP4 Blackwell-only (research needs a Blackwell rack) |
+| Tensor / Pipeline / Data / Expert Parallelism | groups, replicas, load balancing, wide EP (§1.9) | TP efficiency < 1 + all-reduces; PP hops + bubble; EP all-to-all |
+| KV-Aware Routing | routed cacheable traffic finds its prefix more often | needs a router; never speeds decode |
+| Multi-LoRA Serving | a base and its adapters hot-swap mid-wave | unmerged adapters run at 0.93 speed until the next wave |
+| SGLang ⟂ TensorRT-LLM | RadixAttention +0.1 hit (cap 0.8) ⟂ compiled kernels ×1.12 MBU/MFU | a one-way choice |
 
-### 6.3 ✅ Quantization — regime-split, both layers
+### 6.3 ✅ What is modeled where (not as a tech node)
 
-**Reality.** FP8 W8A8 is effectively lossless; INT4 W4A16 wins small-batch decode but collapses on long context (REFERENCE-DOSSIER §2.7, §4.5).
-
-**GPTD.** Serving-layer PTQ (`inf_wq_fp8`/`inf_wq_int4`/`inf_wq_nvfp4`) sets `s.infra.weightQuantBytes` (2→1→0.5), which feeds `bytesPerParam` and so cuts VRAM and the decode bandwidth term. INT4 pays a flat −2 quality and a **steep −6 long-context penalty above 8K real tokens** (`int4ContextPenalty`). Per-model QAT (the Studio `qat` method) is distinct from serving-layer PTQ (REFERENCE-DOSSIER §2.7).
-
-### 6.4 ✅ Speculative decoding — batch-dependent, costs power
-
-**Reality.** Draft-and-verify gives ~2× decode at b=1 but fades as batch grows and is off at batch ≥32; the draft stays hot, so power rises (REFERENCE-DOSSIER §4.4).
-
-**GPTD.** `specMul`: b≤1 → 2.0, ≤4 → 1.7, ≤16 → 1.66, 16<b<32 → lerp to 1.0, ≥32 → 1.0 (`src/sim/effects.ts`). It applies only to decode and adds +8%/level power on the frontier tier — a low-batch outpost rack's neat trick, useless on a saturated core rack (the real "turn it off at high batch" lesson).
+- **MoE**, **GQA / MLA / CSA / hybrid attention**, **thinking** are **model properties** (memory vs compute, KV layout, chat-template support), not fleet buffs.
+- Model polish is the Post-Training Studio; layer-1 alignment is per-model; red-team is a dev-time eval.
 
 ---
 
-## 7. Honest calibration notes (real, not bugs)
+## 7. Honest calibration notes and known deviations
 
-These are documented design constants, fine to mention as notes:
-- `OP_COST_SCALE = 0.036` + `TRAFFIC_SCALE = 100000` scale the real operating bill to a playable level while preserving the wall-clock / idle-bleed property (`src/config.ts`).
-- The 48 post-training recipe gain constants are an autoplay-calibratable game curve (validated, not fitted; §3.3).
-- The NVL72 is modeled at 57.6 kW from per-GPU TDP × utilization only (no NVLink-switch / CPU overhead), so it reads a bit under the ~120 kW full-rack figure.
-- Guardrail default threshold 0.5 causes some over-refusal by design (the no-free-lunch lesson).
-- MLA is an equivalent ×0.067 KV scaling, not the true latent geometry (flagged in-tooltip).
+Documented design constants and simplifications, fine to state openly:
+
+- 🔶 **MoE single-stream speed is optimistic (≈1.5–2×).** The roofline has no per-layer routing / gating or kernel-launch overhead, so a lone stream on a sparse MoE reads only its active experts at full MBU: gpt-oss-120b on one H100 decodes ~450 tok/s alone, against ≈210 tok/s measured by Artificial Analysis on live APIs. Production-batch speeds land in range (§1.10).
+- 🔶 **Speculative decoding fades much later than measured.** In the roofline the KV re-read keeps a step memory-bound, so verifying four drafts stays cheap: a dense 9B on an H100 keeps ~1.9× up to ~100 streams per lane (fading past 128), and a sparse MoE keeps ~2× through the engine's 256-stream cap. The dossier's EAGLE-3 measurements peak near batch 56 and approach zero by 64+, and practice switches it off from batch 32 (REFERENCE-DOSSIER §4.4). Its power, VRAM and verify-compute costs are kept.
+- 🔶 **The encoder guard reads slower than the generative judge on short prompts** (§4.2): a fixed card figure against a first-principles roofline price.
+- 🔶 **Co-decoding and first-free prompt claiming** (§5.4): no cross-rack prompt load balancing; an unreserved decode may sit in several racks' batches.
+- 🔶 **An unservable verdict latches on any rack.** A request one in-range rack finds infeasible (window or whole-copy KV) is marked, so if no capable rack reaches it before the core it ends `unservable` rather than `leaked`.
+- 🔶 **Chunked long prompts.** A long prompt's later chunks cost more (their attention reads the earlier chunks), so a step can run past the 30 ms target while long documents are read.
+- 🔶 **Bridged benchmark cells carry real uncertainty**: GPQA bridged from HLE + LCR + SciCode (residual sd ≈7.5), IFBench from LCR + HLE + GPQA (sd ≈9.4), TB-Hard from Terminal-Bench 2.1 + HLE + SciCode (sd ≈5.0). The calibration reads the resolved values; Expert mode marks them ≈ (bridged).
+- 🔶 **Instant-mode vectors.** One `longCtx` serves both modes; hybrids AA timed only in thinking mode get pair-fit instant cells; Qwen3.6-35B-A3B's AA non-reasoning SciCode of 1.3% is kept as measured (its instant coding reads 32); Hy3 is deliberately not paired (AA's non-reasoning row is the earlier Hy3-preview checkpoint).
+- ⚪ **Hidden thinking per archetype is a design choice**: summarization and batch think on hybrids (`thinkMul 0.5`), although real stacks often switch thinking off for summarization; reasoning's `thinkMul` is 0 because its long output already is the chain of thought.
+- 🔶 **The Studio's capacity ceiling uses total parameters**, so a sparse MoE body is bounded by dense peers of its total size, not its effective size.
+- 🔶 **Cached prompt tokens bill at full price.** Real providers discount cached input (Anthropic: cache reads at 1/10); the cache's in-game value is TTFT and prefill capacity.
+- 🔶 **Constitutional AI about halves a hard-refusal model's over-refusal** (−0.04 × √effort: ≈0.12 → ≈0.063 at the top effort notch), still about twice gpt-oss's 0.03; a stronger cut would be a design call.
+- 🔶 **The load forecast is an estimate.** It runs combat's math at the wave's arrival moments but approximates rack-to-rack contention; RAG first-token time behind long embeddings is under-predicted for some dense models.
+- ⚪ **Every agent step carries an injection attempt.** The `agent` archetype always holds a tool-borne injection hazard (0.3, escalating with the era), so until a red-teamed guard covers its lane only the model's alignment stands between it and an unsafe delivery. Real agent traffic carries injected instructions in some fraction of its tool outputs, not every step; the uniform hazard is a pessimistic stand-in that makes injection defence a standing requirement on agent lanes.
+- ⚪ The guardrail threshold is a fixed 0.5 operating point (§4.3).
+- ⚪ `TRAFFIC_SCALE = 100,000` and `RACKS_PER_TILE` are the economy's scale; the SLA contract (`CLEAR_BONUS_SCALE 0.12`) stands in for subscriptions and reserved capacity a token meter alone does not capture.
+- ⚪ Electricity is a flat $0.10/kWh before incidents; the NVL72 reads 57.6 kW from per-GPU TDP × utilization only (no NVLink-switch / CPU overhead), under the ~120 kW full-rack figure.
+- ⚪ TensorRT-LLM's per-model compile delay on redeploy is not modeled; the engines differ only in their benefit and lock each other out.
+- ⚪ The 48 post-training recipe constants are an autoplay-calibratable game curve (§3.4).
 
 ## 8. Open questions (⚪ evidence still wanted)
 
-Speculative-decoding acceptance rates; MoE expert-parallel serving overheads (routing imbalance, all-to-all); real prefix/semantic-cache hit-rate distributions; training-fleet GPU failure/straggler rates and training-vs-serving sharing practice; PUE / cooling / demand-response numbers. (All cross-referenced to the unverified-specifics callouts in REFERENCE-DOSSIER.)
+Speculative-decoding acceptance and its fade with batch on MoE targets; MoE expert-parallel serving overheads (routing imbalance, all-to-all at scale); real prefix-cache hit-rate distributions by workload; how real fleets balance prompt admission across replicas; production thinking budgets per workload (do serving stacks switch thinking off for summarization?); training-fleet sharing practice; PUE and demand-response numbers for liquid-cooled AI halls. (All cross-referenced to the unverified-specifics callouts in REFERENCE-DOSSIER.)
 
 ---
 
 ## References
 
-All real-world numbers and the literature backing each mechanic above are consolidated in [REFERENCE-DOSSIER.md](./REFERENCE-DOSSIER.md) — the single citations source for the design (request workloads §1, post-training §2, safety/guardrails §3, serving systems §4, hardware/economy §5, the open-weight roster §6). Cite §refs there rather than duplicating the bibliography here.
+All real-world numbers and the literature backing each mechanic above are consolidated in [REFERENCE-DOSSIER.md](./REFERENCE-DOSSIER.md) — the single citations source for the design (request workloads and SLOs §1, post-training §2, safety/guardrails §3, serving systems §4, hardware/economy §5, the open-weight landscape and benchmark host §6, the 2026 events behind the campaign's final waves §7). Cite §refs there rather than duplicating the bibliography here.
