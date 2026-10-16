@@ -1060,6 +1060,15 @@ export const zhTW: Record<string, string> = {
   // ===== [/ws:render] =====
 
   // ===== [ws:audio] audio: cue names, settings labels =====
+  "set.ui": "介面音效",
+  "set.muteInBackground": "背景時靜音",
+  "set.muteInBackground.sub": "分頁隱藏或視窗失焦時暫停聲音",
+  "set.sfxDensity": "服務提示音",
+  "set.sfxDensity.full": "完整",
+  "set.sfxDensity.reduced": "精簡",
+  "set.sfxDensity.sub": "精簡會減少一般成功與 Cache 命中的提示音，讓失敗更明顯",
+  "set.outcomeSounds": "結果音效",
+  "set.outcomeSounds.sub": "點擊試聽每種請求結果的聲音",
   // ===== [/ws:audio] =====
 
   // ===== [ws:shell] UI shell: HUD, hotkeys, notifications, next-wave card, wave summary, end screen, settings =====

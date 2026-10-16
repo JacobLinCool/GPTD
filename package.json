@@ -15,6 +15,7 @@
     "lint": "eslint .",
     "format": "prettier --write .",
     "e2e": "node scripts/screenshot.mjs",
+    "audio:check": "node scripts/audio-check.mjs",
     "bridge": "node public/bridge.mjs"
   },
   "dependencies": {
