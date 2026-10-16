@@ -2346,7 +2346,8 @@ describe('latency accounting on the real clock (§0.4)', () => {
     const t = lastTower(s)
     upgradeHardware(s, t.id)
     upgradeHardware(s, t.id) // → H100
-    deployModel(s, t.id, GENERAL)
+    // a plain-GQA model (heavy KV per token) with a 512K window: KV overflows inside the window
+    deployModel(s, t.id, 'k2h_7b')
     const lo = loadoutOf(s, t)
     const budget = kvFreeGb(s, lo)
     // the smallest prompt whose KV alone overflows the whole budget
