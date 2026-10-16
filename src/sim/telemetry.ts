@@ -25,6 +25,8 @@ export function newWaveStats(waveIndex: number): WaveStats {
     cacheHits: 0,
     cashIn: 0,
     powerCost: 0,
+    gpuCost: 0,
+    energyCost: 0,
     latencies: [],
     ttfts: [],
     total: 0,
@@ -118,8 +120,13 @@ export function recordTtft(s: GameState, r: Request): void {
   if (s.waveStats) s.waveStats.ttfts.push(r.ttftReal)
 }
 
-export function recordPowerCost(s: GameState, cost: number): void {
-  if (s.waveStats) s.waveStats.powerCost += cost
+/** §6.6 the operating bill paid this tick: the GPU-hour line and the energy line (credits). */
+export function recordOpex(s: GameState, gpuCost: number, energyCost: number): void {
+  const ws = s.waveStats
+  if (!ws) return
+  ws.gpuCost += gpuCost
+  ws.energyCost += energyCost
+  ws.powerCost += gpuCost + energyCost
 }
 
 /** Drop rolling-window entries older than TELEMETRY_WINDOW seconds. */
@@ -181,6 +188,8 @@ export function finalizeReport(s: GameState, clearBonus: number): WaveReport | n
     cashIn: ws.cashIn,
     clearBonus,
     powerCost: ws.powerCost,
+    gpuCost: ws.gpuCost,
+    energyCost: ws.energyCost,
     avgLatency: avg,
     p95Latency: p95,
     avgTtft,

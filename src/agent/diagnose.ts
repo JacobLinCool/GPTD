@@ -12,7 +12,7 @@ import {
   UPGRADE_MAP,
   WAVES,
 } from '../sim/content'
-import { hasLab, hasLiquidLoop, hwNeedsLiquid, loadout, serverFitsMemory } from '../sim/effects'
+import { deployBlocker, hasLab, hasLiquidLoop, hwNeedsLiquid, loadout, serverFitsMemory } from '../sim/effects'
 import { postTrainDataCost, resolveModel } from '../sim/models'
 import { isBuildable } from '../sim/pathing'
 import { methodUnlocked, researchOwned, researchPrereqsMet, researchTrackOf } from '../sim/research'
@@ -48,15 +48,22 @@ export function explainRejection(s: GameState, fn: string, args: unknown[]): str
         const t = s.towers.find((x) => x.id === towerId)
         if (!t) return `no tower with id ${towerId}`
         if (t.def.kind !== 'server') return `tower ${towerId} (${t.def.name}) is not a server rack`
-        if (s.phase === 'wave') return `models can only be swapped between waves (phase "build"): loading new weights drains the rack`
+        if (s.phase === 'wave')
+          return `models can only be swapped between waves (phase "build"): loading new weights drains the rack — mid-wave only a LoRA adapter of the loaded base can be swapped in, with Multi-LoRA Serving (inf_multilora)`
         if (!inPlay(s)) return `cannot deploy during phase "${s.phase}"`
         const m = resolveModel(s, modelId)
         if (!m) return `unknown model "${modelId}" — pick an id from state.models`
         if (t.modelId === modelId) return `${m.name} is already deployed on rack ${towerId}`
         if (!s.models[modelId]) return `model "${modelId}" is not owned`
-        if (!serverFitsMemory(s, loadout(s, t.hwId, modelId))) {
+        const lo = loadout(s, t.hwId, modelId, t.precision)
+        if (!serverFitsMemory(s, lo)) {
+          const blocker = deployBlocker(s, lo)
+          if (blocker === 'tp')
+            return `${m.name} has to span several GPUs of rack ${towerId} — research Tensor Parallelism (inf_par_tp) first`
+          if (blocker === 'pp')
+            return `${m.name} needs more than 8 GPUs per copy — research Pipeline Parallelism (inf_par_pp) first`
           const hbm = HARDWARE_DEFS[t.hwId ?? '']?.hbmGb
-          return `${m.name} (${m.paramsTotalB}B) does not fit rack ${towerId}'s VRAM${hbm ? ` (${hbm}GB)` : ''} — upgrade the rack or research weight quantization (inf_wq_fp8 / inf_wq_int4)`
+          return `${m.name} (${m.paramsTotalB}B) does not fit rack ${towerId}'s VRAM${hbm ? ` (${hbm}GB)` : ''} — upgrade the rack, research weight quantization (inf_wq_fp8), or set the rack to a 4-bit format`
         }
         return 'deploy rejected'
       }

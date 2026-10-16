@@ -15,11 +15,13 @@ import {
   HARDWARE_TIERS,
   METHOD_RECIPES,
   RESEARCH_DEFS,
+  REQUEST_TYPES,
   RESEARCH_TARGET_SECONDS,
   TOWER_DEFS,
   WAVES,
 } from './content'
 import {
+  hiddenTokensFor,
   loadout,
   loadoutOf,
   serverDeployable,
@@ -99,31 +101,25 @@ const RESEARCH_PRIORITY = [
   'r_pt_rl',
   'r_eval_redteam_v1',
   'inf_prefix', // prefix cache: lifts the cache-hit ceiling (prefixLevel) — the agent-wall lever
-  'inf_flash', // +context headroom (shrinks the context-stretch penalty) + KV ceiling
+  'inf_flash', // faster long prefill + Flash-Decoding's quicker KV reads + activation memory back
   'r_eval_redteam_v2',
   'inf_kvquant_fp8',
-  // P/D disaggregation chain (par_tp → par_pp → disagg): dedicated prefill/decode
-  // pools tune parallelism for the heavy reason/agent decode AND satisfy the showcase
-  // (prefill+decode roles). disagg requires par_pp requires par_tp — keep them in
-  // dependency order so planResearch can actually reach disagg.
+  // Parallelism, then P/D disaggregation: Tensor Parallelism lets a model span a multi-GPU
+  // rack (Pipeline beyond 8 GPUs); dedicated prefill/decode pools take the prompt stalls off
+  // the heavy reason/agent decode AND satisfy the showcase (prefill+decode roles).
   'inf_par_tp',
   'inf_par_pp',
   'inf_disagg',
   'inf_spec',
   'inf_multistep',
-  // THROUGHPUT MULTIPLIERS (the SLA / surge-survival lever). The late-game bosses are
-  // extreme-VOLUME floods (single-lane surges, "doublings") that tip the heavy reason/agent
-  // decode past its per-token SLO → mass slo_miss → SLA death. The engine tier and extra
-  // batch slots lift decode tok/s FLEET-WIDE for free (no tiles, no power), so they are the
-  // cheapest way to raise the throughput ceiling the surges push against:
-  //   • SGLang → TensorRT-LLM engine: ×1.10 → ×1.25 on every prefill+decode (engineMul).
-  //   • Data-Parallelism + Multi-Step: +throughput (speedMul) and +batch slots (concurrency).
+  // THROUGHPUT (the SLA / surge-survival lever): SGLang's radix cache raises prefix reuse
+  // (the engine is a one-way choice: it excludes TensorRT-LLM), Data Parallelism load-balances
+  // a multi-copy rack's requests over every copy, and KV-aware routing finds cached prefixes.
   'inf_engine_sglang',
-  'inf_engine_trtllm',
   'inf_par_dp',
   'inf_routing',
-  // NOTE: inf_wq_int4 / inf_kvquant_int4 are deliberately OMITTED. INT4 weights add a
-  // flat −6 quality penalty on any context > 8000 tokens (int4ContextPenalty), which
+  // NOTE: inf_wq_int4 / inf_kvquant_int4 are deliberately OMITTED. An INT4-quantized rack
+  // pays a flat −6 quality penalty on any context > 8000 tokens (longContextPenalty), which
   // pushes the extreme-decode `reason` lane (6000+ output tokens, NOT cacheable) below
   // its tier-scaled line → `bad` answers → trust death. We have ample VRAM at FP8 with
   // small MoEs, so the memory win is not worth the reasoning-quality hit.
@@ -300,14 +296,25 @@ function rackCapWeight(hwId: string | undefined): number {
   return 0.3
 }
 
-function modelScoreOn(s: GameState, hwId: string | undefined, id: string): number {
+/**
+ * A thinking model's hidden reasoning blows chat's time-to-first-answer bound (§1.4), so the
+ * interactive traffic needs fast racks whose model answers before that bound: the bulk
+ * (Edge / Standard) racks stay interactive, while H100-class and bigger racks run the
+ * capability fleet the routers send the hard traffic to (the fastest correct rack wins).
+ */
+function isChatRack(hwId: string | undefined): boolean {
+  return rackCapWeight(hwId) < 0.5
+}
+
+function modelScoreOn(s: GameState, hwId: string | undefined, id: string, chatRack = false): number {
   const lo = loadout(s, hwId, id)
   const tpotMs = 1000 / Math.max(1e-6, serverPerUserDecodeTokS(s, lo, 1))
-  return (
-    modelScore(s, id, rackCapWeight(hwId)) +
-    (tpotMs <= LAT_CLASS_SLO.IN.tpotMs ? 100_000 : 0) -
-    tpotMs * 0.5
-  )
+  // interactive-ready: the per-token bound — and on a chat rack also the hidden reasoning a
+  // thinking model spends before the first answer token, inside chat's TTFAT bound
+  const chat = REQUEST_TYPES.chat
+  const ttfatOk = !chatRack || tpotMs * hiddenTokensFor(lo.model, chat.thinkMul) <= (chat.ttfatSloMs ?? Infinity)
+  const interactive = tpotMs <= LAT_CLASS_SLO.IN.tpotMs && ttfatOk
+  return modelScore(s, id, rackCapWeight(hwId)) + (interactive ? 100_000 : 0) - tpotMs * 0.5
 }
 
 /** Per-user decode TPOT (ms) at b=1 for a model on a rack — the interactive-SLO proxy. */
@@ -315,7 +322,7 @@ function tpotMsOf(s: GameState, hwId: string | undefined, id: string): number {
   return 1000 / Math.max(1e-6, serverPerUserDecodeTokS(s, loadout(s, hwId, id), 1))
 }
 
-function bestFit(s: GameState, hwId: string | undefined): string | null {
+function bestFit(s: GameState, hwId: string | undefined, chatRack = false): string | null {
   // A SLOW agent-WALL apex (a heavy ≈27-31B dense wall-clearer) is RESERVED for the
   // explicit pinApexRacks pass — letting it win the generic bulk-deploy path floods the
   // benign lanes with slo_miss. But a FAST wall-clearer (the safe-apex: a ≈3B-active MoE
@@ -330,7 +337,7 @@ function bestFit(s: GameState, hwId: string | undefined): string | null {
   for (const id of Object.keys(s.models)) {
     const m = resolveModel(s, id)
     if (!m || !serverDeployable(s, loadout(s, hwId, id))) continue
-    const score = modelScoreOn(s, hwId, id)
+    const score = modelScoreOn(s, hwId, id, chatRack)
     const slowWall = isWallClearer(s, id) && tpotMsOf(s, hwId, id) > LAT_CLASS_SLO.IN.tpotMs
     if (slowWall) {
       if (score > fallbackScore) {
@@ -364,8 +371,13 @@ function deployBest(s: GameState, towerId: number, hwId: string | undefined, cur
     if (t && t !== curId && modelScoreOn(s, hwId, t) > modelScoreOn(s, hwId, curId)) deployModel(s, towerId, t)
     return
   }
-  const target = bestFit(s, hwId)
-  if (target && target !== curId && (!curId || modelScoreOn(s, hwId, target) > modelScoreOn(s, hwId, curId))) {
+  const chatRack = isChatRack(hwId)
+  const target = bestFit(s, hwId, chatRack)
+  if (
+    target &&
+    target !== curId &&
+    (!curId || modelScoreOn(s, hwId, target, chatRack) > modelScoreOn(s, hwId, curId, chatRack))
+  ) {
     deployModel(s, towerId, target)
   }
 }
@@ -389,7 +401,7 @@ function bestWallFit(s: GameState, hwId: string | undefined): string | null {
 /** All base models that fit a given rack class at FP8 (the Studio's candidate pool). */
 function fp8Bases(s: GameState, hwId: string) {
   const fp8 = createState(0)
-  fp8.infra.weightQuantBytes = 1
+  fp8.infra.quant.fp8 = true
   return Object.keys(s.models)
     .map((id) => resolveModel(s, id))
     .filter((m): m is NonNullable<typeof m> => !!m && m.origin === 'base')
@@ -428,12 +440,13 @@ function clearsLine(m: DM, axis: 'reasoning' | 'agentic', line: number): boolean
 }
 
 /**
- * The agent lane's quality gate (verified): effQ = servedAgentic − contextGap·0.45;
- * contextGap = max(0, reqContext − serverContext). With FlashAttention + Prefix-cache
- * research, serverContext for any ≥128K-window model caps at 176. The campaign's agent
- * request is `difficulty.agentic 82 × tierComplexity` and `context 70 × tierContext`:
- *   • waves 65-79: difficulty 98.4, reqContext 186 → need servedAgentic ≳ 103
- *   • waves 80-100: difficulty 98.4, reqContext 203 → need servedAgentic ≳ 110.6 (the WALL)
+ * The agent lane's quality gate: effQ = servedAgentic − the long-context penalty of the
+ * request's real tokens (window fill, softened by the model's long-context skill). The
+ * wall constant below was tuned against an earlier, steeper context penalty (an abstract
+ * context score of 186–203 vs a 176 cap): it is a conservative target the balance pass
+ * should re-derive from longContextPenaltyFor on the late agent prompts.
+ *   • waves 65-79: difficulty 98.4 → need servedAgentic ≳ 103
+ *   • waves 80-100: difficulty 98.4 → need servedAgentic ≳ 110.6 (the WALL)
  * A SINGLE GRPO-agentic run (depth 1) tops out at servedAgentic ≈ 106 — it clears 65-79
  * but FAILS the 80+ wall, which is exactly where the demo died (the agent lane shipped
  * all-`bad` → trust death). STACKING GRPO-agentic runs lifts it: each run adds ≈ +6
@@ -454,9 +467,9 @@ function projApex(base: DM): DM {
   return m
 }
 
-/** Served agentic on a fully-researched FP8 fleet (Flash + Prefix-cache: serverContext 176). */
+/** Served agentic on an FP8 fleet (before the request's long-context penalty). */
 function projServedAgentic(m: DM): number {
-  // serverQualityVs(agentic) = qualityBy.agentic − int4Tax(0 at FP8) − alignmentTax.
+  // serverQualityVs(agentic) = qualityBy.agentic − PTQ tax (0 at FP8) − alignmentTax.
   // alignmentTax is a small over-refusal/refusal-style trade; approximate via qualityBy
   // (the real deploy path re-checks it). Use the raw axis minus a safe-completion-aware
   // tax floor so the projection is conservative.
@@ -597,7 +610,7 @@ function maybeStudio(s: GameState): void {
 }
 
 function fp8Ready(s: GameState): boolean {
-  return s.infra.weightQuantBytes <= 1
+  return s.infra.quant.fp8
 }
 
 function ownsBigSpecialist(s: GameState): boolean {

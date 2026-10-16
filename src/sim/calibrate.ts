@@ -288,6 +288,32 @@ export function qualityFromBenchmarks(b: BenchInputs, floor: Record<ServerSpec, 
 }
 
 /* ------------------------------------------------------------------ *
+ *  LONG-CONTEXT SKILL — how much quality survives as the window fills. *
+ *  Calibrated at load from the AA long-context-reasoning cell (lcr,    *
+ *  ~100K-token documents), so a 1M-window model that also reasons well *
+ *  over long inputs really does beat a 128K one on a 100K prompt.      *
+ * ------------------------------------------------------------------ */
+
+/** The AA-LCR score that counts as full long-context skill (the 2026 frontier reads ≈75–80%). */
+export const LCR_FULL = 80
+/** Fallback skill per tier for a checkpoint with no lcr cell. */
+const LONGCTX_FLOOR: Record<'small' | 'general' | 'coding' | 'frontier', number> = {
+  small: 0.2,
+  general: 0.5,
+  coding: 0.5,
+  frontier: 0.7,
+}
+
+/**
+ * Long-context skill 0..1 from the AA long-context-reasoning % (lcr): lcr / LCR_FULL,
+ * clamped. A 32K-window model that cannot even take the benchmark's 100K documents reads 0.
+ */
+export function longCtxOf(lcr: number | undefined, tier: keyof typeof LONGCTX_FLOOR): number {
+  if (lcr == null || !Number.isFinite(lcr)) return LONGCTX_FLOOR[tier]
+  return Math.round(clamp(lcr / LCR_FULL, 0, 1) * 100) / 100
+}
+
+/* ------------------------------------------------------------------ *
  *  THINKING MODELS — whether a checkpoint thinks, and how much.        *
  *  Derived at load from Artificial Analysis' serving telemetry on the  *
  *  pinned variant (AA_META), the same way qualityBy is calibrated from *

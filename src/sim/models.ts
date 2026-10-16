@@ -217,6 +217,8 @@ export interface DerivedFields {
   kvStateMbPerReq: number
   nativeWeightBytes: number
   contextWindowK: number
+  /** §1.2 long-context skill: a body keeps its own; a distilled student or a merge keeps the weaker one. */
+  longCtx: number
   alignment: AlignmentProfile
   instructFollow: number
   desc: string
@@ -294,12 +296,14 @@ export function computeDerivedFields(
   // --- deployment fields (§4.8/§5.6/§5.7): only distill / qat / merge reshape ---
   let body: DeployBody = bodyOf(base)
   let contextWindowK = base.contextWindowK
+  let longCtx = base.longCtx
 
   if (method === 'distill') {
     // swap to a smaller STUDENT base's deploy fields + cap qualityBy at min(teacher, student capacity).
     const student = pickDistillStudent(base)
     body = bodyOf(student)
     contextWindowK = Math.min(contextWindowK, student.contextWindowK)
+    longCtx = Math.min(longCtx, student.longCtx)
     // student-capacity cap: the small body can't hold the full teacher signal.
     for (const a of CAP_AXES) {
       const cap = Math.min(base.qualityBy[a], student.qualityBy[a] + 18)
@@ -316,6 +320,7 @@ export function computeDerivedFields(
     body = { ...body, isMoE: body.isMoE || other.isMoE, nativeWeightBytes: Math.max(base.nativeWeightBytes, other.nativeWeightBytes) }
     isReasoning = isReasoning || other.isReasoning
     contextWindowK = Math.min(contextWindowK, other.contextWindowK)
+    longCtx = Math.min(longCtx, other.longCtx)
   }
   // a run that teaches thinking gives the checkpoint a thinking budget; a merge keeps the larger.
   let thinkTokens = method === 'merge' && other ? Math.max(base.thinkTokens, other.thinkTokens) : base.thinkTokens
@@ -345,6 +350,7 @@ export function computeDerivedFields(
     quality,
     qualityBy,
     contextWindowK,
+    longCtx,
     alignment,
     instructFollow,
     desc,
@@ -433,6 +439,7 @@ export function deriveModel(s: GameState, meta: PostTrainMeta): ModelDef | null 
     kvStateMbPerReq: f.kvStateMbPerReq,
     nativeWeightBytes: f.nativeWeightBytes,
     contextWindowK: f.contextWindowK,
+    longCtx: f.longCtx,
     alignment: f.alignment,
     instructFollow: f.instructFollow,
     desc: f.desc,

@@ -50,12 +50,14 @@ export interface ResolveDetail {
 
 /**
  * Token-priced revenue (credits) for the tokens this request actually had processed:
- * the prompt ingested so far (a cached prefix counts — it was served) plus the tokens
- * generated so far.
+ * the prompt ingested so far (a cached prefix counts — it was served) plus the ANSWER
+ * tokens generated so far. Hidden reasoning tokens decode first and are never billed: the
+ * request's price is what the market pays for the answer.
  */
 export function processedRevenue(s: GameState, r: Request): number {
   const tokIn = Math.max(0, r.tokensIn - r.prefill)
-  const tokOut = Math.max(0, r.maxWork - Math.max(0, r.work))
+  const generated = Math.max(0, r.maxWork - Math.max(0, r.work))
+  const tokOut = Math.min(r.tokensOut, Math.max(0, generated - r.hiddenTokens))
   return serveRevenue(s, tokIn, tokOut, r.pricePerMtokIn, r.pricePerMtokOut)
 }
 

@@ -1,12 +1,14 @@
-import type { GameState, ServerHardwareDef, Tower, TowerDef, WaveDef } from '../core/types'
+import type { GameState, ServerHardwareDef, Tower, TowerDef, WaveDef, WeightFormat } from '../core/types'
 import { CAMPAIGN_THEMES } from './campaign'
 import { HARDWARE_DEFS, HARDWARE_TIERS, TOWER_DEFS, UPGRADE_MAP, WAVES } from './content'
 import {
+  formatAvailable,
   hasLab,
   hasLiquidLoop,
   hwNeedsLiquid,
   loadout,
   loadoutOf,
+  loraSiblings,
   methodsUnlocked,
   resolveModel,
   serverFitsMemory,
@@ -66,11 +68,16 @@ export function tryBuild(s: GameState, defId: string, col: number, row: number):
     modelId: def.defaultModelId,
     role: undefined,
     training: false,
+    precision: undefined,
+    loraHot: false,
+    prefillDebtSec: 0,
     // display state, refreshed every combat tick (declared up front: one object shape for every tower)
     decodeIds: [],
     prefillId: null,
     kvFrac: 0,
     batch: 0,
+    streams: 0,
+    tokS: 0,
   })
   s.events.push({ type: 'build', towerId: id, defId: def.id, x: c.x, y: c.y })
   s.events.push({ type: 'place', x: c.x, y: c.y })
@@ -99,22 +106,49 @@ export function sellTower(s: GameState, id: number): boolean {
 
 /**
  * Deploy a checkpoint onto a placed rack — between waves only. Open weights are free,
- * so deployment costs nothing, but the rack must fit the model's VRAM, and loading new
- * weights means draining the rack and restarting its inference engine: it cannot happen
- * while traffic is live (a real engine cold start takes tens of seconds to minutes).
+ * so deployment costs nothing, but the rack must fit the model's VRAM (in its weight
+ * format), and loading new weights means draining the rack and restarting its inference
+ * engine: it cannot happen while traffic is live (a real engine cold start takes tens of
+ * seconds to minutes). The one exception is §4.10 Multi-LoRA serving: a checkpoint that
+ * shares the rack's base weights (a LoRA-family adapter of it, or its base) is already
+ * co-resident, so the swap is an adapter switch that works mid-wave — served unmerged
+ * (the S-LoRA kernel overhead) until the next build phase merges it.
  */
 export function deployModel(s: GameState, towerId: number, modelId: string): boolean {
-  if (s.phase !== 'build') return false
+  if (s.phase !== 'build' && s.phase !== 'wave') return false
   const t = s.towers.find((x) => x.id === towerId)
   if (!t || t.def.kind !== 'server') return false
   const model = resolveModel(s, modelId) // base OR a derived checkpoint (P3b)
   if (!model || t.modelId === modelId) return false
   if (!s.models[modelId]) return false // not owned (open models are owned from the start)
+  const hotSwap = s.phase === 'wave' && loraSiblings(s, t.modelId ? resolveModel(s, t.modelId) : null, model)
+  if (s.phase !== 'build' && !hotSwap) return false
   if (!methodsUnlocked(s, model)) return false // architecture method not researched yet
-  if (!serverFitsMemory(s, loadout(s, t.hwId, modelId))) return false
+  if (!serverFitsMemory(s, loadout(s, t.hwId, modelId, t.precision))) return false
   t.modelId = modelId
+  t.loraHot = hotSwap
   s.events.push({ type: 'deploy', towerId: t.id, modelId, x: t.x, y: t.y })
   s.events.push({ type: 'train' })
+  refreshPower(s)
+  return true
+}
+
+/**
+ * §4.5 set the weight format a rack serves its model in — between waves only (re-quantizing
+ * means reloading the weights). `undefined` = auto: the fastest researched format that costs
+ * no quality. An explicit format must be researched (FP4 also needs Blackwell hardware) or be
+ * the checkpoint's own release format, and the model must fit the rack in it: a lossy 4-bit
+ * format is how a checkpoint too big for a rack at full precision gets onto it, at its tax.
+ */
+export function setRackPrecision(s: GameState, towerId: number, fmt: WeightFormat | undefined): boolean {
+  if (s.phase !== 'build') return false
+  const t = s.towers.find((x) => x.id === towerId)
+  if (!t || t.def.kind !== 'server' || !t.hwId) return false
+  if (t.precision === fmt) return false
+  const lo = loadout(s, t.hwId, t.modelId, fmt)
+  if (fmt !== undefined && !formatAvailable(s, lo.hw, fmt, lo.model)) return false
+  if (lo.model && !serverFitsMemory(s, lo)) return false
+  t.precision = fmt
   refreshPower(s)
   return true
 }
@@ -202,7 +236,12 @@ export function startWave(s: GameState): boolean {
   s.waveActive = true
   s.waveTime = 0
   s.waveStats = newWaveStats(s.waveIndex)
-  for (const t of s.towers) t.load = 0
+  for (const t of s.towers) {
+    t.load = 0
+    // the build phase merged any hot-swapped adapter and drained every prefill pool's queue
+    t.loraHot = false
+    t.prefillDebtSec = 0
+  }
   // fold the active incident modifiers into the runtime spawns: `volume` scales the
   // burst count (viral spike / DDoS) and `reward` scales the realised token price
   // and reward (enterprise demo / price war). The lane window + per-group lane pin

@@ -15,7 +15,14 @@ import type {
   UpgradeDef,
   WaveDef,
 } from '../core/types'
-import { calibrateRecipes, qualityFromBenchmarks, thinkingOf, withinFrontierTolerance, type BenchInputs } from './calibrate'
+import {
+  calibrateRecipes,
+  longCtxOf,
+  qualityFromBenchmarks,
+  thinkingOf,
+  withinFrontierTolerance,
+  type BenchInputs,
+} from './calibrate'
 import { MODEL_ARCH } from './roster.arch.generated'
 import { AA_BENCH, AA_BENCH_SOURCE, AA_META } from './roster.bench.generated'
 import { GENERATED_ROSTER } from './roster.generated'
@@ -48,6 +55,7 @@ export const REQUEST_TYPES: Record<string, RequestTypeDef> = {
     inputTokens: 2000,
     outputTokens: 0,
     latClass: 'TO',
+    thinkMul: 0, // an embedding emits no text: nothing to think about
     speed: 1.7,
     primaryAxis: 'general',
     difficulty: { general: 10 },
@@ -73,6 +81,9 @@ export const REQUEST_TYPES: Record<string, RequestTypeDef> = {
     inputTokens: 512,
     outputTokens: 256,
     latClass: 'IN',
+    // a thinking model thinks before it chats, and a person is waiting for the first word
+    thinkMul: 0.5,
+    ttfatSloMs: 4000,
     speed: 1.45,
     primaryAxis: 'chat',
     difficulty: { chat: 18 },
@@ -99,6 +110,10 @@ export const REQUEST_TYPES: Record<string, RequestTypeDef> = {
     outputTokens: 150,
     latClass: 'IN',
     ttftSloMs: 200,
+    // inline completion barely thinks, and the suggestion must land about as fast as the
+    // first token would: a thinking model's hidden tokens alone blow this bound
+    thinkMul: 0.05,
+    ttfatSloMs: 400,
     speed: 1.4,
     primaryAxis: 'coding',
     difficulty: { coding: 56 },
@@ -124,6 +139,7 @@ export const REQUEST_TYPES: Record<string, RequestTypeDef> = {
     inputTokens: 8000,
     outputTokens: 512,
     latClass: 'NR',
+    thinkMul: 0.5,
     speed: 0.95,
     primaryAxis: 'general',
     difficulty: { general: 50, reasoning: 44 },
@@ -149,6 +165,7 @@ export const REQUEST_TYPES: Record<string, RequestTypeDef> = {
     inputTokens: 12000,
     outputTokens: 400,
     latClass: 'NR',
+    thinkMul: 0.5,
     speed: 0.9,
     primaryAxis: 'general',
     difficulty: { general: 44 },
@@ -174,6 +191,7 @@ export const REQUEST_TYPES: Record<string, RequestTypeDef> = {
     inputTokens: 512,
     outputTokens: 6000,
     latClass: 'NR',
+    thinkMul: 0, // its long chain-of-thought output already IS the reasoning
     speed: 0.82,
     primaryAxis: 'reasoning',
     difficulty: { reasoning: 82 },
@@ -199,7 +217,10 @@ export const REQUEST_TYPES: Record<string, RequestTypeDef> = {
     inputTokens: 6000,
     outputTokens: 800,
     latClass: 'NR',
-    e2elSloMs: 9000,
+    // one agent step (its full think + the tool call) must land within a minute — a slow
+    // per-user rate or a long hidden think blows it
+    e2elSloMs: 60000,
+    thinkMul: 1, // every tool-use step is planned with a full think
     speed: 0.76,
     primaryAxis: 'agentic',
     difficulty: { agentic: 82, reasoning: 66 },
@@ -232,6 +253,7 @@ export const REQUEST_TYPES: Record<string, RequestTypeDef> = {
     inputTokens: 1000,
     outputTokens: 4000,
     latClass: 'TO',
+    thinkMul: 0.5,
     speed: 1.0,
     primaryAxis: 'general',
     difficulty: { general: 40 },
@@ -257,6 +279,8 @@ export const REQUEST_TYPES: Record<string, RequestTypeDef> = {
     inputTokens: 600,
     outputTokens: 400,
     latClass: 'IN',
+    thinkMul: 0.5,
+    ttfatSloMs: 4000,
     speed: 1.18,
     primaryAxis: 'general',
     difficulty: { general: 38 },
@@ -298,7 +322,7 @@ export const REQUEST_LIST = Object.values(REQUEST_TYPES)
  */
 type HwSpec = Omit<
   ServerHardwareDef,
-  'bf16Tflops' | 'fp8Tflops' | 'hbmGb' | 'hbmTbs' | 'tdpWatts' | 'gpuHrUsd' | 'cost'
+  'bf16Tflops' | 'fp8Tflops' | 'fp4Tflops' | 'hbmGb' | 'hbmTbs' | 'tdpWatts' | 'gpuHrUsd' | 'cost'
 >
 
 /**
@@ -313,53 +337,53 @@ const costFromCapex = (capexUsd: number): number => Math.max(1, Math.round(capex
 const HW_SPECS: Record<string, HwSpec> = {
   hw_edge: {
     id: 'hw_edge', name: 'Edge GPU Rack', gpuModel: 'L4-class', gpus: 1,
-    bf16TflopsPerGpu: 121, fp8TflopsPerGpu: 242, hbmGbPerGpu: 24, hbmTbsPerGpu: 0.3,
+    bf16TflopsPerGpu: 121, fp8TflopsPerGpu: 242, fp4TflopsPerGpu: 0, hbmGbPerGpu: 24, hbmTbsPerGpu: 0.3,
     tdpWattsPerGpu: 72, cooling: 'air', capexUsd: 5000, gpuHrUsdPerGpu: 0.4,
-    targets: 2, powerDraw: 2, heat: 2, range: 2.8, color: 0x6fe0ff, accent: 0xbff4ff,
+    powerDraw: 2, heat: 2, range: 2.8, color: 0x6fe0ff, accent: 0xbff4ff,
     desc: 'A single L4-class accelerator. Cheap and cool, but 24 GB and modest bandwidth cap model size.',
   },
   hw_standard: {
     id: 'hw_standard', name: 'Standard GPU Rack', gpuModel: 'L40S-class', gpus: 1,
-    bf16TflopsPerGpu: 362, fp8TflopsPerGpu: 733, hbmGbPerGpu: 48, hbmTbsPerGpu: 0.864,
+    bf16TflopsPerGpu: 362, fp8TflopsPerGpu: 733, fp4TflopsPerGpu: 0, hbmGbPerGpu: 48, hbmTbsPerGpu: 0.864,
     tdpWattsPerGpu: 350, cooling: 'air', capexUsd: 16000, gpuHrUsdPerGpu: 1.0,
-    targets: 2, powerDraw: 3, heat: 3, range: 3.0, color: 0x5b8cff, accent: 0xc3d4ff,
+    powerDraw: 3, heat: 3, range: 3.0, color: 0x5b8cff, accent: 0xc3d4ff,
     desc: 'An L40S-class card: 48 GB and solid compute for a mid-size model with moderate batching.',
   },
   hw_perf: {
     id: 'hw_perf', name: 'Performance GPU Rack', gpuModel: 'H100-class', gpus: 1,
-    bf16TflopsPerGpu: 989, fp8TflopsPerGpu: 1979, hbmGbPerGpu: 80, hbmTbsPerGpu: 3.35,
+    bf16TflopsPerGpu: 989, fp8TflopsPerGpu: 1979, fp4TflopsPerGpu: 0, hbmGbPerGpu: 80, hbmTbsPerGpu: 3.35,
     tdpWattsPerGpu: 700, cooling: 'air', capexUsd: 48000, gpuHrUsdPerGpu: 3.0,
-    targets: 2, powerDraw: 4, heat: 4, range: 3.0, color: 0x7ee787, accent: 0xd2ffce,
+    powerDraw: 4, heat: 4, range: 3.0, color: 0x7ee787, accent: 0xd2ffce,
     desc: 'A single H100-class GPU: 80 GB HBM3 and ~3.35 TB/s — the bandwidth that makes decode fly.',
   },
   hw_frontier: {
     id: 'hw_frontier', name: 'Frontier GPU Rack', gpuModel: 'H200-class', gpus: 1,
-    bf16TflopsPerGpu: 989, fp8TflopsPerGpu: 1979, hbmGbPerGpu: 141, hbmTbsPerGpu: 4.8,
+    bf16TflopsPerGpu: 989, fp8TflopsPerGpu: 1979, fp4TflopsPerGpu: 0, hbmGbPerGpu: 141, hbmTbsPerGpu: 4.8,
     tdpWattsPerGpu: 700, cooling: 'air', capexUsd: 60000, gpuHrUsdPerGpu: 3.2,
-    targets: 2, powerDraw: 6, heat: 6, range: 3.3, color: 0xc792ea, accent: 0xf0d9ff,
+    powerDraw: 6, heat: 6, range: 3.3, color: 0xc792ea, accent: 0xf0d9ff,
     desc: 'An H200-class GPU: same compute as H100 but 141 GB and 4.8 TB/s — fits a 70B unquantized.',
   },
   // --- giant-model clusters (upgrade-only): the only homes for 100B+ checkpoints ---
   hw_pod: {
     id: 'hw_pod', name: 'DGX H200', gpuModel: 'DGX H200 (8× H200)', gpus: 8,
-    bf16TflopsPerGpu: 989, fp8TflopsPerGpu: 1979, hbmGbPerGpu: 141, hbmTbsPerGpu: 4.8,
+    bf16TflopsPerGpu: 989, fp8TflopsPerGpu: 1979, fp4TflopsPerGpu: 0, hbmGbPerGpu: 141, hbmTbsPerGpu: 4.8,
     tdpWattsPerGpu: 700, cooling: 'liquid', capexUsd: 320000, gpuHrUsdPerGpu: 3.2,
-    targets: 2, powerDraw: 10, heat: 10, range: 3.4, color: 0xffb86c, accent: 0xffe0b8,
-    desc: 'Eight H200s as one node: 1.1 TB of pooled HBM and 38 TB/s aggregate. Fits a 200B-class model.',
+    powerDraw: 10, heat: 10, range: 3.4, color: 0xffb86c, accent: 0xffe0b8,
+    desc: 'Eight NVLinked H200s, 1.1 TB of HBM. A model that fits one GPU runs as eight replicas (concurrency); a bigger one needs Tensor Parallelism to span them, at an all-reduce cost.',
   },
   hw_superpod: {
     id: 'hw_superpod', name: 'DGX B200', gpuModel: 'DGX B200 (8× B200)', gpus: 8,
-    bf16TflopsPerGpu: 2250, fp8TflopsPerGpu: 4500, hbmGbPerGpu: 192, hbmTbsPerGpu: 8.0,
+    bf16TflopsPerGpu: 2250, fp8TflopsPerGpu: 4500, fp4TflopsPerGpu: 9000, hbmGbPerGpu: 192, hbmTbsPerGpu: 8.0,
     tdpWattsPerGpu: 1000, cooling: 'liquid', capexUsd: 500000, gpuHrUsdPerGpu: 5.0,
-    targets: 3, powerDraw: 16, heat: 16, range: 3.5, color: 0xff7ab6, accent: 0xffc4de,
-    desc: 'Eight Blackwell B200s: 1.5 TB HBM and 64 TB/s. 700B-class checkpoints live here.',
+    powerDraw: 16, heat: 16, range: 3.5, color: 0xff7ab6, accent: 0xffc4de,
+    desc: 'Eight Blackwell B200s: 1.5 TB of HBM at 8 TB/s per GPU, plus FP4 Tensor Cores (NVFP4). 700B-class checkpoints live here under Tensor Parallelism.',
   },
   hw_giga: {
     id: 'hw_giga', name: 'GB200 NVL72', gpuModel: 'GB200 NVL72 (72× B200)', gpus: 72,
-    bf16TflopsPerGpu: 2250, fp8TflopsPerGpu: 4500, hbmGbPerGpu: 192, hbmTbsPerGpu: 8.0,
+    bf16TflopsPerGpu: 2250, fp8TflopsPerGpu: 4500, fp4TflopsPerGpu: 9000, hbmGbPerGpu: 192, hbmTbsPerGpu: 8.0,
     tdpWattsPerGpu: 1000, cooling: 'liquid', capexUsd: 3000000, gpuHrUsdPerGpu: 5.0,
-    targets: 3, powerDraw: 26, heat: 26, range: 3.6, color: 0xf5e663, accent: 0xfdf6b8,
-    desc: 'A 72-GPU NVL72 rack acting as one accelerator: 13.8 TB HBM, 576 TB/s. Serves a 2T model unquantized.',
+    powerDraw: 26, heat: 26, range: 3.6, color: 0xf5e663, accent: 0xfdf6b8,
+    desc: 'A 72-GPU NVLink rack: 13.8 TB of HBM. A trillion-parameter model spans a pipeline of 8-GPU tensor-parallel stages; smaller models run as many replicas. Per-user speed is still one 8-GPU group\'s.',
   },
 }
 
@@ -371,6 +395,7 @@ for (const id of Object.keys(HW_SPECS)) {
     cost: costFromCapex(h.capexUsd),
     bf16Tflops: h.bf16TflopsPerGpu * h.gpus,
     fp8Tflops: h.fp8TflopsPerGpu * h.gpus,
+    fp4Tflops: h.fp4TflopsPerGpu * h.gpus,
     hbmGb: h.hbmGbPerGpu * h.gpus,
     hbmTbs: h.hbmTbsPerGpu * h.gpus,
     tdpWatts: h.tdpWattsPerGpu * h.gpus,
@@ -876,6 +901,7 @@ for (const e of ROSTER) {
     kvStateMbPerReq: arch.kvStateMbPerReq,
     nativeWeightBytes: arch.nativeWeightBytes,
     contextWindowK: arch.contextWindowK,
+    longCtx: longCtxOf(bench.lcr, e.tier),
     // §3.4/§OQ-G12 hand-filled intrinsic alignment + instruction-following.
     alignment: e.alignment ?? { ...INSTRUCT_ALIGNMENT },
     instructFollow: e.instructFollow ?? INSTRUCT_INSTRUCT_FOLLOW,
@@ -1127,8 +1153,8 @@ infra({
 })
 infra({
   id: 'inf_multistep', category: 'scheduling', name: 'Multi-Step Scheduling', i18nKey: 'inf_multistep',
-  effects: { multiStep: 1, throughput: 1 }, requires: ['inf_batching'], dataCost: 12, compute: 1200,
-  optimizes: ['throughput', 'latency'], coupling: 'pure-infra', sourceRef: '§4.1',
+  effects: { multiStep: 1 }, requires: ['inf_batching'], dataCost: 12, compute: 1200,
+  optimizes: ['throughput'], coupling: 'pure-infra', sourceRef: '§4.1',
 })
 infra({
   id: 'inf_chunked', category: 'scheduling', name: 'Chunked Prefill', i18nKey: 'inf_chunked',
@@ -1137,7 +1163,7 @@ infra({
 })
 infra({
   id: 'inf_disagg', category: 'scheduling', name: 'P/D Disaggregation', i18nKey: 'inf_disagg',
-  effects: { disagg: 1 }, requires: ['inf_par_pp'], conflicts: ['inf_chunked'], dataCost: 40, compute: 3000,
+  effects: { disagg: 1 }, requires: ['inf_paged'], conflicts: ['inf_chunked'], dataCost: 40, compute: 3000,
   optimizes: ['latency', 'cost'], coupling: 'pure-infra', sourceRef: '§4.3',
 })
 
@@ -1183,17 +1209,17 @@ infra({
 // --- weight-quant (PTQ, §4.5; distinct from per-model QAT) ---
 infra({
   id: 'inf_wq_fp8', category: 'weight-quant', name: 'FP8 Weight Quant', i18nKey: 'inf_wq_fp8',
-  effects: { weightQuantBytes: 1 }, requires: ['inf_batching'], dataCost: 10, compute: 900,
+  effects: { quantFp8: 1 }, requires: ['inf_batching'], dataCost: 10, compute: 900,
   optimizes: ['memory', 'cost'], coupling: 'infra-model', sourceRef: '§4.5',
 })
 infra({
   id: 'inf_wq_int4', category: 'weight-quant', name: 'INT4 Weight Quant (AWQ/GPTQ)', i18nKey: 'inf_wq_int4',
-  effects: { weightQuantBytes: 0.5 }, requires: ['inf_wq_fp8'], dataCost: 14, compute: 1400,
+  effects: { quantInt4: 1 }, requires: ['inf_wq_fp8'], dataCost: 14, compute: 1400,
   optimizes: ['memory', 'cost'], coupling: 'infra-model', sourceRef: '§4.5',
 })
 infra({
   id: 'inf_wq_nvfp4', category: 'weight-quant', name: 'NVFP4 (Blackwell)', i18nKey: 'inf_wq_nvfp4',
-  effects: { weightQuantBytes: 0.5 }, requires: ['inf_wq_int4'], dataCost: 18, compute: 2400,
+  effects: { quantNvfp4: 1 }, requires: ['inf_wq_fp8'], dataCost: 18, compute: 2400,
   optimizes: ['memory', 'throughput'], coupling: 'infra-model', sourceRef: '§4.5', requiresBlackwell: true,
 })
 
@@ -1201,7 +1227,7 @@ infra({
 infra({
   id: 'inf_par_tp', category: 'parallelism', name: 'Tensor Parallelism', i18nKey: 'inf_par_tp',
   effects: { parTp: 1 }, requires: ['inf_paged'], dataCost: 16, compute: 1600,
-  optimizes: ['latency'], coupling: 'pure-infra', sourceRef: '§4.7',
+  optimizes: ['memory', 'latency'], coupling: 'pure-infra', sourceRef: '§4.7',
 })
 infra({
   id: 'inf_par_pp', category: 'parallelism', name: 'Pipeline Parallelism', i18nKey: 'inf_par_pp',
@@ -1210,13 +1236,13 @@ infra({
 })
 infra({
   id: 'inf_par_dp', category: 'parallelism', name: 'Data Parallelism', i18nKey: 'inf_par_dp',
-  effects: { parDp: 1, throughput: 1 }, requires: ['inf_par_tp'], dataCost: 12, compute: 1200,
+  effects: { parDp: 1 }, requires: ['inf_par_tp'], dataCost: 12, compute: 1200,
   optimizes: ['throughput'], coupling: 'pure-infra', sourceRef: '§4.7',
 })
 infra({
   id: 'inf_par_ep', category: 'parallelism', name: 'Expert Parallelism (MoE)', i18nKey: 'inf_par_ep',
   effects: { parEp: 1 }, requires: ['inf_par_tp'], dataCost: 16, compute: 1800,
-  optimizes: ['cost'], coupling: 'infra-model', sourceRef: '§4.8',
+  optimizes: ['throughput', 'cost'], coupling: 'infra-model', sourceRef: '§4.8',
 })
 
 // --- routing (§4.10) ---
@@ -1230,18 +1256,18 @@ infra({
 infra({
   id: 'inf_multilora', category: 'multi-lora', name: 'Multi-LoRA Serving (S-LoRA)', i18nKey: 'inf_multilora',
   effects: { loraSlots: 2000 }, requires: ['inf_paged'], dataCost: 12, compute: 1000,
-  optimizes: ['throughput', 'cost'], coupling: 'pure-infra', sourceRef: '§4.10',
+  optimizes: ['latency', 'cost'], coupling: 'infra-model', sourceRef: '§4.10',
 })
 
 // --- engine (§4.9) ---
 infra({
   id: 'inf_engine_sglang', category: 'engine', name: 'SGLang Engine', i18nKey: 'inf_engine_sglang',
-  effects: { engineTier: 1, throughput: 1 }, requires: ['inf_batching'], dataCost: 10, compute: 900,
-  optimizes: ['throughput'], coupling: 'pure-infra', sourceRef: '§4.9',
+  effects: { engineTier: 1 }, requires: ['inf_batching'], conflicts: ['inf_engine_trtllm'], dataCost: 10, compute: 900,
+  optimizes: ['latency', 'cost'], coupling: 'pure-infra', sourceRef: '§4.9',
 })
 infra({
   id: 'inf_engine_trtllm', category: 'engine', name: 'TensorRT-LLM Engine', i18nKey: 'inf_engine_trtllm',
-  effects: { engineTier: 2 }, requires: ['inf_engine_sglang'], dataCost: 16, compute: 1800,
+  effects: { engineTier: 2 }, requires: ['inf_batching'], conflicts: ['inf_engine_sglang'], dataCost: 16, compute: 1800,
   optimizes: ['throughput', 'latency'], coupling: 'pure-infra', sourceRef: '§4.9',
 })
 

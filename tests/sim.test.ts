@@ -1,5 +1,21 @@
 import { describe, expect, it } from 'vitest'
-import { RACK_UTILIZATION, SIM_DT, SIM_TIME_SCALE, THROTTLE_FLOOR } from '../src/config'
+import {
+  COHORT_STREAMS,
+  CREDIT_USD,
+  ENGINE_MAX_STREAMS,
+  KV_TRANSFER_GBPS,
+  MBU_DECODE,
+  MFU_DECODE,
+  MFU_PREFILL,
+  PP_BUBBLE_MS,
+  RACK_UTILIZATION,
+  RACKS_PER_TILE,
+  SIM_DT,
+  SIM_TIME_SCALE,
+  STEP_OVERHEAD_MS,
+  THROTTLE_FLOOR,
+  TRAFFIC_SCALE,
+} from '../src/config'
 import type { CapabilityAxis, GameEvent, GameState, Outcome, Request } from '../src/core/types'
 import {
   deployModel,
@@ -37,6 +53,7 @@ import {
   applyInfraEffects,
   canPostTrain,
   methodUnlocked,
+  researchUnlocked,
   startPostTrain,
   startResearch,
   updateResearch,
@@ -49,6 +66,7 @@ import {
   decodeThrottle,
   decodeTokSb1,
   defLoadout,
+  deployBlocker,
   guardHeat,
   guardLatencyMs,
   guardPower,
@@ -58,12 +76,12 @@ import {
   kvPerReqGb,
   loadout,
   loadoutOf,
+  longContextPenalty,
   methodsUnlocked,
   prefillTokS,
+  rackPlan,
   serverAggDecodeTokS,
-  serverBandwidthCeiling,
   serverComputeCeiling,
-  serverContext,
   serverCtxWindowTokens,
   serverFitsMemory,
   serverHeat,
@@ -113,6 +131,11 @@ const MOE = 'g_nemotron_cascade_2_30b_a3b_2'
 const FRONTIER = 'minimax_m3'
 const MLA = 'glm_5_2'
 const AGENT_SHORT = 'gptoss_120b'
+/**
+ * INSTRUCT : Nemotron 3 Nano 4B — a non-thinking model. Interactive chat needs one: a thinking
+ * model's hidden reasoning blows chat's time-to-first-answer bound (§1.4).
+ */
+const INSTRUCT = WEAK
 
 function runFor(s: GameState, seconds: number): void {
   const steps = Math.round(seconds / SIM_DT)
@@ -172,7 +195,7 @@ function lastTower(s: GameState) {
  */
 function buildServerAs(
   s: GameState,
-  role: 'small' | 'general' | 'coding' | 'frontier',
+  role: 'small' | 'chat' | 'general' | 'coding' | 'frontier',
   col: number,
   row: number,
 ): boolean {
@@ -185,15 +208,16 @@ function buildServerAs(
   const t = lastTower(s)
   if (!upgradeHardware(s, t.id)) return false // edge → standard
   if (!upgradeHardware(s, t.id)) return false // standard → performance (H100, meets IN)
-  return deployModel(s, t.id, role === 'coding' ? CODER : GENERAL)
+  // 'chat' = the interactive rack: a fast non-thinking model on an H100
+  return deployModel(s, t.id, role === 'coding' ? CODER : role === 'chat' ? INSTRUCT : GENERAL)
 }
 
 describe('request resolution', () => {
   it('a server serves a Simple Chat and earns token-priced revenue', () => {
     const s = createState(1)
     richBuild(s)
-    expect(buildServerAs(s, 'general', 2, 2)).toBe(true)
-    expect(buildServerAs(s, 'general', 4, 2)).toBe(true)
+    expect(buildServerAs(s, 'chat', 2, 2)).toBe(true)
+    expect(buildServerAs(s, 'chat', 4, 2)).toBe(true)
     const earnedBefore = s.stats.cashEarned
     liveWave(s)
     spawnRequest(s, 'chat')
@@ -413,8 +437,8 @@ describe('campaign flow', () => {
     startGame(s)
     // blanket BOTH ingress sides (top lanes along row 1, bottom lanes along row 9),
     // power and cool it — wave 1 is a tier-1 trickle spread across all four lanes.
-    for (const col of [3, 8, 14, 20]) buildServerAs(s, 'general', col, 2)
-    for (const col of [3, 8, 14, 20]) buildServerAs(s, 'general', col, 8)
+    for (const col of [3, 8, 14, 20]) buildServerAs(s, 'chat', col, 2)
+    for (const col of [3, 8, 14, 20]) buildServerAs(s, 'chat', col, 8)
     for (const col of [4, 10, 16]) tryBuild(s, 'power', col, 4)
     for (const col of [6, 12, 18]) tryBuild(s, 'cooling', col, 4)
     expect(startWave(s)).toBe(true)
@@ -948,128 +972,220 @@ describe('roster balance fixes (§1.5)', () => {
     expect(nem.paramsActiveB).toBe(12)
     // a real active-param advantage → cheaper to serve than the old dense 253B:
     // decode b=1 ∝ 1 / activeB, so 12B active decodes far faster than 253B dense.
-    const s = createState(60) // BF16: 240 GB of weights fit the 8× H200 pod
+    const s = createState(60) // BF16: 240 GB of weights span two of the pod's H200s
+    infraOn(s, 'inf_par_tp') // spanning GPUs needs Tensor Parallelism
     expect(serverFitsMemory(s, loadout(s, 'hw_pod', 'nemotron_super'))).toBe(true)
     expect(serverSpeed(s, loadout(s, 'hw_pod', 'nemotron_super'))).toBeGreaterThan(0)
   })
 })
 
 describe('hardware/model split (expert mechanics)', () => {
-  // each rack tier paired with the model it hosts on the real ladder; tested at
-  // FP8 (the standard serving precision that fits a 122B on a single H200, etc.).
+  // each rack tier paired with the model it hosts on the real ladder; tested at FP8 with
+  // Tensor + Pipeline Parallelism researched (so multi-GPU racks can span a big model).
   const PAIRS: [string, string][] = [
     ['hw_edge', STARTER], // sub-1B → 24 GB L4
     ['hw_standard', GENERAL], // 27B (FP8) → 48 GB L40S
     ['hw_perf', AGENT_SHORT], // 117B MXFP4 (~65 GB) → 80 GB H100
     ['hw_frontier', BIG], // 122B (FP8) → 141 GB H200
-    ['hw_pod', 'nemotron_super'], // 120B MoE / 12B active → 8× H200 (1128 GB)
-    ['hw_superpod', MLA], // 753B (FP8) → 8× B200 (1536 GB)
-    ['hw_giga', 'kimi_k3'], // 2.78T MXFP4 (~1.56 TB) → NVL72 (13824 GB)
+    ['hw_pod', 'nemotron_super'], // 120B MoE / 12B active → one H200 at FP8 → eight copies
+    ['hw_superpod', MLA], // 753B (FP8) → a 4-GPU tensor-parallel group, two copies
+    ['hw_giga', 'kimi_k3'], // 2.78T MXFP4 (~1.56 TB) → two pipeline stages of TP8, four copies
   ]
   const fp8State = (seed: number): GameState => {
     const s = createState(seed)
-    infraOn(s, 'inf_wq_fp8')
+    infraOn(s, 'inf_batching', 'inf_paged', 'inf_wq_fp8', 'inf_par_tp', 'inf_par_pp')
     return s
   }
 
-  it('throughput roofline: per-user decode ≤ b=1 ceiling, capped by the compute roof', () => {
+  it('batching: per-user speed falls as cohorts pile on while the rack aggregate rises toward its compute roof', () => {
     const s = fp8State(20)
     for (const [hwId, mid] of PAIRS) {
       const lo = loadout(s, hwId, mid)
-      const cc = serverComputeCeiling(s, lo) // compute roof (tok/s)
-      const bc = serverBandwidthCeiling(s, lo) // b=1 decode ceiling (tok/s)
-      expect(cc).toBeGreaterThan(0)
-      expect(bc).toBeGreaterThan(0)
-      // headline speed is the b=1 per-user decode rate (batch 1)
-      expect(serverSpeed(s, lo)).toBeCloseTo(serverPerUserDecodeTokS(s, lo, 1), 6)
-      expect(serverSpeed(s, lo)).toBeCloseTo(bc, 6)
-      // aggregate decode rises with batch until it saturates the compute roof
+      expect(serverFitsMemory(s, lo)).toBe(true)
+      const roof = serverComputeCeiling(s, lo)
+      const solo = decodeTokSb1(s, lo) // one stream alone on a lane: the fastest a user is ever served
+      const one = serverPerUserDecodeTokS(s, lo, 1)
+      const full = serverPerUserDecodeTokS(s, lo, serverTargets(s, lo))
+      expect(serverSpeed(s, lo)).toBeCloseTo(one, 6) // the headline: one cohort on the rack
+      expect(one).toBeLessThanOrEqual(solo + 1e-9)
+      expect(full).toBeLessThanOrEqual(one + 1e-9)
       const agg1 = serverAggDecodeTokS(s, lo, 1)
-      const aggBig = serverAggDecodeTokS(s, lo, 100000)
-      expect(aggBig).toBeGreaterThan(agg1)
-      expect(aggBig).toBeCloseTo(cc, 3)
+      const aggFull = serverAggDecodeTokS(s, lo, serverTargets(s, lo))
+      expect(aggFull).toBeGreaterThan(agg1)
+      expect(aggFull).toBeLessThanOrEqual(roof + 1e-6) // never past the roof
     }
   })
 
-  it('decode b=1 tracks real HBM bandwidth: HBM_BW / (2·activeB·bytes) (§5.7)', () => {
-    const s = createState(28) // FP16, no upgrades
-    // gemma3_27b (27B active) FP16 fits an 80 GB H100: decodeTokS_b1 = 3.35e12 / (2 × 27e9 × 2)
-    const gemma = MODEL_DEFS['qwen36_27b']
-    const expected = (3.35e12) / (2 * gemma.paramsActiveB * 1e9 * 2)
-    expect(decodeTokSb1(s, loadout(s, 'hw_perf', 'qwen36_27b'))).toBeCloseTo(expected, 2)
-    // compute roof = aggTflops / (2 × activeB) = 989e12 / (2 × 27e9)
-    expect(computeRoofTokS(s, loadout(s, 'hw_perf', 'qwen36_27b'))).toBeCloseTo(
-      (989e12) / (2 * gemma.paramsActiveB * 1e9),
-      0,
-    )
-    // and the canonical 70B-on-H100 figure (~12 tok/s) holds for the raw formula:
-    //   3.35e12 / (2 × 70e9 × 2) ≈ 11.96 tok/s
-    expect((3.35e12) / (2 * 70e9 * 2)).toBeCloseTo(11.96, 1)
+  it('decode reads the active weights at HBM bandwidth × MBU, plus the engine step overhead (§5.7)', () => {
+    const s = createState(28) // BF16, no research
+    const m = MODEL_DEFS[GENERAL] // 27B dense, fits one 80 GB H100 at BF16
+    const lo = loadout(s, 'hw_perf', GENERAL)
+    const stepSec = (m.paramsActiveB * 1e9 * 2) / (3.35e12 * MBU_DECODE) + STEP_OVERHEAD_MS / 1000
+    expect(decodeTokSb1(s, lo)).toBeCloseTo(1 / stepSec, 6)
+    // the compute roof = dense BF16 rate × decode MFU / (2 FLOPs per active param per token)
+    expect(computeRoofTokS(s, lo)).toBeCloseTo((989e12 * MFU_DECODE) / (2 * m.paramsActiveB * 1e9), 3)
   })
 
-  it('prefill is compute-bound and super-linear in prompt length (O(n²) attention, §1.1)', () => {
+  it('prefill is compute-bound at MFU and super-linear in prompt length (O(n²) attention, §1.1)', () => {
     const s = createState(29)
-    const lo = loadout(s, 'hw_perf', 'qwen36_27b') // 27B FP16 fits the 80 GB H100
+    const m = MODEL_DEFS[GENERAL]
+    const lo = loadout(s, 'hw_perf', GENERAL) // 27B BF16 fits the 80 GB H100
     const short = prefillTokS(s, lo, 512)
     const long = prefillTokS(s, lo, 16000)
-    expect(short).toBeGreaterThan(0)
+    expect(short).toBeCloseTo((989e12 * MFU_PREFILL) / (2 * m.paramsActiveB * 1e9 * (1 + 512 / 16000)), 3)
     // longer prompts ingest slower per token (superlinear = 1 + n/16000)
     expect(long).toBeLessThan(short)
     expect(short / long).toBeCloseTo((1 + 16000 / 16000) / (1 + 512 / 16000), 3)
   })
 
-  it('a model that does not fit VRAM cannot serve at all', () => {
-    const s = createState(21) // BF16
+  it('a model that fits no GPU group of the rack cannot serve at all', () => {
+    const s = createState(21) // BF16, no parallelism research
     // Qwen3.5-122B (244 GB BF16) jammed into a 24 GB edge rack
-    const lo = loadout(s, 'hw_edge', BIG)
-    expect(serverFitsMemory(s, lo)).toBe(false)
-    expect(serverTargets(s, lo)).toBe(0)
-    expect(serverSpeed(s, lo)).toBe(0)
-    // 122B BF16 = 244 GB > one H200 (141) — needs a Pod or FP8
+    const edge = loadout(s, 'hw_edge', BIG)
+    expect(serverFitsMemory(s, edge)).toBe(false)
+    expect(deployBlocker(s, edge)).toBe('vram')
+    expect(serverTargets(s, edge)).toBe(0)
+    expect(serverSpeed(s, edge)).toBe(0)
+    // 122B BF16 = 244 GB > one H200 (141 GB)
     expect(serverFitsMemory(s, loadout(s, 'hw_frontier', BIG))).toBe(false)
-    expect(serverFitsMemory(s, loadout(s, 'hw_pod', BIG))).toBe(true)
-    // the 2.78T Kimi K3 is already MXFP4 (~1.56 TB): beyond an 8× B200 (1536 GB) — NVL72 only
+    // the 2.78T Kimi K3 (~1.56 TB MXFP4) needs more than one 8-GPU node anywhere but an NVL72
+    infraOn(s, 'inf_par_tp', 'inf_par_pp')
     expect(serverFitsMemory(s, loadout(s, 'hw_pod', 'kimi_k3'))).toBe(false)
     expect(serverFitsMemory(s, loadout(s, 'hw_superpod', 'kimi_k3'))).toBe(false)
     expect(serverFitsMemory(s, loadout(s, 'hw_giga', 'kimi_k3'))).toBe(true)
   })
 
-  it('FP8 quantization is effectively lossless: memory halves, decode speeds up, quality intact', () => {
-    const base = createState(22) // FP16
-    const fp8 = fp8State(22)
-    const lo = loadout(base, 'hw_pod', BIG) // BF16 122B fits a Pod; FP8 fits a frontier too
-    const model = MODEL_DEFS[BIG]
-    // VRAM = paramsTotalB × bytesPerParam: FP16=2 bytes → FP8=1 byte (half)
-    expect(serverModelMemory(base, lo)).toBeCloseTo(model.paramsTotalB * 2, 6)
-    expect(serverModelMemory(fp8, lo)).toBeCloseTo(model.paramsTotalB * 1, 6)
-    // §6.5 real kW: pod TDP (5600 W) × 0.8 util × 0.85 FP8 reduction.
-    expect(serverPower(fp8, lo)).toBeCloseTo(
-      (HARDWARE_DEFS.hw_pod.tdpWatts / 1000) * RACK_UTILIZATION * 0.85,
-      6,
-    )
-    expect(serverPower(fp8, lo)).toBeCloseTo(serverPower(base, lo) * 0.85, 6) // FP8 cuts 15%
-    expect(serverQuality(fp8, lo)).toBe(serverQuality(base, lo)) // ACL'25: lossless
-    // lighter weights move less data per token → faster decode (W4A16 win)
-    expect(decodeTokSb1(fp8, lo)).toBeGreaterThan(decodeTokSb1(base, lo))
-    // FP8 deploys on the fp8 tensor cores: higher compute roof too
-    expect(computeRoofTokS(fp8, lo)).toBeGreaterThan(computeRoofTokS(base, lo))
+  it('a multi-GPU rack is not one big GPU: a model spans GPUs only with Tensor (≤8) / Pipeline (>8) Parallelism', () => {
+    const s = createState(31) // BF16
+    const pod = loadout(s, 'hw_pod', BIG) // 244 GB: needs two H200s
+    expect(serverFitsMemory(s, pod)).toBe(false)
+    expect(deployBlocker(s, pod)).toBe('tp') // the picker / denied reason says "needs Tensor Parallelism"
+    infraOn(s, 'inf_par_tp')
+    expect(serverFitsMemory(s, pod)).toBe(true)
+    const p = rackPlan(s, pod)
+    expect(p.g).toBe(2) // the smallest power-of-two group that holds it
+    expect(p.tpDeg).toBe(2)
+    expect(p.replicas).toBe(4) // the other GPUs run more copies
+    // beyond 8 GPUs a copy needs Pipeline Parallelism (memory only, never per-user speed)
+    const giga = loadout(s, 'hw_giga', 'kimi_k3')
+    expect(deployBlocker(s, giga)).toBe('pp')
+    infraOn(s, 'inf_par_pp')
+    const gp = rackPlan(s, giga)
+    expect(gp.fits).toBe(true)
+    expect(gp.tpDeg).toBe(8)
+    expect(gp.stages).toBe(gp.g / 8)
   })
 
-  it('INT4 quarters memory and speeds small-batch decode, but taxes quality and collapses on long context', () => {
-    const fp8 = fp8State(27)
+  it('big hardware buys fit and concurrency, never per-user speed: replicas add streams, TP is efficiency-capped', () => {
+    const s = fp8State(32)
+    // a 9B model on one H200 vs a DGX H200: the DGX runs eight copies — the same per-user speed
+    // under the same load, eight times the concurrent streams
+    const one = loadout(s, 'hw_frontier', 'g_qwen3_5_9b_2')
+    const dgx = loadout(s, 'hw_pod', 'g_qwen3_5_9b_2')
+    expect(rackPlan(s, dgx).replicas).toBe(8)
+    expect(serverPerUserDecodeTokS(s, dgx, serverTargets(s, dgx))).toBeCloseTo(
+      serverPerUserDecodeTokS(s, one, serverTargets(s, one)),
+      6,
+    )
+    expect(serverTargets(s, dgx)).toBe(serverTargets(s, one) * 8)
+    expect(serverAggDecodeTokS(s, dgx, serverTargets(s, dgx))).toBeCloseTo(
+      serverAggDecodeTokS(s, one, serverTargets(s, one)) * 8,
+      3,
+    )
+    // a tensor-parallel group is faster per stream than one GPU, but far from the GPU count:
+    // efficiency < 1 and an all-reduce floor per layer
+    const big = MODEL_DEFS[MLA]
+    const sp = loadout(s, 'hw_superpod', MLA) // a TP4 group of B200s
+    const plan = rackPlan(s, sp)
+    expect(plan.tpDeg).toBeGreaterThan(1)
+    const perGpuStep = (big.paramsActiveB * 1e9 * 1) / (8e12 * MBU_DECODE)
+    expect(decodeTokSb1(s, sp)).toBeLessThan(plan.tpDeg / perGpuStep)
+    // a giant model at a production batch lands in the real tens of tok/s per user
+    const user = serverPerUserDecodeTokS(s, sp, serverTargets(s, sp))
+    expect(user).toBeGreaterThan(10)
+    expect(user).toBeLessThan(120)
+  })
+
+  it('an MoE reads the experts its batch touches: weights read per step climb from active toward total', () => {
+    const s = fp8State(33)
+    const lo = loadout(s, 'hw_perf', AGENT_SHORT) // 117B total / 5.1B active MoE on one H100
+    const m = MODEL_DEFS[AGENT_SHORT]
+    const p = rackPlan(s, lo)
+    const step = (streams: number) =>
+      effectsModule.laneStep(s, lo, p, { streams, kvGb: 0, bgPrefillSec: 0, overlapPrefill: false }).stepSec
+    // a lone token reads only its active experts; 28 tokens touch most of them
+    expect(step(28) / step(1)).toBeGreaterThan(5)
+    // a dense model of the same active size barely notices the batch (memory-bound)
+    const dense = loadout(s, 'hw_perf', 'g_qwen3_5_4b_2')
+    const dp = rackPlan(s, dense)
+    const dstep = (streams: number) =>
+      effectsModule.laneStep(s, dense, dp, { streams, kvGb: 0, bgPrefillSec: 0, overlapPrefill: false }).stepSec
+    expect(dstep(28) / dstep(1)).toBeLessThan(1.5)
+    expect(m.paramsTotalB / m.paramsActiveB).toBeGreaterThan(10)
+  })
+
+  it('every stream re-reads its KV each step: long contexts slow per-user decode (the KV-read term)', () => {
+    const s = fp8State(34)
+    const lo = loadout(s, 'hw_perf', 'k2h_7b') // plain GQA: 144 KB of KV per token
+    const short = serverPerUserDecodeTokS(s, lo, 1, 2000)
+    const long = serverPerUserDecodeTokS(s, lo, 1, 30000)
+    expect(long).toBeLessThan(short * 0.8)
+  })
+
+  it('FP8 quantization is effectively lossless: memory halves, decode speeds up, quality intact', () => {
+    const base = createState(22) // BF16
+    const fp8 = createState(22)
+    infraOn(fp8, 'inf_wq_fp8')
+    const lo = loadout(base, 'hw_perf', GENERAL) // 27B: BF16 fits an H100, FP8 halves it
+    const model = MODEL_DEFS[GENERAL]
+    expect(serverModelMemory(base, lo)).toBeCloseTo(model.paramsTotalB * 2, 6)
+    expect(serverModelMemory(fp8, lo)).toBeCloseTo(model.paramsTotalB * 1, 6)
+    expect(effectsModule.servingFormat(fp8, lo)).toBe('fp8') // auto picks it: it costs no quality
+    // §6.5 real kW: H100 TDP (700 W) × 0.8 util × 0.85 FP8 reduction.
+    expect(serverPower(fp8, lo)).toBeCloseTo((700 / 1000) * RACK_UTILIZATION * 0.85, 6)
+    expect(serverQuality(fp8, lo)).toBe(serverQuality(base, lo)) // ACL'25: lossless
+    expect(decodeTokSb1(fp8, lo)).toBeGreaterThan(decodeTokSb1(base, lo)) // fewer bytes per token
+    expect(computeRoofTokS(fp8, lo)).toBeGreaterThan(computeRoofTokS(base, lo)) // W8A8 on FP8 cores
+    expect(prefillTokS(fp8, lo, 2000)).toBeGreaterThan(prefillTokS(base, lo, 2000))
+  })
+
+  it('INT4 (W4A16) is a per-rack choice: smaller and faster to decode, but BF16-rate compute and a quality tax', () => {
+    const fp8 = createState(27)
+    infraOn(fp8, 'inf_wq_fp8')
     const int4 = createState(27)
     infraOn(int4, 'inf_wq_fp8', 'inf_wq_int4')
-    const lo = loadout(int4, 'hw_frontier', BIG)
+    const auto = loadout(int4, 'hw_frontier', BIG)
+    // auto never picks a lossy format: researching INT4 changes nothing until a rack opts in
+    expect(effectsModule.servingFormat(int4, auto)).toBe('fp8')
+    expect(serverQuality(int4, auto)).toBe(serverQuality(fp8, auto))
+    const lo = loadout(int4, 'hw_frontier', BIG, 'int4')
     const model = MODEL_DEFS[BIG]
-    // INT4 → 0.5 bytes/param (a quarter of FP16, half of FP8)
-    expect(serverModelMemory(int4, lo)).toBeCloseTo(model.paramsTotalB * 0.5, 6)
-    expect(decodeTokSb1(int4, lo)).toBeGreaterThan(decodeTokSb1(fp8, lo))
-    expect(serverQuality(int4, lo)).toBe(serverQuality(fp8, lo) - 2) // flat tax
-    // the steep long-context penalty (>8K real tokens) — INT4's real-world weak spot
-    const { int4ContextPenalty } = effectsModule
-    expect(int4ContextPenalty(int4, 16000)).toBe(6)
-    expect(int4ContextPenalty(int4, 4000)).toBe(0)
-    expect(int4ContextPenalty(fp8, 16000)).toBe(0)
+    expect(serverModelMemory(int4, lo)).toBeCloseTo(model.paramsTotalB * 0.53, 6) // 4 bits + group scales
+    expect(decodeTokSb1(int4, lo)).toBeGreaterThan(decodeTokSb1(fp8, auto)) // half the bytes per token
+    // W4A16 dequantizes to BF16 for its GEMMs: prefill and the compute roof run at the BF16 rate
+    expect(prefillTokS(int4, lo, 4000)).toBeLessThan(prefillTokS(fp8, auto, 4000))
+    expect(computeRoofTokS(int4, lo)).toBeLessThan(computeRoofTokS(fp8, auto))
+    expect(serverQuality(int4, lo)).toBe(serverQuality(fp8, auto) - 2) // flat tax
+    // the steep long-context penalty (>8K real tokens) — 4-bit PTQ's real-world weak spot
+    const extra = (ctx: number) => longContextPenalty(int4, lo, ctx) - longContextPenalty(fp8, auto, ctx)
+    expect(extra(16000)).toBeCloseTo(6, 6)
+    expect(extra(4000)).toBeCloseTo(0, 6)
+  })
+
+  it('NVFP4 runs only on Blackwell FP4 Tensor Cores: W4A4 speed and a smaller tax than INT4', () => {
+    const s = createState(35)
+    infraOn(s, 'inf_wq_fp8', 'inf_wq_int4', 'inf_wq_nvfp4', 'inf_par_tp')
+    // an H200 has no FP4 hardware: the format is not available there
+    expect(effectsModule.availableFormats(s, HARDWARE_DEFS.hw_frontier, MODEL_DEFS[BIG])).not.toContain('nvfp4')
+    const sp = loadout(s, 'hw_superpod', BIG, 'nvfp4')
+    const int4 = loadout(s, 'hw_superpod', BIG, 'int4')
+    expect(effectsModule.availableFormats(s, HARDWARE_DEFS.hw_superpod, MODEL_DEFS[BIG])).toContain('nvfp4')
+    expect(computeRoofTokS(s, sp)).toBeGreaterThan(computeRoofTokS(s, int4)) // FP4 rate vs BF16
+    expect(serverQuality(s, sp)).toBeGreaterThan(serverQuality(s, int4))
+    expect(longContextPenalty(s, sp, 16000)).toBeLessThan(longContextPenalty(s, int4, 16000))
+    // a natively 4-bit release pays no 4-bit tax at all (it was benchmarked that way)
+    const native = loadout(s, 'hw_superpod', 'kimi_k3', 'nvfp4')
+    expect(effectsModule.ptqTax(s, native)).toBe(0)
   })
 
   it('Quantization lets a 122B model squeeze onto a single frontier GPU', () => {
@@ -1080,20 +1196,38 @@ describe('hardware/model split (expert mechanics)', () => {
     expect(serverFitsMemory(s, lo)).toBe(true)
   })
 
-  it('FlashAttention raises context and the bandwidth ceiling', () => {
+  it('FlashAttention is exact attention: faster long prefill, quicker KV reads, activation memory — no quality, window or KV-size bonus', () => {
     const base = fp8State(23)
     const flash = fp8State(23)
     infraOn(flash, 'inf_flash')
     const lo = loadout(base, 'hw_standard', GENERAL)
-    expect(serverContext(flash, lo)).toBe(serverContext(base, lo) + 14)
-    expect(serverBandwidthCeiling(flash, lo)).toBeCloseTo(
-      serverBandwidthCeiling(base, lo) * 1.1,
-      6,
-    )
-    // FlashAttention does not change the compute roofline
+    const m = MODEL_DEFS[GENERAL]
+    expect(serverQuality(flash, lo)).toBe(serverQuality(base, lo))
+    expect(serverCtxWindowTokens(flash, lo)).toBe(serverCtxWindowTokens(base, lo))
+    expect(kvPerReqGb(flash, m, 32000)).toBe(kvPerReqGb(base, m, 32000))
+    expect(longContextPenalty(flash, lo, 100000)).toBe(longContextPenalty(base, lo, 100000))
+    // the O(n²) prefill term grows slower: a long prompt ingests faster, a short one barely changes
+    expect(prefillTokS(flash, lo, 64000) / prefillTokS(base, lo, 64000)).toBeGreaterThan(1.3)
+    expect(prefillTokS(flash, lo, 256) / prefillTokS(base, lo, 256)).toBeLessThan(1.01)
+    // Flash-Decoding reads KV faster: long-context per-user decode improves
+    expect(serverPerUserDecodeTokS(flash, lo, 1, 60000)).toBeGreaterThan(serverPerUserDecodeTokS(base, lo, 1, 60000))
+    // the score matrix it never materializes is activation memory handed back to KV
+    expect(kvFreeGb(flash, lo)).toBeGreaterThan(kvFreeGb(base, lo))
+    // and it does not move the compute roof
     expect(serverComputeCeiling(flash, lo)).toBeCloseTo(serverComputeCeiling(base, lo), 6)
   })
 
+  it('long-context skill is a model property: a long-window model that reads long documents well loses less quality', () => {
+    const s = createState(36)
+    // the penalty is the window FILL (contextLen / window), softened by the model's longCtx skill
+    const strong = MODEL_DEFS['minimax_m3'] // 1M window, strong long-context reasoning
+    const weak = MODEL_DEFS[SMALL_WINDOW] // a 32K window that cannot even take the 100K benchmark
+    expect(strong.longCtx).toBeGreaterThan(weak.longCtx)
+    const pen = (m: (typeof MODEL_DEFS)[string], ctx: number) => effectsModule.longContextPenaltyFor(s, m, 'bf16', ctx)
+    expect(pen(strong, 4000)).toBe(0) // well under a quarter of the window: no loss
+    expect(pen(weak, 24000)).toBeGreaterThan(5) // three-quarters full: a steep loss
+    expect(pen(strong, 100000)).toBeLessThan(pen(MODEL_DEFS[BIG], 100000)) // 1M vs 262K window at 100K
+  })
   it('a wrong answer is refunded: it earns nothing and costs Trust', () => {
     const s = createState(24)
     richBuild(s)
@@ -1144,7 +1278,12 @@ describe('prefill vs decode (two-phase serving, real tokens)', () => {
     expect(r.prefill).toBe(0)
     expect(r.prefillDoneAt).toBeGreaterThan(0) // TTFT moment recorded
     expect(r.ttftReal).toBeGreaterThan(0) // real-seconds TTFT latched
-    expect(r.work).toBeLessThan(400) // decode underway, KV grows
+    // the thinking model reasons before it answers: its hidden tokens join the decode
+    const hidden = effectsModule.hiddenTokensFor(MODEL_DEFS[CODER], REQUEST_TYPES.summ.thinkMul)
+    expect(hidden).toBeGreaterThan(0)
+    expect(r.hiddenTokens).toBe(hidden)
+    expect(r.maxWork).toBe(400 + hidden)
+    expect(r.work).toBeLessThan(r.maxWork) // decode underway, KV grows
     expect(r.contextLen).toBeGreaterThan(12000)
   })
 
@@ -1272,34 +1411,88 @@ describe('P/D disaggregation (rack roles)', () => {
     // mid-wave re-pinning is rejected — it would orphan half-ingested requests
     expect(cycleRackRole(s, t.id)).toBe(false)
     expect(t.role).toBe('prefill')
-    // a fully-prefilled request: a PREFILL-pool rack must not decode it
+    // a fully-prefilled request whose KV this rack's model produced: a PREFILL-pool rack must not decode it
     const r = spawnRequest(s, 'summ')
     r.prefill = 0
+    r.prefillDoneAt = s.time
+    r.kvModelId = t.modelId
     const w0 = r.work
     runFor(s, 1)
     expect(r.work).toBeCloseTo(w0, 3)
-    // re-pinned between waves (sim-level), the decode pool serves it faster
+    // re-pinned between waves (sim-level), the decode pool serves it
     t.role = 'decode'
     runFor(s, 0.5)
     expect(r.work).toBeLessThan(w0)
+    // a decode pool only takes KV its own model produced (another model would have to re-prefill)
+    const other = spawnRequest(s, 'summ')
+    other.prefill = 0
+    other.prefillDoneAt = s.time
+    other.kvModelId = STARTER
+    const o0 = other.work
+    runFor(s, 0.5)
+    expect(other.work).toBeCloseTo(o0, 6)
+  })
+
+  it('a prefill pool hands its KV over the network and keeps ingesting the cohort’s prompts for the decode pool', () => {
+    const s = createState(97)
+    richBuild(s)
+    s.infra.disagg = true
+    // a prefill pool and a decode pool side by side at the lane ingress, the same model on both
+    for (const col of [1, 2]) {
+      tryBuild(s, 'srv_edge', col, 2)
+      const t = lastTower(s)
+      upgradeHardware(s, t.id)
+      upgradeHardware(s, t.id) // → H100
+      deployModel(s, t.id, INSTRUCT)
+    }
+    const [pre, dec] = s.towers.filter((t) => t.def.kind === 'server')
+    pre.role = 'prefill'
+    dec.role = 'decode'
+    liveWave(s)
+    const r = spawnRequest(s, 'rag')
+    r.speed = 0 // parked at the ingress, in range of both pools
+    for (let i = 0; i < 600 && r.prefill > 0; i++) step(s)
+    expect(r.prefill).toBe(0)
+    expect(r.kvTowerId).toBe(pre.id)
+    // the KV must cross the network before the decode pool's first step
+    expect(r.kvTransferSec).toBeCloseTo(kvPerReqGb(s, MODEL_DEFS[INSTRUCT], r.contextLen) / KV_TRANSFER_GBPS, 9)
+    const e0 = r.e2elReal
+    step(s)
+    expect(r.kvTransferSec).toBe(0) // paid
+    expect(r.e2elReal - e0).toBeGreaterThan(0)
+    // while the decode pool streams the cohort, its other streams' prompts are owed to the prefill pool
+    let owed = 0
+    for (let i = 0; i < 5; i++) {
+      step(s)
+      owed = Math.max(owed, pre.prefillDebtSec)
+    }
+    expect(owed).toBeGreaterThan(0)
+    expect(dec.prefillDebtSec).toBe(0)
   })
 })
 
 describe('the serving-systems era ladder (Orca → vLLM, s.infra-driven)', () => {
-  it('before Continuous Batching, a rack serves exactly one request at a time', () => {
+  it('before Continuous Batching, a rack runs one static batch at a time; after, the engine batches cohorts until KV runs out', () => {
     const s = createState(90)
     s.meters.cash = 99999
     s.phase = 'build'
     tryBuild(s, 'srv_edge', 3, 2) // NO research granted: pre-Orca world
     const lo = loadout(s, 'hw_edge', STARTER)
     expect(serverTargets(s, lo)).toBe(1)
-    infraOn(s, 'inf_batching') // s.infra.scheduling.batch → hw.targets slots
-    expect(serverTargets(s, lo)).toBe(2) // hardware batching unlocked
-    // multi-step scheduling adds one more concurrent slot
+    infraOn(s, 'inf_batching') // iteration-level scheduling: the engine's batch cap in cohorts
+    expect(serverTargets(s, lo)).toBe(Math.floor(ENGINE_MAX_STREAMS / COHORT_STREAMS))
+    // multi-step scheduling adds no slots: it amortizes the per-step CPU overhead (throughput)
+    // and makes new requests wait for the next scheduler call (TTFT)
+    const p = effectsModule.rackPlan(s, lo)
+    const step = (g: GameState) =>
+      effectsModule.laneStep(g, lo, p, { streams: 28, kvGb: 0, bgPrefillSec: 0, overlapPrefill: false }).stepSec
+    const before = step(s)
+    expect(effectsModule.admissionDelaySec(s, lo, before)).toBe(0)
     infraOn(s, 'inf_multistep')
-    expect(serverTargets(s, lo)).toBe(3)
+    expect(serverTargets(s, lo)).toBe(Math.floor(ENGINE_MAX_STREAMS / COHORT_STREAMS))
+    expect(step(s)).toBeLessThan(before)
+    expect(effectsModule.admissionDelaySec(s, lo, step(s))).toBeGreaterThan(0)
   })
-
   it('PagedAttention recovers wasted KV memory (55% → 96% utilization)', () => {
     const s = createState(91)
     infraOn(s, 'inf_wq_fp8') // FP8 so GENERAL (32.8B) fits the 48 GB standard rack
@@ -1344,70 +1537,163 @@ describe('the serving-systems era ladder (Orca → vLLM, s.infra-driven)', () =>
   })
 })
 
-describe('speculative decoding (batch-dependent EAGLE curve, §4.4)', () => {
-  it('spec lifts decode ~2× at batch 1 and fades to ~1× at batch ≥32', () => {
+describe('speculative decoding (EAGLE, §4.4)', () => {
+  it('pays at low batch, fades as the batch turns compute-bound, depends on the traffic, and never raises the compute roof', () => {
     const base = createState(96)
-    infraOn(base, 'inf_wq_fp8') // a frontier model on a SuperPod
+    infraOn(base, 'inf_batching', 'inf_paged', 'inf_wq_fp8')
     const spec = createState(96)
-    infraOn(spec, 'inf_wq_fp8', 'inf_spec')
-    const lo = loadout(base, 'hw_superpod', FRONTIER)
-    // batch 1: the bandwidth ceiling roughly doubles (2.0×)
-    const b1Base = serverAggDecodeTokS(base, lo, 1)
-    const b1Spec = serverAggDecodeTokS(spec, lo, 1)
-    expect(b1Spec / b1Base).toBeCloseTo(2.0, 5)
-    // the headline (b=1) ceiling reflects the 2× too
-    expect(serverBandwidthCeiling(spec, lo)).toBeCloseTo(serverBandwidthCeiling(base, lo) * 2.0, 5)
-    // batch ≥32: spec is OFF — the aggregate decode rate matches the no-spec rack
-    expect(serverAggDecodeTokS(spec, lo, 32)).toBeCloseTo(serverAggDecodeTokS(base, lo, 32), 5)
-    expect(serverAggDecodeTokS(spec, lo, 64)).toBeCloseTo(serverAggDecodeTokS(base, lo, 64), 5)
-    // and the curve decays monotonically through the mid-batch band (per-token gain)
-    const ratio = (b: number) => serverAggDecodeTokS(spec, lo, b) / serverAggDecodeTokS(base, lo, b)
-    expect(ratio(1)).toBeGreaterThan(ratio(8))
-    expect(ratio(8)).toBeGreaterThanOrEqual(ratio(24))
-    expect(ratio(24)).toBeGreaterThan(ratio(32) - 1e-9)
+    infraOn(spec, 'inf_batching', 'inf_paged', 'inf_wq_fp8', 'inf_spec')
+    const lo = loadout(base, 'hw_perf', 'g_qwen3_5_9b_2')
+    const p = effectsModule.rackPlan(spec, lo)
+    const perUser = (g: GameState, streams: number, axis: CapabilityAxis) => {
+      const pl = effectsModule.rackPlan(g, lo)
+      const tokens = effectsModule.specTokensFor(g, axis)
+      const st = effectsModule.laneStep(g, lo, pl, {
+        streams,
+        kvGb: 0,
+        bgPrefillSec: 0,
+        overlapPrefill: false,
+        specTokens: tokens,
+      })
+      return { tokS: (st.specOn ? tokens : 1) / st.stepSec, on: st.specOn }
+    }
+    // one stream: the draft head's accepted tokens nearly double per-user speed
+    const lone = perUser(spec, 1, 'chat')
+    expect(lone.on).toBe(true)
+    expect(lone.tokS / perUser(base, 1, 'chat').tokS).toBeGreaterThan(1.6)
+    // code accepts more drafts than open-ended reasoning
+    expect(perUser(spec, 1, 'coding').tokS).toBeGreaterThan(perUser(spec, 1, 'reasoning').tokS)
+    // a huge batch is compute-bound: verifying drafts costs more than it saves, so the engine turns it off
+    const huge = perUser(spec, 2000, 'chat')
+    expect(huge.on).toBe(false)
+    expect(huge.tokS).toBeCloseTo(perUser(base, 2000, 'chat').tokS, 6)
+    // verification spends compute, it never adds any
+    expect(computeRoofTokS(spec, lo)).toBeCloseTo(computeRoofTokS(base, lo), 6)
+    expect(p.draftGb).toBeGreaterThan(0)
+  })
+
+  it('the draft head takes VRAM and burns power on EVERY tier', () => {
+    const base = createState(70)
+    const spec = createState(70)
+    infraOn(spec, 'inf_spec')
+    for (const [hw, id] of [
+      ['hw_edge', STARTER],
+      ['hw_frontier', 'g_qwen3_5_9b_2'],
+    ] as const) {
+      const lo = loadout(base, hw, id)
+      expect(serverPower(spec, lo)).toBeCloseTo(serverPower(base, lo) * 1.08, 6)
+      expect(kvFreeGb(spec, lo)).toBeLessThan(kvFreeGb(base, lo))
+    }
   })
 })
 
 describe('directional fidelity — every technique keeps its real cost', () => {
-  it('Speculative Decoding speeds frontier models but burns draft-model power', () => {
-    const base = createState(70)
-    const spec = createState(70)
-    infraOn(spec, 'inf_spec')
-    const big = loadout(base, 'hw_superpod', FRONTIER) // frontier-TIER model
-    const small = loadout(base, 'hw_edge', STARTER)
-    expect(MODEL_DEFS[FRONTIER].tier).toBe('frontier')
-    // the b=1 headline speed roughly doubles (the EAGLE low-batch sweet spot, §4.4)
-    expect(serverSpeed(spec, big)).toBeCloseTo(serverSpeed(base, big) * 2.0, 5)
-    // a resident draft model burns +8% power on the frontier tier
-    expect(serverPower(spec, big)).toBeCloseTo(serverPower(base, big) * 1.08, 6)
-    // non-frontier racks host no draft model — no power change
-    expect(serverPower(spec, small)).toBeCloseTo(serverPower(base, small), 6)
-  })
-
-  it('the throughput lift speeds every rack and raises utilization power draw', () => {
-    const base = createState(72)
-    infraOn(base, 'inf_wq_fp8') // FP8 so GENERAL (32.8B) fits the 48 GB standard rack
-    const thr = createState(72)
-    infraOn(thr, 'inf_wq_fp8')
-    thr.infra.throughput = 2 // two throughput nodes worth of lift (multi-step / DP)
-    const lo = loadout(base, 'hw_standard', GENERAL)
-    expect(serverSpeed(thr, lo)).toBeGreaterThan(serverSpeed(base, lo))
-    expect(serverPower(thr, lo)).toBeCloseTo(serverPower(base, lo) * 1.1, 6) // +5% per level
-  })
-
-  it('the inference engine tier (vLLM → SGLang → TRT-LLM) lifts throughput', () => {
+  it('engines are alternatives: TensorRT-LLM runs closer to the roof, SGLang reuses more prefixes, and one locks the other', () => {
     const vllm = createState(73)
     infraOn(vllm, 'inf_wq_fp8')
     const sglang = createState(73)
     infraOn(sglang, 'inf_wq_fp8', 'inf_engine_sglang')
     const trt = createState(73)
-    infraOn(trt, 'inf_wq_fp8', 'inf_engine_sglang', 'inf_engine_trtllm')
+    infraOn(trt, 'inf_wq_fp8', 'inf_engine_trtllm')
     const lo = loadout(vllm, 'hw_standard', GENERAL)
-    expect(serverSpeed(sglang, lo)).toBeGreaterThan(serverSpeed(vllm, lo))
-    expect(serverSpeed(trt, lo)).toBeGreaterThan(serverSpeed(sglang, lo))
+    // TensorRT-LLM's compiled kernels: faster decode and prefill, still under the physical roof
+    expect(decodeTokSb1(trt, lo)).toBeGreaterThan(decodeTokSb1(vllm, lo))
+    expect(prefillTokS(trt, lo, 2000)).toBeGreaterThan(prefillTokS(vllm, lo, 2000))
+    expect(decodeTokSb1(sglang, lo)).toBeCloseTo(decodeTokSb1(vllm, lo), 6) // no free speed
+    // SGLang's RadixAttention: a higher prefix-cache hit rate behind the same cache
+    expect(effectsModule.prefixHitChance(sglang, 0.5, false)).toBeGreaterThan(effectsModule.prefixHitChance(vllm, 0.5, false))
+    expect(effectsModule.prefixHitChance(trt, 0.5, false)).toBeCloseTo(effectsModule.prefixHitChance(vllm, 0.5, false), 6)
+    // one engine per fleet: researching SGLang locks TensorRT-LLM (and the reverse)
+    expect(researchUnlocked(sglang, RESEARCH_DEFS['inf_engine_trtllm'])).toBe(false)
+    expect(researchUnlocked(trt, RESEARCH_DEFS['inf_engine_sglang'])).toBe(false)
+  })
+
+  it('Data Parallelism load-balances a multi-copy rack: one cohort spreads over every copy', () => {
+    const s = createState(74)
+    infraOn(s, 'inf_batching', 'inf_paged', 'inf_wq_fp8', 'inf_par_tp')
+    const lo = loadout(s, 'hw_pod', 'g_qwen3_5_9b_2') // eight single-GPU copies
+    const noDp = serverPerUserDecodeTokS(s, lo, 1)
+    infraOn(s, 'inf_par_dp')
+    // without DP the cohort's 28 streams batch on the copy it landed on; with DP they spread
+    expect(serverPerUserDecodeTokS(s, lo, 1)).toBeGreaterThan(noDp)
+    // at a full rack every copy is busy either way: no extra aggregate from DP
+    const full = serverTargets(s, lo)
+    const dpAgg = serverAggDecodeTokS(s, lo, full)
+    s.infra.par.dp = false
+    expect(serverAggDecodeTokS(s, lo, full)).toBeCloseTo(dpAgg, 3)
+  })
+
+  it('Expert Parallelism shards an MoE across a rack’s copies: fewer weight bytes per step at batch, plus an all-to-all', () => {
+    const s = createState(75)
+    infraOn(s, 'inf_batching', 'inf_paged', 'inf_wq_fp8', 'inf_par_tp')
+    const lo = loadout(s, 'hw_pod', AGENT_SHORT) // gpt-oss-120b: one H100-sized copy per GPU → 8 copies
+    const p = effectsModule.rackPlan(s, lo)
+    expect(p.replicas).toBe(8)
+    const step = (g: GameState, streams: number) =>
+      effectsModule.laneStep(g, lo, effectsModule.rackPlan(g, lo), {
+        streams,
+        rackStreams: streams * p.replicas,
+        kvGb: 0,
+        bgPrefillSec: 0,
+        overlapPrefill: false,
+      }).stepSec
+    const plainBatch = step(s, 28)
+    const plainLone = step(s, 1)
+    infraOn(s, 'inf_par_ep')
+    expect(step(s, 28)).toBeLessThan(plainBatch) // the pooled batch reads each expert shard once
+    expect(step(s, 1)).toBeGreaterThan(plainLone - 1e-12) // a lone token gains nothing, pays the all-to-all
+    // a single-copy rack has nothing to shard across: EP leaves it alone
+    const one = loadout(s, 'hw_perf', AGENT_SHORT)
+    expect(effectsModule.wideEp(s, MODEL_DEFS[AGENT_SHORT], effectsModule.rackPlan(s, one))).toBe(false)
+  })
+
+  it('Pipeline Parallelism buys memory, not speed: a pipelined copy pays a bubble on every prompt', () => {
+    const s = createState(76)
+    infraOn(s, 'inf_batching', 'inf_paged', 'inf_par_tp', 'inf_par_pp')
+    const giga = loadout(s, 'hw_giga', 'kimi_k3')
+    const p = effectsModule.rackPlan(s, giga)
+    expect(p.stages).toBeGreaterThan(1)
+    expect(effectsModule.admissionDelaySec(s, giga, 0)).toBeCloseTo(((p.stages - 1) * PP_BUBBLE_MS) / 1000, 9)
+  })
+
+  it('KV offload keeps more prefixes cached, reloaded over PCIe — never extra live-decode memory', () => {
+    const s = createState(77)
+    infraOn(s, 'inf_paged', 'inf_prefix')
+    const lo = loadout(s, 'hw_perf', GENERAL)
+    const kv0 = kvFreeGb(s, lo)
+    const t0 = effectsModule.prefixHitTiers(s, 0.5, false)
+    infraOn(s, 'inf_offload')
+    const t1 = effectsModule.prefixHitTiers(s, 0.5, false)
+    expect(t1.hbm).toBeCloseTo(t0.hbm, 9)
+    expect(t1.offload).toBeGreaterThan(0)
+    expect(kvFreeGb(s, lo)).toBeCloseTo(kv0, 9) // the active batch's KV budget is untouched
+    expect(effectsModule.offloadReloadSec(s, MODEL_DEFS[GENERAL], 4000)).toBeGreaterThan(0)
+  })
+
+  it('mutually exclusive techniques are enforced by the sim: Chunked Prefill ⟂ P/D Disaggregation', () => {
+    const s = createState(78)
+    s.data = 9999
+    infraOn(s, 'inf_batching', 'inf_paged', 'inf_chunked')
+    expect(researchUnlocked(s, RESEARCH_DEFS['inf_disagg'])).toBe(false)
+    expect(startResearch(s, 'inf_disagg')).toBe(false)
+    const d = createState(78)
+    d.data = 9999
+    infraOn(d, 'inf_batching', 'inf_paged')
+    expect(researchUnlocked(d, RESEARCH_DEFS['inf_disagg'])).toBe(true) // disagg needs only PagedAttention
+  })
+
+  it('NVFP4 research needs a Blackwell rack on the board', () => {
+    const s = createState(79)
+    s.meters.cash = 999999
+    s.phase = 'build'
+    infraOn(s, 'inf_batching', 'inf_paged', 'inf_wq_fp8')
+    const def = RESEARCH_DEFS['inf_wq_nvfp4']
+    tryBuild(s, 'srv_frontier', 3, 2)
+    expect(researchUnlocked(s, def)).toBe(false)
+    lastTower(s).hwId = 'hw_superpod'
+    expect(researchUnlocked(s, def)).toBe(true)
   })
 })
-
 /** The small-window model of the window tests: Qwen3-0.6B (32,768-token native window). */
 const SMALL_WINDOW = 'g_qwen3_0_6b_instruct_reasonin'
 
@@ -1459,45 +1745,61 @@ describe('long context (real-token window, KV admission, prefix-cache behavior)'
     expect(s.stats.unservable).toBeGreaterThan(0)
   })
 
-  it('long contexts crowd out batch concurrency (real KV admission)', () => {
+  it('KV = concurrency: long contexts shrink the streams a rack holds (real KV admission)', () => {
     // K2-Horizon-3.7B is plain full-attention GQA (36 layers × 8 KV heads × 128 = 144 KB of
-    // KV per token): two 48K-token rag prompts cannot both fit the KV budget of an Edge
-    // (L4, 24 GB) rack holding its BF16 weights.
+    // KV per token): at 48K tokens one stream needs ~7 GB, and an Edge (L4, 24 GB) rack holding
+    // its BF16 weights keeps ~12 GB of KV — a single stream of the request's cohort.
     const MODEL = 'k2h_3_7b'
     const build = (extraUpgrades?: (g: GameState) => void): GameState => {
       const s = createState(62)
       richBuild(s)
-      s.infra.weightQuantBytes = 2 // BF16 weights so the KV budget is the 24 GB example
       extraUpgrades?.(s)
       tryBuild(s, 'srv_edge', 3, 2)
-      deployModel(s, lastTower(s).id, MODEL)
+      const t = lastTower(s)
+      t.precision = 'bf16' // BF16 weights so the KV budget is the 24 GB example
+      deployModel(s, t.id, MODEL)
       return s
     }
     const s = build()
     const t = lastTower(s)
-    const lo = loadout(s, t.hwId, t.modelId)
+    const lo = loadoutOf(s, t)
     const model = MODEL_DEFS[MODEL]
     expect(model.attn).toBe('GQA')
-    // two 48K-token requests exceed the KV budget → only one is admitted (rag ISL 8000 × ctx 6)
+    expect(kvPerReqGb(s, model, 48000)).toBeLessThan(kvFreeGb(s, lo))
     expect(kvPerReqGb(s, model, 48000) * 2).toBeGreaterThan(kvFreeGb(s, lo))
     liveWave(s)
-    spawnRequest(s, 'rag', 1, 1, 1, 1, 6) // 48K-token prompt
-    spawnRequest(s, 'rag', 1, 1, 1, 1, 6)
+    const a = spawnRequest(s, 'rag', 1, 1, 1, 1, 6) // 48K-token prompt
+    const b = spawnRequest(s, 'rag', 1, 1, 1, 1, 6)
     runFor(s, 3)
-    expect(t.load).toBeCloseTo(0.5, 6) // 1 of 2 slots — the second rag is locked out
+    expect(t.streams).toBe(1) // the first cohort is KV-limited to one of its 28 streams…
+    expect(t.kvFrac).toBeGreaterThan(0.5)
+    expect(b.tokBy[t.id] ?? 0).toBe(0) // …and the second request waits for KV
+    expect(a.prefill + (a.tokBy[t.id] ?? 0)).toBeGreaterThan(0)
 
-    // FP8 KV-cache quant halves the per-token footprint and restores batching
-    const s2 = build((g) => {
-      g.infra.kv.quantBytes = 1
-    })
+    // FP8 KV-cache quant halves the per-token footprint: the same rack holds three streams
+    const s2 = build((g) => infraOn(g, 'inf_kvquant_fp8'))
     const t2 = lastTower(s2)
-    const lo2 = loadout(s2, t2.hwId, t2.modelId)
-    expect(kvPerReqGb(s2, model, 48000) * 2).toBeLessThan(kvFreeGb(s2, lo2))
+    expect(kvPerReqGb(s2, model, 48000)).toBeCloseTo(kvPerReqGb(s, model, 48000) / 2, 1)
     liveWave(s2)
     spawnRequest(s2, 'rag', 1, 1, 1, 1, 6)
     spawnRequest(s2, 'rag', 1, 1, 1, 1, 6)
     runFor(s2, 3)
-    expect(t2.load).toBeCloseTo(1, 6) // both admitted now
+    expect(t2.streams).toBe(3)
+  })
+
+  it('admission reserves the FULL sequence: a request that would outgrow the window mid-decode is refused up front', () => {
+    const s = createState(63)
+    richBuild(s)
+    for (const col of [2, 5, 8, 11]) buildSmallWindow(s, col, 2)
+    const win = serverCtxWindowTokens(s, loadout(s, 'hw_standard', SMALL_WINDOW))
+    liveWave(s)
+    // a batch job whose prompt fits the ~33K window but whose prompt + answer does not
+    const r = spawnRequest(s, 'batch', 8)
+    expect(r.contextLen).toBeLessThan(win)
+    expect(r.contextLen + r.work).toBeGreaterThan(win)
+    runFor(s, 75)
+    expect(r.tokBy[lastTower(s).id] ?? 0).toBe(0) // never started: no compute wasted on it
+    expect(s.stats.unservable).toBe(1)
   })
 })
 
@@ -1584,7 +1886,7 @@ describe('wave telemetry & report', () => {
   it('reports service latency from first hardware contact, not spawn time', () => {
     const s = createState(24)
     richBuild(s)
-    buildServerAs(s, 'general', 4, 2)
+    buildServerAs(s, 'chat', 4, 2) // a fast non-thinking rack finishes the summary inside its range
     liveWave(s)
     s.waveIndex = 0
     s.waveStats = newWaveStats(0)
@@ -1611,8 +1913,8 @@ describe('wave telemetry & report', () => {
     richBuild(s)
     startGame(s)
     // cover both ingress sides so the tier-1 trickle is served, not leaked
-    for (const col of [3, 8, 14, 20]) buildServerAs(s, 'general', col, 2)
-    for (const col of [3, 8, 14, 20]) buildServerAs(s, 'general', col, 8)
+    for (const col of [3, 8, 14, 20]) buildServerAs(s, 'chat', col, 2)
+    for (const col of [3, 8, 14, 20]) buildServerAs(s, 'chat', col, 8)
     for (const col of [4, 10, 16]) tryBuild(s, 'power', col, 4)
     for (const col of [6, 12, 18]) tryBuild(s, 'cooling', col, 4)
     expect(startWave(s)).toBe(true)
@@ -1651,13 +1953,18 @@ describe('real economy (§6.6): token-priced income, real operating cost, SLO ou
     // correct, billed at 50% (the SLA credit), an SLA-meter hit, excluded from Goodput (§2.5).
     const s = createState(120)
     richBuild(s)
+    // the same 27B dense body run without its thinking mode, so the only bound it can miss
+    // is the per-token one
+    const base = resolveModel(s, GENERAL)!
+    s.derivedModels['general_instant'] = { ...base, id: 'general_instant', isReasoning: false, thinkTokens: 0 }
+    s.models['general_instant'] = true
     // blanket the lane with slow Standard (L40S) racks so the chat is decoded to
     // completion (slowly) — several racks working it never make its tokens faster.
     for (const col of [3, 6, 9, 12, 15, 18, 21]) {
       tryBuild(s, 'srv_edge', col, 2)
       const t = lastTower(s)
       upgradeHardware(s, t.id) // → standard (L40S, slow bandwidth)
-      expect(deployModel(s, t.id, GENERAL)).toBe(true)
+      expect(deployModel(s, t.id, 'general_instant')).toBe(true)
     }
     const earned0 = s.stats.cashEarned
     const sla0 = s.meters.sla
@@ -1740,7 +2047,8 @@ function shadowModel(
   id = 'shadow',
 ) {
   const base = resolveModel(s, baseId)!
-  const m = { ...base, id, alignment }
+  // an instant (non-thinking) double: these tests measure alignment, not thinking time
+  const m = { ...base, id, alignment, isReasoning: false, thinkTokens: 0 }
   s.derivedModels[id] = m
   s.models[id] = true
   return m
@@ -1954,7 +2262,15 @@ function eventsOf<T extends GameEvent['type']>(s: GameState, type: T): Extract<G
 /** A shadow checkpoint with overridden per-axis quality and no over-refusal (isolates capability). */
 function shadowQuality(s: GameState, baseId: string, id: string, q: Partial<Record<CapabilityAxis, number>>) {
   const base = resolveModel(s, baseId)!
-  const m = { ...base, id, qualityBy: { ...base.qualityBy, ...q }, alignment: { ...base.alignment, overRefusal: 0 } }
+  // an instant (non-thinking) double: these tests measure answer quality, not thinking time
+  const m = {
+    ...base,
+    id,
+    qualityBy: { ...base.qualityBy, ...q },
+    alignment: { ...base.alignment, overRefusal: 0 },
+    isReasoning: false,
+    thinkTokens: 0,
+  }
   s.derivedModels[id] = m
   s.models[id] = true
   return m
@@ -2341,9 +2657,9 @@ describe('latency accounting on the real clock (§0.4)', () => {
   it('a request whose KV can never fit the rack is not admitted (no first-admit bypass): unservable', () => {
     const s = createState(416)
     richBuild(s)
-    s.infra.weightQuantBytes = 2 // FP16 weights leave a tight KV budget
     tryBuild(s, 'srv_edge', 3, 2)
     const t = lastTower(s)
+    t.precision = 'bf16' // BF16 weights leave a tight KV budget
     upgradeHardware(s, t.id)
     upgradeHardware(s, t.id) // → H100
     // a plain-GQA model (heavy KV per token) with a 512K window: KV overflows inside the window
@@ -2406,7 +2722,28 @@ describe('prefix cache and router (§4.2 / §4.10)', () => {
     expect(effectsModule.prefixHitChance(s, 0.7, true)).toBeCloseTo(0.85, 9)
   })
 
-  it('a Router dispatches each request in its range to the strongest in-range rack', () => {
+  it('a Router keeps easy traffic off a slow thinker: of the racks that answer correctly, the soonest answer wins', () => {
+    const s = createState(411)
+    richBuild(s)
+    // a strong thinking model and a fast non-thinking one, both well above chat's line
+    tryBuild(s, 'srv_frontier', 2, 2)
+    deployModel(s, lastTower(s).id, GENERAL)
+    const thinker = lastTower(s).id
+    buildGeneralRack(s, 2, 0, INSTRUCT)
+    const instant = lastTower(s).id
+    expect(tryBuild(s, 'router', 1, 2)).toBe(true)
+    expect(MODEL_DEFS[GENERAL].thinkTokens).toBeGreaterThan(0)
+    expect(MODEL_DEFS[GENERAL].qualityBy.chat).toBeGreaterThan(MODEL_DEFS[INSTRUCT].qualityBy.chat)
+    liveWave(s)
+    const r = freeze(spawnRequest(s, 'chat'))
+    step(s)
+    expect(r.routedTo).toBe(instant)
+    untilResolved(s, r)
+    expect(r.tokBy[thinker] ?? 0).toBe(0)
+    expect(r.hiddenTokens).toBe(0) // answered at once, no hidden reasoning
+  })
+
+  it('a Router sends each request to a rack that answers it correctly — the strongest when only one can', () => {
     const run = (withRouter: boolean) => {
       const s = createState(410)
       richBuild(s)
@@ -2590,5 +2927,170 @@ describe('agent bridge snapshot', () => {
     expect(after.lastReport?.total).toBeGreaterThan(0)
     expect(after.lastReport?.trustLostBy).toBeDefined()
     expect(after.stats.slaLostBy).toBeDefined()
+  })
+})
+
+describe('serving physics: thinking, precision, multi-LoRA and the two-line bill (D3)', () => {
+  /** A hand-made LoRA adapter of `baseId` (the Studio's lora/dora/qlora relation). */
+  function adapterOf(s: GameState, baseId: string, id: string): string {
+    const base = resolveModel(s, baseId)!
+    s.derivedModels[id] = {
+      ...base,
+      id,
+      origin: 'derived',
+      lineage: {
+        baseModelIds: [baseId],
+        relation: 'adapter',
+        method: 'lora',
+        target: 'coding',
+        effort: 1,
+        spent: { data: 0, compute: 0, waves: 0 },
+        depth: 1,
+        createdAtWave: 0,
+      },
+    }
+    s.models[id] = true
+    return id
+  }
+
+  it('a thinking model reasons before it answers: hidden tokens cost decode time, are never billed, and break chat’s first-answer bound', () => {
+    const run = (modelId: string) => {
+      const s = createState(500)
+      richBuild(s)
+      // the same model, never wrongly refusing, so the run judges latency alone
+      const base = resolveModel(s, modelId)!
+      s.derivedModels['calm_' + modelId] = { ...base, id: 'calm_' + modelId, alignment: { ...base.alignment, overRefusal: 0 } }
+      buildGeneralRack(s, 1, 2, 'calm_' + modelId) // at the ingress: a parked request is in range
+      liveWave(s)
+      const r = freeze(spawnRequest(s, 'chat'))
+      untilResolved(s, r)
+      return { s, r }
+    }
+    const think = run(GENERAL)
+    const expected = effectsModule.hiddenTokensFor(MODEL_DEFS[GENERAL], REQUEST_TYPES.chat.thinkMul)
+    expect(expected).toBeGreaterThan(0)
+    expect(think.r.hiddenTokens).toBe(expected)
+    expect(think.r.thinkTokens).toBe(expected)
+    expect(think.r.maxWork).toBe(think.r.tokensOut + expected)
+    expect(think.r.ttfatReal).toBeGreaterThan(think.r.ttftReal) // the answer starts after the thinking
+    expect(think.r.sloCause).toBe('ttfat') // far past chat's few-second first-answer bound
+    // the market pays for the answer: half pay (an SLA credit) of the ANSWER tokens only
+    expect(think.s.stats.cashEarned).toBeCloseTo(serveRevenueOf(think.s, think.r) * 0.5, 9)
+    const instant = run(INSTRUCT)
+    expect(instant.r.hiddenTokens).toBe(0)
+    expect(instant.r.ttfatReal).toBeCloseTo(instant.r.ttftReal, 9)
+    expect(instant.s.stats.served).toBe(1)
+    // a long-CoT request's output already IS its reasoning, and an embedding generates nothing
+    expect(effectsModule.hiddenTokensFor(MODEL_DEFS[GENERAL], REQUEST_TYPES.reason.thinkMul)).toBe(0)
+    expect(effectsModule.hiddenTokensFor(MODEL_DEFS[GENERAL], REQUEST_TYPES.embed.thinkMul)).toBe(0)
+    expect(effectsModule.hiddenTokensFor(MODEL_DEFS[INSTRUCT], REQUEST_TYPES.agent.thinkMul)).toBe(0)
+  })
+
+  it('a rack picks its weight format between waves: an explicit 4-bit format fits a model too big at full precision, at its tax', () => {
+    const s = createState(501)
+    richBuild(s)
+    infraOn(s, 'inf_wq_int4')
+    tryBuild(s, 'srv_edge', 3, 2)
+    const t = lastTower(s)
+    upgradeHardware(s, t.id)
+    upgradeHardware(s, t.id) // → H100 (80 GB)
+    // Qwen3.5-122B is 122 GB at FP8 (auto): it does not fit one H100…
+    expect(deployModel(s, t.id, BIG)).toBe(false)
+    // …a format the rack's hardware cannot run is refused
+    expect(actionsModule.setRackPrecision(s, t.id, 'nvfp4')).toBe(false) // no FP4 Tensor Cores on an H100
+    // …but INT4 (≈65 GB) fits: set the rack's format, then deploy
+    expect(actionsModule.setRackPrecision(s, t.id, 'int4')).toBe(true)
+    expect(deployModel(s, t.id, BIG)).toBe(true)
+    const lo = loadoutOf(s, t)
+    expect(effectsModule.servingFormat(s, lo)).toBe('int4')
+    expect(serverQuality(s, lo)).toBe(serverQuality(s, loadout(s, 'hw_frontier', BIG)) - 2) // the PTQ tax
+    // back to auto would not fit this model: refused, the rack keeps serving
+    expect(actionsModule.setRackPrecision(s, t.id, undefined)).toBe(false)
+    // between waves only — re-quantizing reloads the weights
+    liveWave(s)
+    expect(actionsModule.setRackPrecision(s, t.id, 'fp8')).toBe(false)
+  })
+
+  it('Multi-LoRA serving hot-swaps adapters of one base mid-wave (served unmerged, a little slower); any other swap waits for the build phase', () => {
+    const s = createState(502)
+    richBuild(s)
+    const a = adapterOf(s, GENERAL, 'adapter_a')
+    const b = adapterOf(s, GENERAL, 'adapter_b')
+    buildGeneralRack(s, 1, 2, a) // at the ingress: a parked request is in range
+    const t = lastTower(s)
+    liveWave(s)
+    expect(deployModel(s, t.id, b)).toBe(false) // without Multi-LoRA every swap is a weight reload
+    infraOn(s, 'inf_multilora')
+    expect(deployModel(s, t.id, b)).toBe(true) // the sibling adapter is already co-resident
+    expect(t.loraHot).toBe(true)
+    expect(deployModel(s, t.id, GENERAL)).toBe(true) // and so is the base itself
+    expect(deployModel(s, t.id, STARTER)).toBe(false) // a different model is a reload: between waves
+    // unmerged adapters run extra low-rank GEMMs: an adapter served hot decodes slower
+    t.modelId = b
+    const req = freeze(spawnRequest(s, 'agent'))
+    req.prefill = 0
+    req.prefillDoneAt = s.time
+    step(s)
+    const hot = t.tokS ?? 0
+    t.loraHot = false
+    step(s)
+    expect(hot).toBeGreaterThan(0)
+    expect(hot).toBeLessThan(t.tokS ?? 0)
+    // the build phase merges it again
+    t.loraHot = true
+    s.phase = 'build'
+    s.waveActive = false
+    expect(startWave(s)).toBe(true)
+    expect(t.loraHot).toBe(false)
+  })
+
+  it('the operating bill has two lines: GPU-hours (busy or idle) and energy (kW × PUE × $/kWh); a power-price spike moves only the energy line', () => {
+    const run = (powerPrice: number, busy: boolean) => {
+      const s = createState(503)
+      richBuild(s)
+      buildGeneralRack(s, 3, 2, INSTRUCT)
+      tryBuild(s, 'guard_llm', 6, 0) // the generative guard runs its own GPU rack
+      liveWave(s)
+      holdWave(s)
+      s.waveStats = newWaveStats(0)
+      s.modifiers.powerPrice = powerPrice
+      if (busy) for (let i = 0; i < 6; i++) spawnRequest(s, 'chat')
+      runFor(s, 5)
+      return s.waveStats!
+    }
+    const base = run(1, false)
+    expect(base.gpuCost).toBeGreaterThan(0)
+    expect(base.energyCost).toBeGreaterThan(0)
+    expect(base.powerCost).toBeCloseTo(base.gpuCost + base.energyCost, 9)
+    // energy is the minority of a GPU-hour (its real share is a few percent)
+    expect(base.energyCost).toBeLessThan(base.gpuCost)
+    const spike = run(1.9, false)
+    expect(spike.gpuCost).toBeCloseTo(base.gpuCost, 9)
+    expect(spike.energyCost).toBeCloseTo(base.energyCost * 1.9, 6)
+    // a busy rack draws more than an idle one: the energy line follows load, GPU-hours do not
+    const busy = run(1, true)
+    expect(busy.gpuCost).toBeCloseTo(base.gpuCost, 9)
+    expect(busy.energyCost).toBeGreaterThan(base.energyCost)
+    // the guard's H100 pays its GPU-hours too
+    const guardOnly = createState(504)
+    richBuild(guardOnly)
+    tryBuild(guardOnly, 'guard_llm', 6, 0)
+    liveWave(guardOnly)
+    holdWave(guardOnly)
+    guardOnly.waveStats = newWaveStats(0)
+    runFor(guardOnly, 2)
+    expect(guardOnly.waveStats!.gpuCost).toBeGreaterThan(0)
+  })
+
+  it('the cohort identity: a board rack bills RACKS_PER_TILE real racks and earns on TRAFFIC_SCALE requests per sprite', () => {
+    expect(RACKS_PER_TILE * COHORT_STREAMS).toBeCloseTo(TRAFFIC_SCALE, 9)
+    const s = createState(505)
+    const lo = loadout(s, 'hw_perf', INSTRUCT)
+    // one H100's real $/hour → credits per board second for the whole tile
+    const perSec = effectsModule.rackOperatingCostPerSec(s, lo, 1)
+    const usdPerHr = effectsModule.rackHourlyUsd(s, lo, 1)
+    expect(perSec).toBeCloseTo((usdPerHr * (SIM_TIME_SCALE / 3600) * RACKS_PER_TILE) / CREDIT_USD, 9)
+    // a fully loaded rack's GPU-hour line plus its energy line is its real all-in rate
+    expect(usdPerHr).toBeCloseTo(HARDWARE_DEFS.hw_perf.gpuHrUsd, 1)
   })
 })

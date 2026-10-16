@@ -1,7 +1,7 @@
 import { Application, Container, Graphics, type FederatedPointerEvent } from 'pixi.js'
 import { AudioEngine, type AudioBus } from './audio/engine'
 import { COLORS, DESIGN_H, DESIGN_W, MAX_STEPS, SIM_DT, TILE } from './config'
-import type { GameEvent, GameState, PostTrainMethod, PostTrainTarget, Tower } from './core/types'
+import type { GameEvent, GameState, PostTrainMethod, PostTrainTarget, Tower, WeightFormat } from './core/types'
 import { TextureFactory } from './render/textures'
 import { WorldRenderer } from './render/world'
 import {
@@ -11,6 +11,7 @@ import {
   deployModel,
   nextHardware,
   sellTower,
+  setRackPrecision,
   startWave,
   towerValue,
   tryBuild,
@@ -203,6 +204,7 @@ export class Game {
       onDeploy: (id, modelId) => this.doDeploy(id, modelId),
       onUpgradeHw: (id) => this.doUpgradeHardware(id),
       onRole: (id) => this.doRackRole(id),
+      onPrecision: (id, fmt) => this.doRackPrecision(id, fmt),
     })
     this.training = new TrainingPanel(
       (id) => this.doBuy(id),
@@ -1072,6 +1074,18 @@ export class Game {
     const ok = cycleRackRole(this.state, id)
     if (!ok) this.deny({ fn: 'role', towerId: id }, atRack ? id : undefined)
     else if (atRack) uiSound('click')
+    return ok
+  }
+  /** §4.5 switch a rack's weight format (between waves). */
+  private doRackPrecision(id: number, fmt: WeightFormat | undefined): boolean {
+    if (this.demoActive) return false
+    this.cancelAutoStart()
+    const ok = setRackPrecision(this.state, id, fmt)
+    if (!ok) {
+      uiSound('denied')
+      const tw = this.state.towers.find((x) => x.id === id)
+      this.showDenied(t('deny.precision'), tw?.x, tw ? tw.y - 20 : undefined)
+    }
     return ok
   }
   private openTraining(fromKey = false): void {

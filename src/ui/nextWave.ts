@@ -20,18 +20,11 @@ import { getLang, incName, reqName, t, waveBrief, waveName } from '../i18n'
 import { isExpert } from '../mode'
 import type { TextureFactory } from '../render/textures'
 import { REQUEST_TYPES, WAVES } from '../sim/content'
-import {
-  int4ContextPenalty,
-  loadoutOf,
-  serverContext,
-  serverCtxWindowTokens,
-  serverFitsMemory,
-  serverQualityVs,
-} from '../sim/effects'
+import { loadoutOf, serverCtxWindowTokens, serverFitsMemory, servingStackKey } from '../sim/effects'
 import { LANE_PATHS } from '../sim/pathing'
 import type { WavePreview, WavePreviewEntry } from '../sim/preview'
 import { categoryUnlocked, pSelfHandle } from '../sim/safety'
-import { fmtLatencyMs, fmtTokens, latencyOf } from './metrics'
+import { fmtLatencyMs, fmtTokens, rackFit } from './metrics'
 import { getPref, setPref } from './prefs'
 import { drawPanel, label, UIButton } from './theme'
 import { addTooltip, type TooltipSpec } from './tooltip'
@@ -131,24 +124,24 @@ export function forecastReadiness(s: GameState, e: WavePreviewEntry): Readiness 
   }
   const noLatencySlo = !Number.isFinite(ttftBound) && !Number.isFinite(tpotBound) && !Number.isFinite(e2elBound)
   let anyFast = false
+  let anyFits = false
   let minSelf: Partial<Record<SafetyHazard, number>> = {}
   let serving = 0
   for (const tw of racks) {
     const lo = loadoutOf(s, tw)
-    if (!lo.hw || !lo.model || !serverFitsMemory(s, lo)) continue
+    if (!lo.hw || !lo.model || !serverFitsMemory(s, lo) || !def) continue
     serving++
-    // SMART — the same margin combat latches (judged axis − long-context gap − INT4 long-ctx tax)
-    const gap = Math.max(0, e.context - serverContext(s, lo))
-    const margin = serverQualityVs(s, lo, e.axis) - gap * 0.45 - int4ContextPenalty(s, need) - e.difficulty
-    if (margin > out.bestMargin) out.bestMargin = margin
-    // FAST — the rack's own prefill/decode at its effective batch
-    const lat = latencyOf(s, lo, e.inputTokens, e.outputTokens)
+    // the same gates combat applies, at a full batch (metrics.rackFit): SMART is the judged-axis
+    // margin after the format / alignment / long-context terms, FAST every latency bound
+    // (time to first answer included for a thinking model), FITS the window + one copy's KV
+    const fit = rackFit(s, lo, def, e.inputTokens, e.outputTokens, e.difficulty)
+    if (fit.margin > out.bestMargin) out.bestMargin = fit.margin
+    const lat = fit.lat
     if (lat.ttftMs < out.bestTtftMs) out.bestTtftMs = lat.ttftMs
     if (lat.tpotMs < out.bestTpotMs) out.bestTpotMs = lat.tpotMs
-    if (lat.e2elMs < out.bestE2elMs) out.bestE2elMs = lat.e2elMs
-    const tpotOk = e.outputTokens <= 1 || lat.tpotMs <= tpotBound
-    if (lat.ttftMs <= ttftBound && tpotOk && lat.e2elMs <= e2elBound) anyFast = true
-    // FITS — the hard window gate
+    if (fit.e2elMs < out.bestE2elMs) out.bestE2elMs = fit.e2elMs
+    if (fit.fast) anyFast = true
+    if (fit.window) anyFits = true
     out.bestWindow = Math.max(out.bestWindow, serverCtxWindowTokens(s, lo))
     // SAFE (layer 1) — the weakest model that may admit it
     for (const h of e.hazards) {
@@ -161,7 +154,7 @@ export function forecastReadiness(s: GameState, e: WavePreviewEntry): Readiness 
   } else {
     out.smart = out.bestMargin >= 0 ? 'ok' : 'fail'
     out.fast = noLatencySlo ? 'na' : anyFast ? 'ok' : 'fail'
-    out.fits = out.bestWindow >= need ? 'ok' : 'fail'
+    out.fits = anyFits ? 'ok' : 'fail'
   }
   if (e.hazards.length) {
     const guards = towersCovering(s, e.lanes, (t) => t.def.kind === 'guardrail' && !!t.def.guardrail)
@@ -321,9 +314,9 @@ export class NextWaveCard {
   private stateKey(s: GameState, p: WavePreview, top: number): string {
     let k = `${p.index}|${getLang()}|${isExpert() ? 1 : 0}|${this.collapsed ? 1 : 0}|${Math.round(top)}|`
     k += `${p.volumeMul}|${p.incident?.id ?? ''}|${p.surgeLane ?? ''}|${Math.round(p.projectedBill)}|`
-    k += `${s.infra.weightQuantBytes}|${s.infra.kv.flash}|${s.infra.kv.prefixHitCeil}|${s.upgrades['eval_redteam'] ?? 0}|`
+    k += `${servingStackKey(s)}|${s.infra.kv.prefixHitCeil}|${s.upgrades['eval_redteam'] ?? 0}|`
     k += Object.keys(s.upgrades).length + '|'
-    for (const tw of s.towers) k += `${tw.id}:${tw.hwId ?? ''}:${tw.modelId ?? ''}:${tw.role ?? ''};`
+    for (const tw of s.towers) k += `${tw.id}:${tw.hwId ?? ''}:${tw.modelId ?? ''}:${tw.role ?? ''}:${tw.precision ?? ''};`
     return k
   }
 

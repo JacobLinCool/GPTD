@@ -256,7 +256,7 @@ function maybeStudio(s: GameState): void {
   // (a 120B-class MoE fits 141 GB at 1 byte/param). Picking by the axis we are
   // about to specialise is what makes the run actually clear its lane (H2).
   const fp8 = createState(0)
-  fp8.infra.weightQuantBytes = 1
+  fp8.infra.quant.fp8 = true
   const base = Object.keys(s.models)
     .map((id) => resolveModel(s, id))
     .filter((m): m is NonNullable<typeof m> => !!m && m.origin === 'base')
@@ -268,7 +268,7 @@ function maybeStudio(s: GameState): void {
 
 /** Has the fleet researched FP8 weight-quant (so a 120B-class checkpoint fits a 141 GB Frontier rack)? */
 function fp8Ready(s: GameState): boolean {
-  return s.infra.weightQuantBytes <= 1
+  return s.infra.quant.fp8
 }
 
 /** Do we OWN a player-trained big specialist (a derived 100B+ checkpoint) worth a Frontier rack? */

@@ -16,7 +16,7 @@ import { modelName, t, towerName } from '../i18n'
 import { prefersReducedMotion } from '../settings'
 import { buildCost, hardwareUpgradeCost, nextHardware } from '../sim/actions'
 import { HARDWARE_DEFS, METHOD_RECIPES, RESEARCH_DEFS, TOWER_DEFS, WAVES } from '../sim/content'
-import { hasLab, hasLiquidLoop, hwNeedsLiquid, loadout, serverFitsMemory } from '../sim/effects'
+import { deployBlocker, hasLab, hasLiquidLoop, hwNeedsLiquid, loadout, serverFitsMemory } from '../sim/effects'
 import { postTrainDataCost, resolveModel } from '../sim/models'
 import { isBuildable } from '../sim/pathing'
 import { methodUnlocked, researchOwned, researchPrereqsMet, researchTrackOf } from '../sim/research'
@@ -82,7 +82,12 @@ export function denyReason(s: GameState, a: DenyAction): DenyReason {
         if (!m) return r('generic')
         if (tw.modelId === a.modelId) return r('sameModel', { model: modelName(m) })
         if (!s.models[a.modelId]) return r('notOwned', { model: modelName(m) })
-        if (!serverFitsMemory(s, loadout(s, tw.hwId, a.modelId))) {
+        const lo = loadout(s, tw.hwId, a.modelId, tw.precision)
+        if (!serverFitsMemory(s, lo)) {
+          // spanning the rack's GPUs is a parallelism-research gate, not a VRAM one
+          const blocker = deployBlocker(s, lo)
+          if (blocker === 'tp') return r('needsTp', { model: modelName(m) })
+          if (blocker === 'pp') return r('needsPp', { model: modelName(m) })
           const gb = HARDWARE_DEFS[tw.hwId ?? '']?.hbmGb ?? 0
           return r('noFit', { model: modelName(m), gb: Math.round(gb) })
         }

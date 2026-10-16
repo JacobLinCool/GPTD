@@ -52,12 +52,11 @@ export function createState(seed = 12345): GameState {
       kv: { utilization: 0.55, prefixHitCeil: 0, quantBytes: 2, offloadGb: 0, flash: 0 },
       disagg: false,
       spec: { enabled: false, level: 0 },
-      weightQuantBytes: 2,
+      quant: { fp8: false, int4: false, nvfp4: false },
       par: { tp: false, pp: false, dp: false, ep: false },
       routing: { kvAware: false },
       loraSlots: 0,
       engineTier: 0,
-      throughput: 0,
     },
     research: { infra: null, posttrain: null, eval: null },
     // §3.6 global guardrail decision threshold (no-free-lunch): default 0.5.
