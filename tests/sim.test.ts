@@ -3431,9 +3431,20 @@ describe('derived checkpoints keep their thinking support (§1.4 Studio)', () =>
     const meta: PostTrainMeta = { baseIds: [NEVER], method: 'grpo', target: 'reasoning', effort: 1, dataSpent: 0, startWave: 0 }
     const thinker = deriveModel(s, meta)!
     expect(thinker.thinking).toBe('always')
-    const merged = computeDerivedFields(MODEL_DEFS[NEVER], recipe('merge'), 'general', 1, thinker)
-    expect(merged.thinking).toBe('hybrid')
-    expect(merged.qualityByInstant).toEqual(MODEL_DEFS[NEVER].qualityBy)
+    for (const [a, b] of [
+      [MODEL_DEFS[NEVER], thinker],
+      [thinker, MODEL_DEFS[NEVER]],
+    ] as const) {
+      const merged = computeDerivedFields(a, recipe('merge'), 'general', 1, b)
+      expect(merged.thinking).toBe('hybrid')
+      // the instant path is the instruct parent's, less whatever the average cost it: never above
+      // that parent, nor above the merged thinking vector
+      for (const ax of ['chat', 'coding', 'reasoning', 'general', 'agentic'] as const) {
+        expect(merged.qualityByInstant![ax]).toBeLessThanOrEqual(MODEL_DEFS[NEVER].qualityBy[ax])
+        expect(merged.qualityByInstant![ax]).toBeLessThanOrEqual(merged.qualityBy[ax])
+        expect(merged.qualityByInstant![ax]).toBeCloseTo(Math.min(MODEL_DEFS[NEVER].qualityBy[ax], merged.qualityBy[ax]), 9)
+      }
+    }
   })
 
   it('a distilled student of a hybrid teacher stays a hybrid, both vectors capped by the student', () => {

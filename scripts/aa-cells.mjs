@@ -28,7 +28,9 @@
 // interactive traffic, so it carries a second vector calibrated through the same resolution:
 // its `instant` pin (AA's Non-reasoning row of the same checkpoint) resolves like any pin; a
 // hybrid without one gets its instant cells from the per-cell PAIR FIT (instant = a + b·thinking,
-// fitted on every pinned thinking/instant pair, clamped to [0, thinking]; `fitInstant`).
+// fitted on every pinned thinking/instant pair, clamped to [0, thinking]; `fitInstant`). Only the
+// fit is clamped: a measured Non-reasoning row is emitted as AA measured it, and on a few cells it
+// beats the thinking row (small Qwen3 / Qwen3.5 on SciCode and HLE: Qwen3.5 2B SciCode 7.2 vs 2.8).
 
 import { readFileSync, existsSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'

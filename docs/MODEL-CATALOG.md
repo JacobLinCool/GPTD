@@ -45,7 +45,7 @@ cards.
 
 Inventory:
 - 218 models catalogued (153 hand-written + 65 generated pool entries) · 58 in the active roster (★).
-- Confidence: 177 high · 37 med · 4 low.
+- Confidence: 177 high · 38 med · 3 low.
 - Includes the late-2026 open frontier (Kimi K3, GLM-5.3, DeepSeek-V4.1-Flash and the V4 0731/0813 re-releases, Qwen3.8, MiMo-V2.6, Step 5, Muse Spark Open, the Ling-3 hybrids, K2-Horizon) and Mistral Large 4, pending its open weights (2026-10-27).
 -->
 
@@ -1196,14 +1196,14 @@ DeepSeek-V4-Pro-0813 is the August 13, 2026 re-post-train of DeepSeek's V4 flags
 Benchmarks — GPQA-D 93.5 · IFBench ≈79 (bridged) · LCR 79.7 · SciCode 58.7 · TB-Hard ≈60.9 (bridged) · HLE 43.8  
 Serving — hybrid-linear · KV 27.0 KB/token on 24 of 93 layers + 449 MB/request · MXFP4 weights (0.56 B/param) · always thinks (reasoning_effort (low / high / max)): ~2000 hidden tokens per answer  
 
-The largest open model: 2.78T total / 104B active (896 experts, top-16), with Kimi Delta Attention on 69 of 93 layers and gated MLA on the rest (~27 KB of KV per token). Its weights are MXFP4 quantization-aware-trained — 1.56 TB, just over an 8×B200's HBM — so only the NVL72 holds it. The license requires a separate agreement for MaaS above $20M revenue.
+The largest open model: 2.78T total / 104B active (896 experts, top-16), with Kimi Delta Attention on 69 of 93 layers and gated MLA on the rest (~27 KB of KV per token). Its weights are MXFP4 quantization-aware-trained: 1.56 TB, more than one 8×B200 node holds, so as released it needs a larger NVLink domain (in GPTD, the NVL72). The license requires a separate agreement for MaaS above $20M revenue.
 
 ### Mistral Large 4 (pending open weights)
-**Mistral AI** · 2026-10 (API preview 2026-10-06) · license unpublished · size unpublished · ctx unpublished · spec: — · lineage: — · confidence: low
-[announcement](https://mistral.ai/news)
+**Mistral AI** · 2026-10 (API preview v26.10 since 2026-10-06; open weights due 2026-10-27) · license unpublished (a custom Mistral licence is expected) · 1050B total / 52B active (MoE) + a 1.6B vision encoder · hybrid reasoning · 1M ctx · spec: — · lineage: from-scratch · confidence: med · AAII 38.4 (preview)
+[model page](https://docs.mistral.ai/models/mistral-large-4) · [announcement](https://mistral.ai/news/mistral-large-4)
 Benchmarks — GPQA-D — · IFBench — · LCR — · SciCode — · TB-Hard — · HLE —  
 
-Mistral's next frontier model has been in API preview since October 6, 2026, with the open weights announced for **October 27, 2026**. Its layer layout, expert count, attention type and license are unpublished, so it has no architecture record and no roster slot yet; it joins the candidate pool once the weights and config ship. The preview's Artificial Analysis cells so far: LCR 81.3, SciCode 54.2, HLE 35.0.
+Mistral's frontier model, trained from scratch: a natively multimodal, granular Mixture-of-Experts that Mistral describes as a hybrid instruct-and-reasoning model, with 1.05T total and 52B active parameters, a 1.6B vision encoder and a 1M-token window (its model page; press coverage of the preview rounds this to ~1T / 49B active). It has been in API preview on Mistral Studio since October 6, 2026; Mistral promises the weights by the end of the month, reported for **October 27, 2026**, under a licence it has not yet published. The layer layout, attention design and release precision are unpublished, so it has no architecture record and no roster slot yet; it joins the candidate pool once the weights and config ship. The preview's raw Artificial Analysis cells so far (latest snapshot, not equated): LCR 81.3, SciCode 54.2, HLE 35.0.
 
 <!-- generated:pool — `node scripts/roster-report.mjs catalog` -->
 
@@ -1718,7 +1718,7 @@ Serving — hybrid-swa · KV 44.0 KB/token on 11 of 66 layers + 233 MB/request �
 Inkling: a 975B MoE with 41B active on a sliding-window hybrid — 11 of 66 layers keep a growing KV (44 KB per token).
 
 ### LongCat 2.0
-**LongCat** · 2026-06 · MIT · 1600B total / 48B active (MoE) · hybrid reasoning · 262K ctx · spec: general · lineage: — · confidence: medium
+**LongCat** · 2026-06 · MIT · 1600B total / 48B active (MoE) · hybrid reasoning · 262K ctx · spec: general · lineage: — · confidence: med
 [model card](https://huggingface.co/meituan-longcat/LongCat-2.0)
 Benchmarks — GPQA-D 78 · IFBench ≈64.6 (bridged) · LCR 58.3 · SciCode 35.3 · TB-Hard ≈37.1 (bridged) · HLE 31.6  
 Serving — MLA · KV 95.0 KB/token on 76 of 76 layers · BF16 weights (2 B/param) · hybrid thinking (enable_thinking=False (/think_off)): instant on interactive traffic, judged 83 / 85 / 82 / 91 / 73 (from the thinking→instant pair fit); thinks ~2000 hidden tokens elsewhere  

@@ -129,6 +129,10 @@ node scripts/roster-report.mjs pareto|catalog|table     # regenerate docs/PARETO
 node scripts/resolve-arch.mjs guess|validate            # fallback architecture resolver for a gated or missing config
 ```
 
+`verify` checks the committed data against the downloaded files and fails while anything is left unchecked (pass
+`--allow-uncached` to accept a gated repo). The three generated `src/sim/roster.*.ts` files need no download to check:
+`pnpm test` rebuilds them from `data/` and fails if they are stale.
+
 ## Let an AI agent play your open tab
 
 Because the sim is driven entirely through a small action layer, a local terminal

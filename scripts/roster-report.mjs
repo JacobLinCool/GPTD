@@ -177,13 +177,16 @@ const CELLS = [['gpqaDiamond', 'GPQA-D'], ['ifBench', 'IFBench'], ['lcr', 'LCR']
 const GEN_START = '<!-- generated:pool — `node scripts/roster-report.mjs catalog` -->'
 const GEN_END = '<!-- /generated:pool -->'
 
+/** The catalog spells confidence high · med · low (the roster type says 'medium'). */
+const CONFIDENCE_LABEL = { high: 'high', medium: 'med', low: 'low' }
+
 /** A catalog entry composed from the loaded roster (for a pool checkpoint without a hand-written one). */
 function generatedEntry(m, nameOf) {
   const size = m.isMoE ? `${m.paramsTotalB}B total / ${m.paramsActiveB}B active (MoE)` : `${m.paramsTotalB}B dense`
   const lineage = m.real?.baseModelId ? `derived from ${nameOf(m.real.baseModelId)}` : '—'
   return [
     `### ${m.name}`,
-    `**${m.real?.developer}** · ${(m.real?.released ?? '').slice(0, 7)} · ${m.real?.license} · ${size}${m.thinking === 'hybrid' ? ' · hybrid reasoning' : m.isReasoning ? ' · reasoning' : ''} · ${m.contextWindowK}K ctx · spec: ${m.spec} · lineage: ${lineage} · confidence: ${m.real?.confidence}`,
+    `**${m.real?.developer}** · ${(m.real?.released ?? '').slice(0, 7)} · ${m.real?.license} · ${size}${m.thinking === 'hybrid' ? ' · hybrid reasoning' : m.isReasoning ? ' · reasoning' : ''} · ${m.contextWindowK}K ctx · spec: ${m.spec} · lineage: ${lineage} · confidence: ${CONFIDENCE_LABEL[m.real?.confidence] ?? m.real?.confidence}`,
     `[model card](${m.real?.source})`,
     `Benchmarks — ${CELLS.map(([f, label]) => {
       const v = m.real?.benchmarks?.[f]

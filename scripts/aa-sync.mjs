@@ -22,8 +22,13 @@
 // context window come from Hugging Face (scripts/arch-sync.mjs → data/model-arch.json).
 //
 // Usage: node scripts/aa-sync.mjs <snapshot|bridges|build|report|catalog|table>
+//
+// `benchSource()` is the pure half of `build` (data in, file text out); tests/models.test.ts compares it
+// with the committed src/sim/roster.bench.generated.ts, so a pin, snapshot or fit edit without a rebuild
+// fails the tests.
 
 import { readFileSync, writeFileSync, existsSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { join } from 'node:path'
 import {
   ROOT, BRIDGES_PATH, LATEST_PATH, CANONICAL, SUCCESSOR, LABEL,
@@ -124,7 +129,11 @@ function resolveRoster() {
 const tsKey = (s) => (/^[a-z_][a-z0-9_]*$/i.test(s) ? s : `'${s}'`)
 const tsStr = (s) => `'${String(s).replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`
 
-function build() {
+/**
+ * The text of src/sim/roster.bench.generated.ts from the pins, both snapshots and the committed fits
+ * (pure: reads the data, writes nothing). Throws on a pin problem.
+ */
+function benchSource() {
   const { snaps, rows, problems } = resolveRoster()
   if (problems.length) throw new Error(`pin problems — fix data/roster-aa-map.json:\n  ${problems.join('\n  ')}`)
   const cells = Object.entries(snaps.map.benchmarkCells).filter(([k]) => !k.startsWith('_')) // [field, aaKey]
@@ -190,8 +199,14 @@ function build() {
     `export const AA_BENCH_INSTANT_SOURCE: Record<string, Partial<Record<keyof BenchInputs, string>>> = {\n${instSource.join('\n')}\n}\n\n` +
     `/** The AA row each hybrid's instant vector was measured on ('' = derived from the pair fit). */\n` +
     `export const AA_INSTANT_VIA: Record<string, string> = {\n${instVia.join('\n')}\n}\n`
-  writeFileSync(GENERATED, out)
-  console.log(`✓ wrote ${GENERATED} — ${rows.length} models, ${source.length} with non-reference cells, ${instBench.length} hybrids with an instant vector (${rows.filter((r) => r.instant?.via).length} pinned, ${rows.filter((r) => r.instant && !r.instant.via).length} pair-fit)`)
+  const summary = `${rows.length} models, ${source.length} with non-reference cells, ${instBench.length} hybrids with an instant vector (${rows.filter((r) => r.instant?.via).length} pinned, ${rows.filter((r) => r.instant && !r.instant.via).length} pair-fit)`
+  return { text: out, summary }
+}
+
+function build() {
+  const { text, summary } = benchSource()
+  writeFileSync(GENERATED, text)
+  console.log(`✓ wrote ${GENERATED} — ${summary}`)
 }
 
 function report() {
@@ -300,17 +315,20 @@ function table() {
   console.log(`✓ wrote data/aa-snapshot-full.{csv,md} — ${rows.length} models`)
 }
 
-const cmd = process.argv[2]
-try {
-  if (cmd === 'snapshot') await snapshot()
-  else if (cmd === 'bridges') bridges()
-  else if (cmd === 'build') build()
-  else if (cmd === 'report') report()
-  else if (cmd === 'catalog') catalog()
-  else if (cmd === 'table') table()
-  else { console.error('usage: node scripts/aa-sync.mjs <snapshot|bridges|build|report|catalog|table>'); process.exit(1) }
-} catch (e) {
-  console.error('✗', e.message)
-  process.exit(1)
-}
+export { benchSource, GENERATED }
 
+if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+  const cmd = process.argv[2]
+  try {
+    if (cmd === 'snapshot') await snapshot()
+    else if (cmd === 'bridges') bridges()
+    else if (cmd === 'build') build()
+    else if (cmd === 'report') report()
+    else if (cmd === 'catalog') catalog()
+    else if (cmd === 'table') table()
+    else { console.error('usage: node scripts/aa-sync.mjs <snapshot|bridges|build|report|catalog|table>'); process.exit(1) }
+  } catch (e) {
+    console.error('✗', e.message)
+    process.exit(1)
+  }
+}

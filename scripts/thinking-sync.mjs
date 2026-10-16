@@ -21,10 +21,16 @@
 //
 // Usage:
 //   node scripts/thinking-sync.mjs fetch [repo…]   download each repo's template files + card into .cache/hf/
-//   node scripts/thinking-sync.mjs verify          every checkpoint has an entry; every quote is still in its source;
-//                                                  pins agree with the mode (a hybrid/always entry is not pinned on
-//                                                  a Non-reasoning row); exits 1 on a problem
+//   node scripts/thinking-sync.mjs verify [repo…] [--allow-uncached]
+//                                                  every checkpoint has an entry; every quote (of the named repos, or
+//                                                  of all) is still in its source; pins agree with the mode (a
+//                                                  hybrid/always entry is not pinned on a Non-reasoning row); exits 1
+//                                                  on a problem, and on any evidence source missing from .cache/hf
+//                                                  unless --allow-uncached
 //   node scripts/thinking-sync.mjs report          the mode table (mode, default, toggle, instant source)
+//
+// `dataProblems()` is the cache-free half of `verify` (entries, modes, evidence fields, pin vs mode);
+// tests/models.test.ts runs it, so a pin that contradicts its checkpoint's mode fails the tests offline.
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
@@ -90,27 +96,21 @@ function sourceText(repo, file) {
   return raw
 }
 
-function verify() {
+/**
+ * Every check that needs no download: each checkpoint has an entry with a known mode and evidence,
+ * and every AA pin is the variant the mode serves — a hybrid or always-thinker is never pinned on a
+ * Non-reasoning row, and an `instant` pin belongs to a hybrid. Returns the problems (empty = clean).
+ */
+function dataProblems() {
   const thinking = loadJson(THINKING).models
   const arch = loadJson(ARCH).models
   const problems = []
-  let checked = 0
-  let uncached = 0
   for (const repo of Object.keys(arch)) if (!thinking[repo]) problems.push(`${repo}: no entry`)
   for (const [repo, e] of Object.entries(thinking)) {
     if (!arch[repo]) problems.push(`${repo}: not a checkpoint of data/model-arch.json`)
     if (!MODES.includes(e.mode)) problems.push(`${repo}: mode '${e.mode}'`)
     if (e.mode === 'hybrid' && !['thinking', 'instant', 'adaptive'].includes(e.default)) problems.push(`${repo}: hybrid without a default`)
     if (!e.quote && !e.noThinking && !e.note) problems.push(`${repo}: no evidence (quote, noThinking or note)`)
-    if (!e.source) continue
-    const text = sourceText(repo, e.source)
-    if (text == null) {
-      uncached++
-      continue
-    }
-    checked++
-    if (e.quote && !text.includes(e.quote)) problems.push(`${repo}: quote not found in ${e.source}: ${e.quote}`)
-    if (e.noThinking && THINK_MARKERS.test(text)) problems.push(`${repo}: noThinking, but ${e.source} has '${text.match(THINK_MARKERS)[0]}'`)
   }
   // the AA pin must be the variant the mode serves: no Non-reasoning row behind a thinker
   const map = loadJson(MAP)
@@ -124,13 +124,48 @@ function verify() {
     if (!mode) continue
     if (mode !== 'never' && /non-reasoning/i.test(names.get(pin.aaId) ?? '')) problems.push(`${id}: '${mode}' but pinned on '${names.get(pin.aaId)}'`)
     if (pin.instant && mode !== 'hybrid') problems.push(`${id}: an instant pin on a '${mode}' checkpoint`)
+    if (pin.instant && !/non-reasoning/i.test(names.get(pin.instant.aaId) ?? '')) problems.push(`${id}: instant pin '${names.get(pin.instant.aaId) ?? pin.instant.aaId}' is not a Non-reasoning row`)
   }
-  console.log(`checked ${checked} evidence sources against .cache/hf (${uncached} not cached — run fetch)`)
+  return problems
+}
+
+function verify(args) {
+  const allowUncached = args.includes('--allow-uncached')
+  const only = args.filter((a) => !a.startsWith('--'))
+  const thinking = loadJson(THINKING).models
+  const problems = dataProblems()
+  for (const repo of only) if (!thinking[repo]) problems.push(`${repo}: no entry`)
+  let checked = 0
+  const uncached = []
+  let sources = 0
+  for (const [repo, e] of Object.entries(thinking)) {
+    if (!e.source || (only.length && !only.includes(repo))) continue
+    sources++
+    const text = sourceText(repo, e.source)
+    if (text == null) {
+      uncached.push(repo)
+      continue
+    }
+    checked++
+    if (e.quote && !text.includes(e.quote)) problems.push(`${repo}: quote not found in ${e.source}: ${e.quote}`)
+    if (e.noThinking && THINK_MARKERS.test(text)) problems.push(`${repo}: noThinking, but ${e.source} has '${text.match(THINK_MARKERS)[0]}'`)
+  }
+  console.log(`checked ${checked}/${sources} evidence sources against .cache/hf (${uncached.length} not cached)`)
+  if (uncached.length) console.log(`  uncached: ${uncached.slice(0, 12).join(', ')}${uncached.length > 12 ? ` … (+${uncached.length - 12})` : ''}`)
   if (problems.length) {
     console.error(`✗ ${problems.length} problem(s):\n  ${problems.join('\n  ')}`)
     process.exit(1)
   }
-  console.log(`✓ ${Object.keys(thinking).length} checkpoints: every mode has evidence and every pin agrees with it`)
+  if (checked === 0 && sources > 0) {
+    console.error(`✗ nothing verified: .cache/hf holds none of the ${only.length ? 'named ' : ''}evidence sources — run: node scripts/thinking-sync.mjs fetch ${only.join(' ')}`.trimEnd())
+    process.exit(1)
+  }
+  if (uncached.length && !allowUncached) {
+    console.error(`✗ ${uncached.length} evidence source(s) unverified (not cached) — run fetch (HF_TOKEN for gated repos), or pass --allow-uncached`)
+    process.exit(1)
+  }
+  const n = Object.keys(thinking).length
+  console.log(`✓ ${n} checkpoints: every mode has evidence and every pin agrees with it; ${checked}/${sources} evidence sources verified${uncached.length ? `, ${uncached.length} uncached (allowed)` : ''}`)
 }
 
 function report() {
@@ -152,16 +187,20 @@ function report() {
   console.log(`\n${Object.entries(count).map(([m, n]) => `${n} ${m}`).join(' · ')}`)
 }
 
-const [cmd, ...args] = process.argv.slice(2)
-try {
-  if (cmd === 'fetch') await fetchAll(args)
-  else if (cmd === 'verify') verify()
-  else if (cmd === 'report') report()
-  else {
-    console.error('usage: node scripts/thinking-sync.mjs <fetch [repo…] | verify | report>')
+export { dataProblems }
+
+if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+  const [cmd, ...args] = process.argv.slice(2)
+  try {
+    if (cmd === 'fetch') await fetchAll(args)
+    else if (cmd === 'verify') verify(args)
+    else if (cmd === 'report') report()
+    else {
+      console.error('usage: node scripts/thinking-sync.mjs <fetch [repo…] | verify [repo…] [--allow-uncached] | report>')
+      process.exit(1)
+    }
+  } catch (e) {
+    console.error('✗', e.message)
     process.exit(1)
   }
-} catch (e) {
-  console.error('✗', e.message)
-  process.exit(1)
 }
