@@ -1,5 +1,5 @@
 import { Application, Container, Graphics } from 'pixi.js'
-import { AudioEngine } from './audio/audio'
+import { AudioEngine, type AudioBus } from './audio/engine'
 import { DESIGN_H, DESIGN_W, MAX_STEPS, SIM_DT } from './config'
 import type { GameEvent, GameState, PostTrainMethod, PostTrainTarget } from './core/types'
 import { FxManager } from './render/fx'
@@ -20,7 +20,6 @@ import { TOWER_DEFS } from './sim/content'
 import { buildCost } from './sim/actions'
 import { demoCanContinueCampaign, demoPlan, nextDemoWaveNumber } from './sim/demo'
 import { hasLab } from './sim/effects'
-import { isBrownout } from './sim/power'
 import { step } from './sim/sim'
 import { createState } from './sim/state'
 import { getMode, isExpert, setMode } from './mode'
@@ -90,7 +89,6 @@ export class Game {
   private paused = false
   private speed: SpeedStep = 1
   private acc = 0
-  private brownoutCd = 0
   /** §3: the system/pause hub is up (freezes the sim); settingsOpen is its sub-view. */
   private systemMenuOpen = false
   private settingsOpen = false
@@ -149,7 +147,7 @@ export class Game {
     this.tutorial = new Tutorial(this.codex)
     this.settingsPanel = new SettingsPanel({
       onBack: () => this.closeSettings(),
-      onPreview: () => this.audio.click(),
+      onPreview: (bus?: AudioBus) => this.audio.preview(bus),
       onReplayTutorial: () => this.tutorial.replay(),
       isModeUnlocked: () => this.state.phase === 'menu' || this.tutorial.finished,
     })
@@ -462,7 +460,7 @@ export class Game {
     this.selectedDefId = this.selectedDefId === id ? null : id
     this.selectedTowerId = null
     this.selectedRequestId = null
-    this.audio.click()
+    this.audio.ui('click')
   }
 
   private onTileTap(col: number, row: number): void {
@@ -473,13 +471,12 @@ export class Game {
       this.selectedTowerId = existing.id
       this.selectedDefId = null
       this.selectedRequestId = null
-      this.audio.click()
+      this.audio.ui('click')
       return
     }
     if (this.selectedDefId) {
-      if (tryBuild(this.state, this.selectedDefId, col, row)) {
-        // keep the tool selected for rapid placement
-      }
+      // the tool stays selected for rapid placement; a refused placement says so
+      if (!tryBuild(this.state, this.selectedDefId, col, row)) this.audio.ui('denied')
       return
     }
     this.selectedTowerId = null
@@ -494,7 +491,7 @@ export class Game {
     if (this.trainingOpen || this.modelsOpen || this.selectedDefId) return
     this.selectedRequestId = id
     this.selectedTowerId = null
-    this.audio.click()
+    this.audio.ui('click')
   }
 
   private doSell(id: number): void {
@@ -508,7 +505,7 @@ export class Game {
   }
   private doResearch(id: string): boolean {
     if (this.demoActive) return false
-    return startResearch(this.state, id)
+    return this.denyUnless(startResearch(this.state, id))
   }
   private doPostTrain(
     baseIds: string[],
@@ -517,19 +514,24 @@ export class Game {
     effort: number,
   ): boolean {
     if (this.demoActive) return false
-    return startPostTrain(this.state, baseIds, method, target, effort)
+    return this.denyUnless(startPostTrain(this.state, baseIds, method, target, effort))
   }
   private doDeploy(id: number, modelId: string): boolean {
     if (this.demoActive) return false
-    return deployModel(this.state, id, modelId)
+    return this.denyUnless(deployModel(this.state, id, modelId))
   }
   private doUpgradeHardware(id: number): boolean {
     if (this.demoActive) return false
-    return upgradeHardware(this.state, id)
+    return this.denyUnless(upgradeHardware(this.state, id))
   }
   private doRackRole(id: number): boolean {
     if (this.demoActive) return false
-    return cycleRackRole(this.state, id)
+    return this.denyUnless(cycleRackRole(this.state, id))
+  }
+  /** A refused player action (can't afford, doesn't fit, wrong phase) sounds the "denied" bonk. */
+  private denyUnless(ok: boolean): boolean {
+    if (!ok) this.audio.ui('denied')
+    return ok
   }
   private openTraining(): void {
     if (this.state.phase === 'build' && hasLab(this.state)) this.trainingOpen = true
@@ -556,13 +558,9 @@ export class Game {
     this.paused = !this.paused
   }
 
-  /** Push SettingsStore values into the live systems (audio buses, tooltips). */
+  /** Push SettingsStore values into the live systems (the AudioEngine binds the audio settings itself). */
   private applySettings(): void {
     const s = getSettings()
-    this.audio.setMasterVolume(s.audio.master)
-    this.audio.setMusicVolume(s.audio.music)
-    this.audio.setSfxVolume(s.audio.sfx)
-    this.audio.setMuted(s.audio.muted)
     setTooltipsEnabled(s.gameplay.tooltips)
   }
 
@@ -745,15 +743,22 @@ export class Game {
     }
 
     this.consumeEvents()
+    this.audio.update(s, dt, {
+      running: simRunning,
+      paused: this.paused,
+      speed: this.speed,
+      demo: this.demoActive,
+      agent: this.agentMode,
+      panels: {
+        training: this.trainingOpen,
+        models: this.modelsOpen,
+        metrics: this.metricsOpen,
+        system: this.systemMenuOpen,
+        settings: this.settingsOpen,
+        browser: this.activeBrowser !== null,
+      },
+    })
     this.fx.update(dt)
-
-    if (s.phase === 'wave' && isBrownout(s)) {
-      this.brownoutCd -= dt
-      if (this.brownoutCd <= 0) {
-        this.audio.brownout()
-        this.brownoutCd = 1.4
-      }
-    }
 
     // validate selection still exists
     if (this.selectedTowerId != null && !s.towers.some((t) => t.id === this.selectedTowerId)) {
@@ -807,7 +812,10 @@ export class Game {
     // achievements: scan live state, surface any unlocks via the toast (not in demo)
     if (!this.demoActive && (s.phase === 'build' || s.phase === 'wave')) this.achievements.tick(s)
     const newAch = this.achievements.drainUnlocks()
-    if (newAch.length) this.achToast.push(newAch)
+    if (newAch.length) {
+      this.achToast.push(newAch)
+      this.audio.cue('achievement')
+    }
     this.achToast.update(dt)
 
     this.syncChatOverlay()
@@ -832,6 +840,7 @@ export class Game {
     if (!s.events.length) return
     for (const ev of s.events) {
       this.dispatch(ev)
+      this.audio.onEvent(ev, s)
       if (!this.demoActive) {
         this.achievements.onEvent(s, ev)
         if (ev.type === 'wave-clear') this.achievements.onWaveCleared(s, s.lastReport)
@@ -849,41 +858,12 @@ export class Game {
         break
       case 'serve':
         this.fx.serve(ev.x, ev.y, ev.kind, ev.amount)
-        if (ev.kind === 'good') this.audio.serveGood()
-        else if (ev.kind === 'bad' || ev.kind === 'over_refused') this.audio.serveBad()
-        else this.audio.serveUnsafe()
         break
       case 'cache':
         this.fx.cache(ev.x, ev.y)
-        this.audio.cache()
         break
       case 'leak':
         this.fx.leak(ev.x, ev.y, ev.unsafe)
-        this.audio.leak()
-        break
-      case 'place':
-        this.audio.place()
-        break
-      case 'sell':
-        this.audio.sell()
-        break
-      case 'wave-start':
-        this.audio.waveStart()
-        break
-      case 'wave-clear':
-        this.audio.waveClear()
-        break
-      case 'train':
-        this.audio.train()
-        break
-      case 'research-done':
-        this.audio.waveClear()
-        break
-      case 'win':
-        this.audio.win()
-        break
-      case 'lose':
-        this.audio.lose()
         break
     }
   }

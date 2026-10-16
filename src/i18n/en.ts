@@ -627,6 +627,15 @@ export const en: Record<string, string> = {
   // ===== [/ws:render] =====
 
   // ===== [ws:audio] audio: cue names, settings labels =====
+  'set.ui': 'UI',
+  'set.muteInBackground': 'Mute in Background',
+  'set.muteInBackground.sub': 'Silence audio while the tab is hidden or unfocused',
+  'set.sfxDensity': 'Serve Chimes',
+  'set.sfxDensity.full': 'Full',
+  'set.sfxDensity.reduced': 'Reduced',
+  'set.sfxDensity.sub': 'Reduced thins routine serve and cache chimes so failures stand out',
+  'set.outcomeSounds': 'Outcome Sounds',
+  'set.outcomeSounds.sub': 'Tap to hear how each request outcome sounds',
   // ===== [/ws:audio] =====
 
   // ===== [ws:shell] UI shell: HUD, hotkeys, notifications, next-wave card, wave summary, end screen, settings =====
