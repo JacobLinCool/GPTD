@@ -23,11 +23,11 @@ import { OUTCOME_STYLE, outcomeColor } from '../outcomes'
 import { getSettings, updateSettings } from '../settings'
 import { tryBuild } from '../sim/actions'
 import { HARDWARE_TIERS, MODEL_LIST } from '../sim/content'
+import { towerRangeTiles } from '../sim/effects'
 import { CORE_POS, LANE_PATHS, pathLength, posAt } from '../sim/pathing'
 import { spawnRequest } from '../sim/spawn'
 import { createState } from '../sim/state'
 import { POP_FONT } from './popups'
-import { rangeTiles } from './racks'
 import { TextureFactory } from './textures'
 import { WorldRenderer } from './world'
 
@@ -149,7 +149,7 @@ export class FxGallery {
       for (const tw of s.towers) {
         if (tw.def.kind !== 'server' || !tw.online || tw.training) continue
         const d = (tw.x - r.x) ** 2 + (tw.y - r.y) ** 2
-        if (d < bd && d <= (rangeTiles(tw) * TILE) ** 2) {
+        if (d < bd && d <= (towerRangeTiles(tw) * TILE) ** 2) {
           bd = d
           rack = tw
         }

@@ -1,6 +1,6 @@
 import { Container, Graphics, Text } from 'pixi.js'
 import { COLORS, DESIGN_W, HUD_H } from '../config'
-import { OUTCOMES, type GameState, type Outcome } from '../core/types'
+import { OUTCOMES, type GameState, type IncidentDef, type Outcome } from '../core/types'
 import { isExpert } from '../mode'
 import { OUTCOME_STYLE, outcomeColor, type OutcomeGlyph } from '../outcomes'
 import { getSettings } from '../settings'
@@ -8,7 +8,7 @@ import { WAVES } from '../sim/content'
 import { isBrownout, isLiquidGated, isThrottling } from '../sim/power'
 import type { WavePreview } from '../sim/preview'
 import { addTooltip, type TooltipSpec } from './tooltip'
-import { getLang, t, waveName } from '../i18n'
+import { getLang, incDesc, incName, t, waveName } from '../i18n'
 import { KEY, keyCap } from './help'
 import { drawPanel, label, UIButton } from './theme'
 
@@ -125,6 +125,17 @@ interface TallySlot {
 
 const GLYPH_BOX = 12
 
+/** A HUD meter a board chip can fly to. */
+export type HudMeter = 'cash' | 'trust' | 'sla'
+/** How long a meter value pops after a chip lands (s). */
+const BUMP_SEC = 0.12
+/** Resting positions of the meter values (they pop around their center). */
+const METER_HOME: Record<HudMeter, { x: number; y: number }> = {
+  cash: { x: 206, y: 24 },
+  trust: { x: 142, y: 26 },
+  sla: { x: 142, y: 68 },
+}
+
 export class Hud {
   readonly view = new Container()
   private bg = new Graphics()
@@ -144,6 +155,8 @@ export class Hud {
   private waveText = label('', 15, COLORS.textBright, 'bold')
   private phaseText = label('', 12, COLORS.textDim)
   private warnText = label('', 12, COLORS.danger, 'bold')
+  /** the incident the status line names (its hover repeats the full description) */
+  private warnIncident: IncidentDef | null = null
   private tally = new Container()
   private slots: TallySlot[] = []
   private tallyPalette = ''
@@ -162,9 +175,12 @@ export class Hud {
   private gearIcon = new Graphics()
   private lastState: GameState | null = null
   private lastUi: HudUi | null = null
+  /** seconds left on each meter's landing pop (fly-to-meter chips). */
+  private bumps: Record<HudMeter, number> = { cash: 0, trust: 0, sla: 0 }
+  private flashG = new Graphics()
 
   constructor(cb: HudCallbacks) {
-    this.view.addChild(this.bg, this.bars)
+    this.view.addChild(this.bg, this.bars, this.flashG)
     drawPanel(this.bg, 0, 0, DESIGN_W, HUD_H, { radius: 0, alpha: 0.96 })
     this.bg.rect(0, HUD_H - 2, DESIGN_W, 2).fill({ color: COLORS.laneGlow, alpha: 0.5 })
 
@@ -172,16 +188,19 @@ export class Hud {
     this.add(this.lblSla, 16, 50)
     // bars narrowed to 118 — value sits just right of the shorter bar, and the
     // whole CASH / POWER / HEAT cluster shifts left so the wave title gets more room.
-    this.add(this.trustVal, 142, 26)
-    this.add(this.slaVal, 142, 68)
+    this.add(this.trustVal, METER_HOME.trust.x, METER_HOME.trust.y)
+    this.add(this.slaVal, METER_HOME.sla.x, METER_HOME.sla.y)
     this.add(this.lblCash, 206, 8)
-    this.add(this.cashVal, 206, 24)
+    this.add(this.cashVal, METER_HOME.cash.x, METER_HOME.cash.y)
     this.add(this.runway, 206, 48)
     this.add(this.dataVal, 206, 64)
     this.add(this.lblPower, 326, 8)
     this.add(this.powerVal, 444, 24)
     this.add(this.lblHeat, 326, 50)
     this.add(this.coolVal, 444, 66)
+    addTooltip(this.warnText, () =>
+      this.warnIncident ? { title: incName(this.warnIncident), body: incDesc(this.warnIncident) } : null,
+    )
     addTooltip(this.lblPower, () => ({ title: t('metric.power.full', undefined, 'Power'), body: t('metric.power.ref') }))
     addTooltip(this.lblHeat, () => ({ title: t('metric.cooling.full', undefined, 'Cooling'), body: t('metric.cooling.ref') }))
     // meter hot-zones: hovering Trust / SLA explains what drained them last wave
@@ -257,6 +276,62 @@ export class Hud {
     this.btnMetrics.x = this.btnModels.x - 8 - r2w
     this.btnMetrics.y = r2y
     this.view.addChild(this.btnMetrics, this.btnModels)
+  }
+
+  /**
+   * Where a fly-to-meter chip lands (design px): the Cash value, the middle of the
+   * Trust / SLA bar. The board FX aims its chips here.
+   */
+  meterAnchor(m: HudMeter): { x: number; y: number } {
+    if (m === 'cash') {
+      const w = this.cashVal.width / this.cashVal.scale.x
+      return { x: METER_HOME.cash.x + Math.max(16, w / 2), y: METER_HOME.cash.y + 12 }
+    }
+    return { x: 16 + 59, y: m === 'trust' ? 33 : 75 }
+  }
+
+  /** A chip landed: the meter's value pops (1.15 → 1 over 120 ms) and its bar edge flashes. */
+  bump(m: HudMeter): void {
+    this.bumps[m] = BUMP_SEC
+  }
+
+  /** Advance the landing pops (scale on the value, a bright edge on the bar). */
+  private updateBumps(dt: number): void {
+    const a11y = getSettings().a11y
+    const calm = a11y.reducedMotion
+    const g = this.flashG
+    g.clear()
+    for (const m of ['cash', 'trust', 'sla'] as const) {
+      const left = this.bumps[m]
+      const val = m === 'cash' ? this.cashVal : m === 'trust' ? this.trustVal : this.slaVal
+      const home = METER_HOME[m]
+      if (left <= 0) {
+        if (val.scale.x !== 1) {
+          val.scale.set(1)
+          val.position.set(home.x, home.y)
+        }
+        continue
+      }
+      this.bumps[m] = Math.max(0, left - dt)
+      const k = this.bumps[m] / BUMP_SEC
+      // pop around the value's center (its anchor is the top-left corner)
+      const sc = calm ? 1 : 1 + 0.15 * k
+      const w0 = val.width / val.scale.x
+      const h0 = val.height / val.scale.y
+      val.scale.set(sc)
+      val.position.set(home.x - (w0 * (sc - 1)) / 2, home.y - (h0 * (sc - 1)) / 2)
+      if (a11y.reduceFlashing) continue
+      const color = m === 'cash' ? COLORS.cash : m === 'trust' ? COLORS.trust : COLORS.sla
+      if (m === 'cash') {
+        g.roundRect(this.cashVal.x - 3, this.cashVal.y - 1, this.cashVal.width + 6, 24, 4).stroke({
+          width: 1.5,
+          color,
+          alpha: 0.7 * k,
+        })
+      } else {
+        g.roundRect(16, m === 'trust' ? 26 : 68, 118, 14, 3).stroke({ width: 2, color: COLORS.textBright, alpha: 0.75 * k })
+      }
+    }
   }
 
   private add(t2: Text, x: number, y: number): Text {
@@ -515,20 +590,38 @@ export class Hud {
       const n = s.waveIndex + 1
       this.fitWaveTitle(`wave|${n}|${total}|${getLang()}|${fullName}|${maxTitleW}`, 'hud.wave', n, total, fullName, maxTitleW)
       this.waveText.text = this.titleStr
-      this.phaseText.text = live ? '' : t('hud.build')
+      this.phaseText.text = live
+        ? ''
+        : s.phase === 'lost'
+          ? t('hud.runLost')
+          : s.phase === 'won'
+            ? t('hud.runWon')
+            : t('hud.build')
     }
     // during a wave the phase line becomes the live outcome tally
     this.tally.visible = live
     this.phaseText.visible = !live
     if (live) this.updateTally(s, dt, maxTitleW)
 
+    // the status line: a power/heat emergency, else PAUSED, else the live incident (the
+    // board banner told it in full during the build phase; hover here repeats it)
     let warn = ''
+    let warnFill: number = COLORS.danger
+    const inc = live ? s.pendingIncident : null
+    this.warnIncident = null
     if (isLiquidGated(s)) warn = t('hud.liquidGate')
     else if (isBrownout(s)) warn = t('hud.brownout')
     else if (isThrottling(s)) warn = t('hud.throttle')
-    else if (ui.paused && live) warn = t('hud.pausedTag')
+    else if (ui.paused && live) {
+      warn = t('hud.pausedTag')
+      warnFill = COLORS.sla
+    } else if (inc) {
+      warn = t('hud.incidentLine', { icon: inc.icon, label: t('inc.active'), name: incName(inc) })
+      warnFill = inc.good ? COLORS.trust : COLORS.warn
+      this.warnIncident = inc
+    }
     this.warnText.text = warn
-    this.warnText.style.fill = !isBrownout(s) && !isThrottling(s) && ui.paused ? COLORS.sla : COLORS.danger
+    this.warnText.style.fill = warnFill
 
     // Row-2 cluster — Expert Mode only (the rich modal/telemetry surfaces are Expert).
     const expert = isExpert()
@@ -552,5 +645,6 @@ export class Hud {
     this.btnMute.setTitle('').setActive(ui.muted).layout()
     this.drawSpeaker(this.muteIcon, ui.muted)
     this.btnSettings.setTitle('').layout()
+    this.updateBumps(dt)
   }
 }

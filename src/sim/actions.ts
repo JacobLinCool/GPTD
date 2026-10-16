@@ -58,9 +58,6 @@ export function tryBuild(s: GameState, defId: string, col: number, row: number):
     level: 1,
     online: true,
     throttle: 1,
-    cooldown: 0,
-    muzzle: 0,
-    targetId: null,
     load: 0,
     hwId: def.hardwareId,
     modelId: def.defaultModelId,
@@ -73,7 +70,6 @@ export function tryBuild(s: GameState, defId: string, col: number, row: number):
     batch: 0,
   })
   s.events.push({ type: 'build', towerId: id, defId: def.id, x: c.x, y: c.y })
-  s.events.push({ type: 'place', x: c.x, y: c.y })
   refreshPower(s)
   return true
 }
@@ -114,7 +110,6 @@ export function deployModel(s: GameState, towerId: number, modelId: string): boo
   if (!serverFitsMemory(s, loadout(s, t.hwId, modelId))) return false
   t.modelId = modelId
   s.events.push({ type: 'deploy', towerId: t.id, modelId, x: t.x, y: t.y })
-  s.events.push({ type: 'train' })
   refreshPower(s)
   return true
 }
@@ -153,7 +148,6 @@ export function upgradeHardware(s: GameState, towerId: number): boolean {
   s.meters.cash -= cost
   t.hwId = next.id
   s.events.push({ type: 'upgrade', towerId: t.id, hwId: next.id, x: t.x, y: t.y })
-  s.events.push({ type: 'place', x: t.x, y: t.y })
   refreshPower(s)
   return true
 }
@@ -168,7 +162,6 @@ export function buyUpgrade(s: GameState, id: string): boolean {
   s.meters.cash -= u.cashCost
   s.data -= u.dataCost
   s.upgrades[id] = cur + 1
-  s.events.push({ type: 'train' })
   return true
 }
 

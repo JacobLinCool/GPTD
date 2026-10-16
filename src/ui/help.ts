@@ -34,6 +34,7 @@ export const KEY = {
   speedUp: 'Equal',
   fast: 'KeyF',
   mute: 'KeyM',
+  ranges: 'KeyG',
   metrics: 'Backquote',
   metricsAlt: 'Tab',
   tabPrev: 'BracketLeft',
@@ -61,6 +62,8 @@ const FALLBACK: Record<string, string> = {
   ArrowDown: '↓',
   ArrowLeft: '←',
   ArrowRight: '→',
+  PageUp: 'PgUp',
+  PageDown: 'PgDn',
 }
 
 let layout: Map<string, string> | null = null
@@ -115,6 +118,7 @@ export const HOTKEY_GROUPS: HotkeyGroup[] = [
       { caps: [GESTURE('drag')], id: 'paint' },
       { caps: [KEY.cancel, GESTURE('rightClick')], id: 'cancel' },
       { caps: [KEY.prevRack, KEY.nextRack], id: 'cycle' },
+      { caps: [KEY.ranges, GESTURE('holdAlt')], id: 'ranges' },
     ],
   },
   {
@@ -124,6 +128,7 @@ export const HOTKEY_GROUPS: HotkeyGroup[] = [
       { caps: [KEY.sell], id: 'sell' },
       { caps: [KEY.copy], id: 'copy' },
       { caps: [KEY.role], id: 'role' },
+      { caps: [KEY.tabPrev, KEY.tabNext], id: 'inspectTabs' },
     ],
   },
   {
@@ -144,6 +149,7 @@ export const HOTKEY_GROUPS: HotkeyGroup[] = [
       { caps: [KEY.help, KEY.helpAlt], id: 'help' },
       { caps: [KEY.confirm], id: 'confirm' },
       { caps: ['ArrowUp', 'ArrowDown', KEY.tabPrev, KEY.tabNext], id: 'menus' },
+      { caps: ['PageUp', 'PageDown'], id: 'page' },
     ],
   },
 ]

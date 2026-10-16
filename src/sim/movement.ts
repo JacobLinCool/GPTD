@@ -6,8 +6,6 @@ import { resolveOutcome } from './resolve'
 export function updateMovement(s: GameState, dt: number): void {
   for (const r of s.requests) {
     if (!r.alive) continue
-    if (r.hitFlash > 0) r.hitFlash -= dt
-    if (r.cacheFlash > 0) r.cacheFlash -= dt
     // NOTE: real-seconds latency (queue + prefill wall time) is accumulated in
     // combat where server range is known — lane transit is board-only (§0.4),
     // it must NOT inflate real TTFT.

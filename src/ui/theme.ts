@@ -81,6 +81,8 @@ export class UIButton extends Container {
   private badgeText: Text | null = null
   /** the last layout() call, replayed when arm/disarm swaps the title. */
   private lastLayout: [number, number, boolean] | null = null
+  /** the inputs each text line was last fitted for (skip re-measuring an unchanged line). */
+  private fitKeys = new Map<Text, string>()
 
   constructor(opts: ButtonOpts) {
     super()
@@ -247,6 +249,7 @@ export class UIButton extends Container {
 
   /** Card layout: title pinned top-left, description wrapped beneath it. */
   layoutCard(pad = 12, subSize = 11): void {
+    this.fitKeys.delete(this.subText) // sized here, not by fitText
     this.subText.style.fontSize = subSize
     this.subText.style.wordWrap = true
     this.subText.style.breakWords = true
@@ -292,7 +295,14 @@ export class UIButton extends Container {
     this.subText.y = subY
   }
 
+  /**
+   * Shrink a line to fit `maxW`. Cached by its inputs: the per-frame layout() of a
+   * visible button re-measures (and re-rasterizes) only when the text or box changes.
+   */
   private fitText(t: Text, maxW: number, baseSize: number, minSize: number): void {
+    const key = `${t.text}|${maxW}|${baseSize}|${minSize}`
+    if (this.fitKeys.get(t) === key) return
+    this.fitKeys.set(t, key)
     t.style.fontSize = baseSize
     if (!t.text || t.width <= maxW) return
     const next = Math.max(minSize, Math.floor((baseSize * maxW) / t.width))
@@ -325,7 +335,9 @@ export class UIButton extends Container {
 /**
  * Keyboard focus over an ordered list of buttons (a column, row, or grid):
  * arrows move the focus, Enter activates. The focus cue is the button's own
- * hover look, so mouse and keyboard never show two indicators.
+ * hover look, so mouse and keyboard never show two indicators. `cols` > 0 walks
+ * a uniform grid by index; `cols` = 0 is SPATIAL: an arrow moves to the nearest
+ * button in that direction on screen (for grouped / uneven layouts).
  */
 export class FocusList {
   private index = -1
@@ -335,21 +347,32 @@ export class FocusList {
     private cols = 1,
   ) {}
 
+  /** The focused button (null = none). */
+  get current(): UIButton | null {
+    return this.visible()[this.index] ?? null
+  }
+
   /** Move focus; dx/dy in grid steps. The first move lands on the first visible button. */
   move(dx: number, dy: number): void {
     const list = this.visible()
     if (!list.length) return
     let i = this.index
     if (i < 0 || i >= list.length) i = 0
-    else i = Math.max(0, Math.min(list.length - 1, i + dx + dy * this.cols))
-    for (const b of this.buttons()) b.setFocused(false)
-    this.index = i
-    list[i].setFocused(true)
+    else if (this.cols > 0) i = Math.max(0, Math.min(list.length - 1, i + dx + dy * this.cols))
+    else i = nearestInDirection(list, i, dx, dy)
+    this.focusIndex(list, i)
+  }
+
+  /** Focus a specific button (e.g. after a list scrolled under the focus). */
+  focus(b: UIButton): void {
+    const list = this.visible()
+    const i = list.indexOf(b)
+    if (i >= 0) this.focusIndex(list, i)
   }
 
   /** Activate the focused button; returns false when nothing is focused. */
   activate(): boolean {
-    const b = this.visible()[this.index]
+    const b = this.current
     if (!b) return false
     b.activate()
     return true
@@ -360,7 +383,39 @@ export class FocusList {
     this.index = -1
   }
 
-  private visible(): UIButton[] {
-    return this.buttons().filter((b) => b.visible)
+  private focusIndex(list: UIButton[], i: number): void {
+    for (const b of this.buttons()) b.setFocused(false)
+    this.index = i
+    list[i].setFocused(true)
   }
+
+  private visible(): UIButton[] {
+    return this.buttons().filter((b) => b.visible && b.parent?.visible !== false)
+  }
+}
+
+/** The button nearest to `list[from]` in the (dx, dy) direction (stays put when there is none). */
+function nearestInDirection(list: UIButton[], from: number, dx: number, dy: number): number {
+  const center = (b: UIButton): { x: number; y: number } => {
+    const p = b.getGlobalPosition()
+    return { x: p.x + b.width / 2, y: p.y + b.height / 2 }
+  }
+  const c = center(list[from])
+  let best = from
+  let bestScore = Infinity
+  list.forEach((b, j) => {
+    if (j === from) return
+    const p = center(b)
+    const ax = p.x - c.x
+    const ay = p.y - c.y
+    const along = dx !== 0 ? ax * dx : ay * dy
+    if (along <= 2) return
+    const across = dx !== 0 ? Math.abs(ay) : Math.abs(ax)
+    const score = along + across * 2.5
+    if (score < bestScore) {
+      bestScore = score
+      best = j
+    }
+  })
+  return best
 }

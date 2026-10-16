@@ -84,8 +84,6 @@ export function spawnRequest(
     tokBy: {},
     x: p.x,
     y: p.y,
-    hitFlash: 0,
-    cacheFlash: 0,
     alive: true,
     // display-only, latched later (declared up front: one object shape for every request)
     prefillDoneAt: undefined,

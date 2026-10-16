@@ -43,7 +43,7 @@ export const zhTW: Record<string, string> = {
   "hud.liquidGate": "💧 液冷機架離線 — 蓋一座 Liquid Cooling Loop",
   "hud.telemetry": "{rate} req/s · 在途 {inflight} · p95 等待 {p95}s · 電費 ${burn}/s",
   "report.title": "第 {n} 波結算",
-  "report.sloMeaning": "SLO miss = 回答正確但太慢：沒有收入，也不算 Goodput。",
+  "report.sloMeaning": "SLO miss = 回答正確但太慢：只收一半費用（SLA 補償），也不算 Goodput。",
   "report.latency": "端到端延遲  平均 {a} · p95 {p}",
   "report.ttft": "TTFT  平均 {a} · p95 {p}",
   "report.dpmt": "艦隊單位成本  {v} /Mtoken",
@@ -417,11 +417,11 @@ export const zhTW: Record<string, string> = {
   "tut.place": "我是 Codex，你的待命 SRE。那些封包是從全球入口 lane 湧進來的使用者 Request。點一下青色的 Edge Rack 按鈕，再點發光通道旁邊的格子來部署它。",
   "tut.spread": "部署得好。GPU Rack 會用載入的模型處理範圍內的 Request——每座新機架都附一個小型入門模型，之後可以從它的檢查面板部署更大的模型。沿著中央匯流區擺個兩三台，別讓任何 Request 溜進 Trust Core。",
   "tut.start": "準備就緒。按下「開始本波」——或直接按空白鍵——對即時流量敞開大門。",
-  "tut.serving": "每個封包上方會顯示剩餘的工作量。把它清到零，就能服務使用者並換取 Cash 與 Data。若讓某個封包抵達中央核心，它就會逾時（504）——你的 SLA 與 Trust 都會受創。盯緊上方的條狀指標。",
+  "tut.serving": "每個封包都帶著一條進度條：機架讀取 prompt 時是琥珀色（prefill），接著是串流輸出的回答（decode），第一個 token 出現時會有一道白色刻度。答得正確又夠快，就能換取 Cash 與 Data。若讓封包在沒被回答的情況下抵達中央核心，它就會逾時（504）——你的 SLA 與 Trust 都會受創。盯緊上方的指標。",
   "tut.expand": "這就是整個循環：服務 → 賺取 → 建造 → 撐過更大的浪潮。每波開始前先看看「下一波」卡片，在那些條狀指標滿出來時提升 Power/Cooling，並在兩波之間放下 Training Lab 解鎖研究。按 H 查看所有快捷鍵。有狀況我會喊你。祝你好運！",
   "tut.brownout": "注意——你的 GPU 剛剛 brownout 了（就是那個 ⚡ 警告）。Power 需求超過了容量，機架因此斷電。蓋一座 Power Plant 把它們救回來。",
   "tut.throttle": "你的機架正在因過熱而 throttle（❄）——你超過了熱量容量，所以每台 GPU 服務都變慢了。加一座 Cooling Tower 來解除它。",
-  "tut.jailbreak": "看到那些紅色「！」封包了嗎？那些是 Jailbreak。高安全性的模型有機會自行擋下，但若要保險，在中央核心前放一座 guardrail（編碼器或 LLM 守衛）——未經攔截就抵達核心的 jailbreak 會破壞 Trust。",
+  "tut.jailbreak": "看到那些紅色「！」封包了嗎？那些是 jailbreak。若有機架回答了它，不安全的回覆會扣 Trust。對齊良好的模型可能會自行拒答；若要保險，放一座範圍觸及該通道的 guardrail——Prompt Guard（編碼器）會在任何運算之前攔下 jailbreak，不論它放在通道的哪個位置。",
   "tut.lowtrust": "Trust 危急！只要 Trust、SLA 或 Cash 歸零，這局就結束。把滑鼠移到 Trust 與 SLA 指標上看看是什麼在扣分，再對症下藥：答錯就換更聰明的模型、太慢就換更快的機架、不安全就加 guardrail。",
   "boot.loading": "GIGAPROMPT 啟動中…",
   "req.embed.name": "Embedding",
@@ -458,10 +458,10 @@ export const zhTW: Record<string, string> = {
   "tower.guard_encoder.tagline": "輸入端 · jailbreak（Red-Team 後加 injection）· 92 ms",
   "tower.guard_encoder.desc": "輕量 BERT 編碼器（Prompt Guard 86M）：在任何 Rack 運算之前，對輸入做一次毫秒級的前向判斷。它篩檢範圍觸及之車道上的每個請求，不論放在車道哪裡：該流量 TTFT +92 ms，並有小幅誤拒率。直接攔下 jailbreak；提示注入的偵測需 Red-Team Eval 解鎖。多座編碼器能覆蓋更多車道，但不會重複篩檢同一個請求。",
   "tower.guard_llm.name": "Llama Guard（生成式）",
-  "tower.guard_llm.tagline": "雙端 · 全部危害 · 一次真實 12B 推論",
+  "tower.guard_llm.tagline": "雙端 · 全部危害（injection/PII 需 Red-Team）· 一次真實 12B 推論",
   "tower.guard_llm.desc": "生成式 12B guardrail（Llama Guard 4），跑在它自己的 H100 上：每次判斷都是一次完整（但較短）的 LLM 推論，因此會在兩端都疊加真實延遲（prompt 端疊 TTFT、回答端疊 E2EL），作用於它覆蓋之車道上的每個請求。jailbreak 與有害內容隨時可攔截，injection 需 Red-Team Eval、PII 需 Red-Team Eval II；輸出端檢查能在送達前攔下不安全的回答。",
   "tower.guard_mod.name": "Moderation API",
-  "tower.guard_mod.tagline": "雙端 · harmful + PII · 廠商託管",
+  "tower.guard_mod.tagline": "雙端 · harmful（PII 需 Red-Team II）· 廠商託管",
   "tower.guard_mod.desc": "廠商託管的審核呼叫（OpenAI omni）：在別人的機架上做一次 120 ms 的額外模型呼叫，對它覆蓋之車道上每個請求的輸入與輸出各做一次。有害內容隨時可攔截，PII 外洩需 Red-Team Eval II——但無法擋 jailbreak。",
   "tower.power.name": "Power Plant",
   "tower.power.tagline": "+8 kW Power 容量",
@@ -1009,7 +1009,6 @@ export const zhTW: Record<string, string> = {
   // ===== [/ws:render] =====
 
   // ===== [ws:audio] audio: cue names, settings labels =====
-  "set.ui": "介面音效",
   "set.muteInBackground": "背景時靜音",
   "set.muteInBackground.sub": "分頁隱藏或視窗失焦時暫停聲音",
   "set.sfxDensity": "服務提示音",
@@ -1154,8 +1153,6 @@ export const zhTW: Record<string, string> = {
   "place.blueprint": "{hw} · {model} · ${cost}",
 
   // --- 通知 ---
-  "toast.waveClear.head": "第 {n} 波 已清除",
-  "toast.waveClear": "Goodput {goodput}% · 獎金 +${bonus}",
   "toast.research.head": "研究完成",
   "toast.checkpoint.head": "新 checkpoint 已就緒",
   "toast.power.head": "電力",
@@ -1191,7 +1188,7 @@ export const zhTW: Record<string, string> = {
   "key.metrics": "遙測面板（專家模式）",
   "key.help": "這張快捷鍵表",
   "key.confirm": "Codex：下一步 · 在標題畫面開始",
-  "key.menus": "在選單中移動（Enter 選擇）· 切換分頁",
+  "key.menus": "在選單、卡片與清單中移動（Enter 選擇）· 切換分頁",
 
   // --- 設定與系統選單 ---
   "set.uiVolume": "介面音效",
@@ -1240,6 +1237,16 @@ export const zhTW: Record<string, string> = {
   "tut.bad": "剛才的 ✗ 是錯誤回答：服務 {type} 的模型在{axis}上的分數低於門檻。從機架的檢查面板部署更聰明的模型——或升級機架，讓更大的模型裝得下。",
   "tut.overRefused": "剛才的 ⊘ 是誤拒：一位無害的使用者被模型的對齊或 guardrail 擋掉了。每次誤拒都會損失營收與 SLA——safe-completion 模型與紅隊評測會減少誤拒。",
   "tut.bills": "上一波的運轉費（${bill}）超過了收入（${income}）。機架無論忙閒都按 GPU 小時計費——留意現金下方的資金跑道、賣掉閒置的機架，或讓每座機架服務更多流量。",
+  "key.ranges": "顯示所有覆蓋範圍圈（切換）· 按住 Alt 暫時查看",
+  "key.gesture.holdAlt": "按住 Alt",
+  "toast.checkpoint.ready": "新 checkpoint 就緒",
+  "toast.deployAll": "部署 ×{n}",
+  "toast.deployedAll": "{model} 已部署到 {n} 座機架",
+  "key.page": "長清單一次捲動一頁（部署清單、研究、Studio、模型總表）",
+  "key.inspectTabs": "切換所選機架的分頁（總覽／部署／遙測）",
+  "hud.runLost": "本局結束",
+  "hud.runWon": "戰役完成",
+  "hud.incidentLine": "{icon}  {label}：{name}",
   // ===== [/ws:shell] =====
 
   // ===== [ws:panels] UI panels: inspect, deploy picker, model overview, request inspector, studio, research cards =====

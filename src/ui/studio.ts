@@ -27,7 +27,7 @@ import { EFFORT_NOTCHES, resolveModel, studioPreview } from '../sim/models'
 import { canPostTrain, methodUnlocked, requisitionTarget } from '../sim/research'
 import { RESEARCH_TARGET_SECONDS } from '../sim/content'
 import { getLang, modelName, t } from '../i18n'
-import { drawPanel, label, UIButton } from './theme'
+import { drawPanel, FocusList, label, UIButton } from './theme'
 import { addTooltip } from './tooltip'
 import { DragScroll, setButton, setUiPref, uiPref } from './panelKit'
 
@@ -67,6 +67,10 @@ export class StudioTab {
   private effort = 1.0
   private baseScroll = 0
   private baseFilter: BaseFilter = uiPref('studio.filter', 'all', BASE_FILTERS)
+  /** a checkpoint to start on the next time the Studio draws (the selected rack's model). */
+  private preferred: string | null = null
+  /** arrow-key focus over every Studio control (spatial: four columns of uneven length). */
+  private focus = new FocusList(() => this.focusables(), 0)
 
   // base list
   private baseHead = label('', 12, COLORS.textDim, 'bold')
@@ -369,6 +373,63 @@ export class StudioTab {
     return best ?? owned[0]?.id ?? null
   }
 
+  private focusables(): UIButton[] {
+    return [
+      ...this.baseFilterBtns.map((b) => b.btn),
+      ...this.baseBtns.map((b) => b.btn),
+      ...this.methodBtns.values(),
+      ...this.targetBtns.map((b) => b.btn),
+      ...this.effortBtns.map((b) => b.btn),
+      this.trainBtn,
+    ]
+  }
+
+  clearFocus(): void {
+    this.focus.clear()
+  }
+
+  /**
+   * Keyboard: arrows walk the controls (Up/Down at the edge of the base list scrolls it
+   * under the focus), PgUp / PgDn page the base list, Enter presses the focused control.
+   */
+  key(code: string): boolean {
+    const rows = this.baseBtns.length
+    const maxScroll = Math.max(0, this.ownedCache.length - rows)
+    switch (code) {
+      case 'PageUp':
+        this.baseScroll = Math.max(0, this.baseScroll - rows)
+        return true
+      case 'PageDown':
+        this.baseScroll = Math.min(maxScroll, this.baseScroll + rows)
+        return true
+      case 'Enter':
+      case 'NumpadEnter':
+        return this.focus.activate()
+    }
+    const dx = code === 'ArrowLeft' ? -1 : code === 'ArrowRight' ? 1 : 0
+    const dy = code === 'ArrowUp' ? -1 : code === 'ArrowDown' ? 1 : 0
+    if (!dx && !dy) return false
+    const cur = this.focus.current
+    const slot = cur ? this.baseBtns.findIndex((b) => b.btn === cur) : -1
+    if (slot >= 0 && dx === 0) {
+      if (slot + dy < 0 && this.baseScroll > 0) {
+        this.baseScroll--
+        return true
+      }
+      if (slot + dy >= rows && this.baseScroll < maxScroll) {
+        this.baseScroll++
+        return true
+      }
+    }
+    this.focus.move(dx, dy)
+    return true
+  }
+
+  /** Start on `modelId` (e.g. the rack the player had selected) when the Studio next draws. */
+  preferBase(modelId: string | null): void {
+    this.preferred = modelId
+  }
+
   update(s: GameState): void {
     if (s !== this.state) {
       // a new run: the cached list and the picked checkpoints belong to the old one
@@ -378,7 +439,22 @@ export class StudioTab {
       this.mergeId = null
       this.baseScroll = 0
     }
-    const owned = this.ownedModels(s)
+    let owned = this.ownedModels(s)
+    const want = this.preferred
+    this.preferred = null
+    if (want && s.models[want] && resolveModel(s, want)) {
+      // the selected rack's model becomes the base, scrolled into view (widening the filter if it hid it)
+      if (!owned.some((m) => m.id === want)) {
+        this.baseFilter = 'all'
+        setUiPref('studio.filter', 'all')
+        owned = this.ownedModels(s)
+      }
+      this.baseId = want
+      if (this.mergeId === want) this.mergeId = null
+      const idx = owned.findIndex((m) => m.id === want)
+      const maxScroll = Math.max(0, owned.length - this.baseBtns.length)
+      if (idx >= 0) this.baseScroll = Math.max(0, Math.min(maxScroll, idx - 1))
+    }
     if (!this.baseId || !resolveModel(s, this.baseId)) this.baseId = this.defaultBase(s, owned)
     for (const { f, btn } of this.baseFilterBtns) {
       setButton(btn, t('studio.filter.' + f))

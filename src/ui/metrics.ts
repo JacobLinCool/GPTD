@@ -55,6 +55,7 @@ import {
   serverQuality,
   serverQualityVs,
   serverTargets,
+  towerRangeTiles,
 } from '../sim/effects'
 import { goodputPctOf } from '../sim/telemetry'
 import { HARDWARE_DEFS, HARDWARE_TIERS, REQUEST_TYPES, WAVES } from '../sim/content'
@@ -824,19 +825,13 @@ function answeringRack(s: GameState, r: Request): Tower | null {
     const dx = t.x - r.x
     const dy = t.y - r.y
     const d2 = dx * dx + dy * dy
-    const reach = rackRangeTiles(t) * TILE
+    const reach = towerRangeTiles(t) * TILE
     if (d2 <= reach * reach && d2 < nearD) {
       near = t
       nearD = d2
     }
   }
   return near
-}
-
-/** A building's reach in tiles; a rack reaches as far as its CURRENT hardware tier. */
-export function rackRangeTiles(t: Tower): number {
-  if (t.def.kind === 'server' && t.hwId) return HARDWARE_DEFS[t.hwId]?.range ?? t.def.range
-  return t.def.range
 }
 
 export function diagnoseRequest(s: GameState, r: Request): RequestDiagnosis {

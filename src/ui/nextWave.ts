@@ -14,7 +14,7 @@
  * queueing and contention. Pure presentation — reads state, never mutates it.
  */
 import { Container, Graphics, Sprite, Text } from 'pixi.js'
-import { BUILDBAR_H, COLORS, DESIGN_H, DESIGN_W, LAT_CLASS_SLO, TILE } from '../config'
+import { BUILDBAR_H, COLORS, DESIGN_H, DESIGN_W, LAT_CLASS_SLO } from '../config'
 import type { GameState, LatencyClass, SafetyHazard, Tower } from '../core/types'
 import { getLang, incName, reqName, t, waveBrief, waveName } from '../i18n'
 import { isExpert } from '../mode'
@@ -28,7 +28,7 @@ import {
   serverFitsMemory,
   serverQualityVs,
 } from '../sim/effects'
-import { LANE_PATHS } from '../sim/pathing'
+import { guardCoveredLanes } from '../sim/guards'
 import type { WavePreview, WavePreviewEntry } from '../sim/preview'
 import { categoryUnlocked, pSelfHandle } from '../sim/safety'
 import { fmtLatencyMs, fmtTokens, latencyOf } from './metrics'
@@ -76,31 +76,10 @@ export interface Readiness {
   hazards: HazardCheck[]
 }
 
-/** A tower's reach in design px (the sim's targeting range). */
-function rangePx(t: Tower): number {
-  return t.def.range * TILE
-}
-
-/** Does a circle at (x,y) of radius r touch the lane polyline? */
-function circleTouchesLane(x: number, y: number, r: number, laneId: number): boolean {
-  const lane = LANE_PATHS[laneId]
-  if (!lane) return false
-  const r2 = r * r
-  for (const seg of lane.segments) {
-    const dx = seg.b.x - seg.a.x
-    const dy = seg.b.y - seg.a.y
-    const len2 = dx * dx + dy * dy
-    const u = len2 > 0 ? Math.max(0, Math.min(1, ((x - seg.a.x) * dx + (y - seg.a.y) * dy) / len2)) : 0
-    const px = seg.a.x + dx * u - x
-    const py = seg.a.y + dy * u - y
-    if (px * px + py * py <= r2) return true
-  }
-  return false
-}
-
 /** Towers whose range covers any of these lanes. */
 export function towersCovering(s: GameState, lanes: number[], pred: (t: Tower) => boolean): Tower[] {
-  return s.towers.filter((t) => pred(t) && lanes.some((l) => circleTouchesLane(t.x, t.y, rangePx(t), l)))
+  // the sim's own coverage geometry (range circle meets lane polyline, current hardware tier's reach)
+  return s.towers.filter((t) => pred(t) && guardCoveredLanes(t).some((l) => lanes.includes(l)))
 }
 
 /** The four-check forecast of the current fleet against one upcoming archetype. */

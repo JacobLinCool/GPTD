@@ -30,16 +30,6 @@ const MAX_LEDS = 8
 const HEAT = 0xff7a45
 const TRAIN_SCAN = 0xe8ecff
 
-/**
- * The rack's coverage radius in tiles. Servers use their CURRENT hardware tier's
- * range (an upgraded rack reaches further, BLUEPRINT §6 / plan D2.14); support
- * buildings use their own.
- */
-export function rangeTiles(t: Tower): number {
-  if (t.def.kind === 'server' && t.hwId) return HARDWARE_DEFS[t.hwId]?.range ?? t.def.range
-  return t.def.range
-}
-
 /** Why a rack is dark or degraded (power cut vs missing liquid loop vs thermal throttle). */
 export type RackCause = 'power' | 'liquid' | 'heat' | null
 export function rackCause(t: Tower, liquidLoop: boolean): RackCause {
@@ -214,7 +204,7 @@ export class RackLayer {
               to.color,
               tw.x,
               tw.y - 24,
-              'upg' + tw.id,
+              `upg${tw.id}:${tw.hwId}`, // a chained upgrade stacks its own tier pair, never folds into "×N"
             )
           this.fx.burst(tw.x, tw.y - 6, to?.color ?? COLORS.white, 10, 70, 'spark', 0.5, -40)
         }

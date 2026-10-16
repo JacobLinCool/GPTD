@@ -51,6 +51,7 @@ import {
   hasLiquidLoop,
   serverPower,
   serverQualityVs,
+  towerRangeTiles,
 } from '../sim/effects'
 import {
   deployCandidates,
@@ -66,7 +67,6 @@ import {
   latencyOf,
   modelThinkTokens,
   rackDollarsPerMtoken,
-  rackRangeTiles,
   rolloutTargets,
   rooflineOf,
   sameTierTargets,
@@ -99,9 +99,9 @@ import {
   upName,
   waveName,
 } from '../i18n'
-import { drawPanel, label, UIButton } from './theme'
+import { drawPanel, FocusList, label, UIButton } from './theme'
 import { addTooltip, type TooltipSpec } from './tooltip'
-import { DragScroll, fitLabel, setButton, setUiPref, uiPref } from './panelKit'
+import { DragScroll, fitLabel, INSPECT_MARGIN, INSPECT_W, setButton, setUiPref, uiPref } from './panelKit'
 
 /* ----------------------- Inspect Panel ----------------------- */
 
@@ -166,11 +166,9 @@ class Card {
   }
 }
 
-const INSPECT_MARGIN = 12
 const INSPECT_TOP = HUD_H + INSPECT_MARGIN
 const INSPECT_BOTTOM = DESIGN_H - BUILDBAR_H - INSPECT_MARGIN
 const INSPECT_MAX_H = INSPECT_BOTTOM - INSPECT_TOP
-const INSPECT_W = 400
 const BODY_X = 14
 const BODY_W = INSPECT_W - 28
 /** action-bar geometry: the wide primary button and the narrow one beside it. */
@@ -512,6 +510,24 @@ export class InspectPanel {
     setUiPref('inspect.tab', tab)
   }
 
+  /** PgUp / PgDn (dir ±1; ±2 jumps to an end): scroll the open body (the deploy picker's long list). */
+  page(dir: number): boolean {
+    if (!this.view.visible || this.maxScroll <= 0) return false
+    const step = Math.abs(dir) >= 2 ? this.maxScroll : this.bodyH * 0.85
+    this.scroll = clamp(this.scroll + Math.sign(dir) * step, 0, this.maxScroll)
+    this.layoutScroll()
+    return true
+  }
+
+  /** [ / ] on a selected rack: the previous / next tab it shows (Telemetry is Expert-only). */
+  cycleTab(dir: number): boolean {
+    if (!this.view.visible || !this.curIsServer) return false
+    const tabs = isExpert() ? INSPECT_TABS : INSPECT_TABS.filter((x) => x !== 'stats')
+    const i = Math.max(0, tabs.indexOf(this.tab))
+    this.setTab(tabs[(i + dir + tabs.length) % tabs.length])
+    return true
+  }
+
   private setSort(sort: DeploySort): void {
     if (this.drag.swallowTap) return
     this.sort = sort
@@ -616,6 +632,11 @@ export class InspectPanel {
   }
 
   private curIsServer = false
+
+  /** Docked on the left edge (a building on the right half is selected): the Codex corner is covered. */
+  get dockedLeft(): boolean {
+    return this.view.visible && panelLayout.inspectLeft
+  }
 
   /** Slide to the side of the board opposite the selected building (instant under reduced motion). */
   private dock(tw: Tower, snap: boolean): void {
@@ -932,7 +953,7 @@ export class InspectPanel {
     }
     if (!s.infra.scheduling.batch) out.push({ text: t('inspect.n.batch1'), fill: COLORS.sla })
     out.push({
-      text: t('inspect.n.power', { p: serverPower(s, lo).toFixed(1), r: rackRangeTiles(tw).toFixed(1) }),
+      text: t('inspect.n.power', { p: serverPower(s, lo).toFixed(1), r: towerRangeTiles(tw).toFixed(1) }),
       fill: COLORS.textDim,
     })
     let y = this.layoutLines(out, 0)
@@ -1201,7 +1222,7 @@ function axisQuality(s: GameState, lo: Loadout): Record<CapabilityAxis, number> 
 }
 
 function rangeLine(tw: Tower): string {
-  return `${t('inspect.range')}  ${rackRangeTiles(tw).toFixed(1)} ${t('inspect.tiles')}`
+  return `${t('inspect.range')}  ${towerRangeTiles(tw).toFixed(1)} ${t('inspect.tiles')}`
 }
 
 /** Compact line panel for every non-server building. */
@@ -1279,14 +1300,15 @@ export class IncidentBanner {
   }
   update(s: GameState): void {
     const inc = s.pendingIncident
-    if (!inc) {
+    // the telegraph is a build-phase read; once the wave runs the HUD status line names the
+    // incident, so the banner never covers the board's top row and lane mid-wave
+    if (!inc || s.phase !== 'build') {
       this.view.visible = false
       panelLayout.bannerBottom = 0
       return
     }
     this.view.visible = true
-    const prefix = s.phase === 'wave' ? t('inc.active') : t('inc.next')
-    this.txt.text = `${inc.icon}  ${prefix}: ${incName(inc)} — ${incDesc(inc)}`
+    this.txt.text = `${t('hud.incidentLine', { icon: inc.icon, label: t('inc.next'), name: incName(inc) })} — ${incDesc(inc)}`
     this.txt.style.fill = inc.good ? COLORS.trust : COLORS.warn
     const w = Math.min(DESIGN_W - 40, this.txt.width + 28)
     const h = Math.max(34, Math.ceil(this.txt.height) + 14)
@@ -1302,6 +1324,7 @@ export class IncidentBanner {
 
 type TrainTab = 'upgrades' | 'infra' | 'studio'
 const HAS_UPGRADES = UPGRADES.length > 0
+const TRAIN_TABS: readonly TrainTab[] = HAS_UPGRADES ? ['upgrades', 'infra', 'studio'] : ['infra', 'studio']
 
 /** §4.4 the order the Infra tab groups its categories in. */
 const INFRA_CATEGORY_ORDER: InfraCategory[] = [
@@ -1333,7 +1356,10 @@ export class TrainingPanel {
   private tabUp: UIButton
   private tabInfra: UIButton
   private tabStudio: UIButton
-  private tab: TrainTab = HAS_UPGRADES ? 'upgrades' : 'infra'
+  /** the open tab, remembered across visits */
+  private tab: TrainTab = uiPref('train.tab', TRAIN_TABS[0], TRAIN_TABS)
+  /** arrow-key focus over the research cards (spatial: groups have uneven rows) */
+  private rdFocus = new FocusList(() => [...this.rdBtns.values()], 0)
   // upgrades tab
   private upView = new Container()
   private btns = new Map<string, UIButton>()
@@ -1383,13 +1409,13 @@ export class TrainingPanel {
     this.res.y = py + 42
     this.view.addChild(this.head, this.res)
 
-    this.tabUp = new UIButton({ w: 150, h: 28, accent: COLORS.sla, onTap: () => (this.tab = 'upgrades') })
+    this.tabUp = new UIButton({ w: 150, h: 28, accent: COLORS.sla, onTap: () => this.setTab('upgrades') })
     this.tabUp.x = px + 300
     this.tabUp.y = py + 38
-    this.tabInfra = new UIButton({ w: 150, h: 28, accent: COLORS.power, onTap: () => (this.tab = 'infra') })
+    this.tabInfra = new UIButton({ w: 150, h: 28, accent: COLORS.power, onTap: () => this.setTab('infra') })
     this.tabInfra.x = HAS_UPGRADES ? px + 458 : px + 404
     this.tabInfra.y = py + 38
-    this.tabStudio = new UIButton({ w: 220, h: 28, accent: COLORS.data, onTap: () => (this.tab = 'studio') })
+    this.tabStudio = new UIButton({ w: 220, h: 28, accent: COLORS.data, onTap: () => this.setTab('studio') })
     this.tabStudio.x = HAS_UPGRADES ? px + 616 : px + 562
     this.tabStudio.y = py + 38
     this.view.addChild(this.tabUp, this.tabInfra, this.tabStudio, this.upView, this.rdView)
@@ -1511,6 +1537,71 @@ export class TrainingPanel {
     this.closeBtn.y = py + 14
     this.view.addChild(this.closeBtn)
     this.view.visible = false
+  }
+
+  /** Opening the lab: drop any stale keyboard focus; the Studio starts on `preferredBase` (the selected rack's model). */
+  open(preferredBase: string | null): void {
+    this.rdFocus.clear()
+    this.studio.clearFocus()
+    this.studio.preferBase(preferredBase)
+  }
+
+  private setTab(tab: TrainTab): void {
+    if (this.tab === tab) return
+    this.tab = tab
+    setUiPref('train.tab', tab)
+    this.rdFocus.clear()
+    this.studio.clearFocus()
+  }
+
+  /**
+   * Keyboard inside the lab: [ / ] switch tabs; on the Infra tab the arrows walk the
+   * research cards (the list scrolls to keep the focus in view), PgUp / PgDn / Home /
+   * End scroll, Enter researches the focused card; the Studio handles its own keys.
+   */
+  key(code: string): boolean {
+    if (code === 'BracketLeft' || code === 'BracketRight') {
+      const i = TRAIN_TABS.indexOf(this.tab)
+      const step = code === 'BracketLeft' ? -1 : 1
+      this.setTab(TRAIN_TABS[(i + step + TRAIN_TABS.length) % TRAIN_TABS.length])
+      return true
+    }
+    if (this.tab === 'studio') return this.studio.key(code)
+    if (this.tab !== 'infra') return false
+    const page = this.rdClipH * 0.85
+    switch (code) {
+      case 'ArrowUp':
+      case 'ArrowDown':
+      case 'ArrowLeft':
+      case 'ArrowRight': {
+        const dx = code === 'ArrowLeft' ? -1 : code === 'ArrowRight' ? 1 : 0
+        const dy = code === 'ArrowUp' ? -1 : code === 'ArrowDown' ? 1 : 0
+        this.rdFocus.move(dx, dy)
+        const b = this.rdFocus.current
+        if (b) {
+          // keep the focused card inside the clip
+          if (b.y < this.rdOffset) this.setInfraOffset(b.y - 24)
+          else if (b.y + RD_CARD_H > this.rdOffset + this.rdClipH) this.setInfraOffset(b.y + RD_CARD_H - this.rdClipH + 8)
+        }
+        return true
+      }
+      case 'PageUp':
+        this.setInfraOffset(this.rdOffset - page)
+        return true
+      case 'PageDown':
+        this.setInfraOffset(this.rdOffset + page)
+        return true
+      case 'Home':
+        this.setInfraOffset(0)
+        return true
+      case 'End':
+        this.setInfraOffset(this.rdContentH)
+        return true
+      case 'Enter':
+      case 'NumpadEnter':
+        return this.rdFocus.activate()
+    }
+    return false
   }
 
   private setInfraOffset(v: number): void {
@@ -2232,11 +2323,18 @@ export class WaveReportPanel {
     return this.view.visible && this.panel.visible && this.view.y + this.panelH > CODEX_TOP
   }
 
-  update(s: GameState): void {
+  /**
+   * `ghost` = the player holds a build tool: like the NEXT WAVE card, the report fades
+   * and lets clicks through, so the board tiles under it stay buildable.
+   */
+  update(s: GameState, ghost = false): void {
     const rep = s.lastReport
     const show = s.phase === 'build' && !!rep
     this.view.visible = show
     if (!show || !rep) return
+    this.view.alpha = ghost ? 0.22 : 1
+    this.view.eventMode = ghost ? 'none' : 'passive'
+    this.view.interactiveChildren = !ghost
     // sit below the incident banner when it is up (it updates first in the frame)
     this.view.y = Math.max(REPORT_Y, panelLayout.bannerBottom + 6)
     const folded = this.collapsed || panelLayout.inspectLeft

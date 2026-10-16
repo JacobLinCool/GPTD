@@ -343,7 +343,7 @@ export const en: Record<string, string> = {
 
   // --- expert wave report (S5) ---
   'report.title': 'WAVE {n} REPORT',
-  'report.sloMeaning': 'SLO-miss = correct answer, but late: no revenue or Goodput credit.',
+  'report.sloMeaning': 'SLO-miss = correct answer, but late: billed at half price (an SLA credit) and no Goodput credit.',
   'report.latency': 'E2E latency  avg {a} · p95 {p}',
   'report.ttft': 'TTFT  avg {a} · p95 {p}',
   'report.dpmt': 'Fleet unit cost  {v} /Mtoken',
@@ -453,7 +453,7 @@ export const en: Record<string, string> = {
   'tut.start':
     'Locked and loaded. Hit START WAVE — or just press Space — to open the doors to live traffic.',
   'tut.serving':
-    'Each packet shows Work remaining above it. Drain it to zero and you serve the user for Cash and Data. Let one reach the central core and it times out (a 504) — your SLA and Trust take the hit. Watch the bars up top.',
+    'Each packet carries a progress bar: amber while a rack reads its prompt (prefill), then the answer streaming out (decode), with a white tick at the first token. Answer it correctly and fast enough and you earn Cash and Data. Let one reach the central core unanswered and it times out (a 504) — your SLA and Trust take the hit. Watch the meters up top.',
   'tut.expand':
     "That's the whole loop: serve → earn → build → survive a bigger wave. Check the NEXT WAVE card before you start each one, raise Power/Cooling when those bars fill, and drop a Training Lab to unlock research between waves. Press H for every hotkey. I'll shout if something needs you. Good luck!",
   'tut.brownout':
@@ -461,7 +461,7 @@ export const en: Record<string, string> = {
   'tut.throttle':
     'Your racks are thermal-throttling (❄) — you are over heat capacity, so every GPU serves slower. Add a Cooling Tower to clear it.',
   'tut.jailbreak':
-    'See the red “!” packets? Those are Jailbreaks. A high-safety model may self-handle them, but to be sure, place a guardrail (Encoder or LLM Guard) before the central core — a jailbreak that reaches the core unscreened breaches Trust.',
+    'See the red “!” packets? Those are jailbreaks. If a rack answers one, the unsafe reply costs Trust. A well-aligned model may refuse it on its own; to be sure, place a guardrail whose range touches that lane — Prompt Guard (encoder) blocks jailbreaks before any compute, wherever on the lane it sits.',
   'tut.lowtrust':
     'Trust is critical! If Trust, SLA, or Cash hits zero, the run ends. Hover the Trust and SLA meters to see what drained them, then fix the cause: a smarter model for wrong answers, faster racks for late ones, guardrails for unsafe ones.',
 
@@ -650,7 +650,6 @@ export const en: Record<string, string> = {
   // ===== [/ws:render] =====
 
   // ===== [ws:audio] audio: cue names, settings labels =====
-  'set.ui': 'UI',
   'set.muteInBackground': 'Mute in Background',
   'set.muteInBackground.sub': 'Silence audio while the tab is hidden or unfocused',
   'set.sfxDensity': 'Serve Chimes',
@@ -802,8 +801,6 @@ export const en: Record<string, string> = {
   'place.blueprint': '{hw} · {model} · ${cost}',
 
   // --- notifications ---
-  'toast.waveClear.head': 'WAVE {n} CLEARED',
-  'toast.waveClear': 'Goodput {goodput}% · bonus +${bonus}',
   'toast.research.head': 'RESEARCH COMPLETE',
   'toast.checkpoint.head': 'NEW CHECKPOINT READY',
   'toast.power.head': 'POWER',
@@ -839,7 +836,7 @@ export const en: Record<string, string> = {
   'key.metrics': 'Telemetry panel (Expert)',
   'key.help': 'This hotkey sheet',
   'key.confirm': 'Codex: next · start from the title screen',
-  'key.menus': 'Move through menus (Enter picks) · switch tabs',
+  'key.menus': 'Move through menus, cards and lists (Enter picks) · switch tabs',
 
   // --- settings + system menu ---
   'set.uiVolume': 'Interface',
@@ -848,7 +845,7 @@ export const en: Record<string, string> = {
   'set.reduceFlashing': 'Reduce Flashing',
   'set.reduceFlashing.sub': 'Limit full-screen flashes and rapid blinking',
   'set.colorblind': 'Colorblind-Safe Colors',
-  'set.colorblind.sub': 'A palette safe for color vision deficiency; every outcome also keeps its own glyph',
+  'set.colorblind.sub': 'A color-vision-safe palette; every outcome keeps its own glyph',
   'set.fxLevel': 'Effects',
   'set.fxLevel.sub': 'Particle and popup density',
   'set.fxLevel.full': 'Full',
@@ -894,6 +891,16 @@ export const en: Record<string, string> = {
     "That ⊘ was an over-refusal: a harmless user was turned away by the model's alignment or a guardrail. Every refusal costs revenue and SLA — safe-completion models and Red-Team Eval refuse less.",
   'tut.bills':
     "Last wave's operating bill (${bill}) beat its income (${income}). Racks bill their GPU-hours whether busy or idle — watch the runway under Cash, sell idle racks, or serve more traffic per rack.",
+  'key.ranges': 'Show every coverage ring (toggle) · hold Alt to peek',
+  'key.gesture.holdAlt': 'Hold Alt',
+  'toast.checkpoint.ready': 'CHECKPOINT READY',
+  'toast.deployAll': 'DEPLOY ×{n}',
+  'toast.deployedAll': '{model} deployed to {n} racks',
+  'key.page': 'Scroll a long list a page at a time (deploy picker, research, Studio, model table)',
+  'key.inspectTabs': 'Switch the selected rack\'s tabs (Overview / Deploy / Telemetry)',
+  'hud.runLost': 'Run over',
+  'hud.runWon': 'Campaign cleared',
+  'hud.incidentLine': '{icon}  {label}: {name}',
   // ===== [/ws:shell] =====
 
   // ===== [ws:panels] UI panels: inspect, deploy picker, model overview, request inspector, studio, research cards =====

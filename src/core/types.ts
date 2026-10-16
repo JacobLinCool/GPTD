@@ -722,8 +722,6 @@ export interface Request {
   tokBy: Record<number, number>
   x: number
   y: number
-  hitFlash: number
-  cacheFlash: number
   alive: boolean
   // ---- display-only (read by render/UI/agent; the sim never branches on these) ----
   /** sloMiss cause, latched at the first violated bound. */
@@ -750,9 +748,6 @@ export interface Tower {
   online: boolean
   /** 1 = full speed, < 1 = thermally throttled */
   throttle: number
-  cooldown: number
-  muzzle: number
-  targetId: number | null
   /** fraction of batch slots busy last combat tick (0..1) — expert telemetry */
   load: number
   /** current rack hardware tier (servers only; upgradable in place) */
@@ -879,13 +874,13 @@ export type LoseMeter = 'cash' | 'trust' | 'sla'
  * per tick (tests do not drain `s.events`). Continuous display state lives on
  * Tower/Request display fields instead.
  *
- * The `outcome`, `guard`, `selfHandle`, `build`, `upgrade`, `deploy`, `incident`,
- * `research-start` and `posttrain-done` events are the precise vocabulary the board
- * FX / audio / UI consume. The legacy `serve` / `leak` / `place` events are kept
- * only until every consumer reads `outcome` (they are removed in the same update).
+ * Every terminal request resolves into exactly one `outcome`; the safety layers
+ * announce themselves with `guard` / `selfHandle`; player actions with `build`,
+ * `upgrade`, `deploy`, `sell`; research with `research-start`, `research-done` and
+ * `posttrain-done`. The board FX, audio, notifications and achievements all read
+ * this one vocabulary.
  */
 export type GameEvent =
-  | { type: 'fire'; fx: { x: number; y: number }; tx: number; ty: number; color: number }
   | {
       type: 'outcome'
       requestId: number
@@ -925,10 +920,7 @@ export type GameEvent =
     }
   /** layer 1: the serving model's own alignment cleared a hazard (safe refusal / safe completion). */
   | { type: 'selfHandle'; towerId: number; requestId: number; x: number; y: number; hazard: SafetyHazard }
-  | { type: 'serve'; x: number; y: number; kind: 'good' | 'bad' | 'unsafe' | 'over_refused'; amount: number }
   | { type: 'cache'; x: number; y: number; towerId?: number; requestId?: number }
-  | { type: 'leak'; x: number; y: number; unsafe: boolean }
-  | { type: 'place'; x: number; y: number }
   | { type: 'build'; towerId: number; defId: string; x: number; y: number }
   | { type: 'upgrade'; towerId: number; hwId: string; x: number; y: number }
   | { type: 'deploy'; towerId: number; modelId: string; x: number; y: number }
@@ -938,7 +930,6 @@ export type GameEvent =
   | { type: 'wave-start'; index: number; boss?: boolean; surgeLane?: number }
   | { type: 'wave-clear'; index: number; goodputPct?: number }
   | { type: 'incident'; id: string }
-  | { type: 'train' }
   | { type: 'research-start'; id: string; track?: string }
   | { type: 'research-done'; id: string }
   | { type: 'posttrain-done'; modelId: string }

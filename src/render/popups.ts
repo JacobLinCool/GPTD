@@ -53,6 +53,10 @@ interface Pop {
   age: number
   life: number
   rise: number
+  /** half the drawn width (text + icon), for width-aware slotting */
+  halfW: number
+  /** income popups: the credits shown (a merge adds to it instead of counting "×N") */
+  amount: number
 }
 
 const fmtCache = new Map<string, Intl.NumberFormat>()
@@ -120,12 +124,21 @@ export class PopupLayer {
    * Show a popup. `key` groups repeats (merge + rate limit); `icon` is a glyph key
    * resolved through iconFor. Returns false when it folded into an existing popup.
    */
-  show(text: string, color: number, x: number, y: number, key = text, icon?: string, big = false): boolean {
+  show(
+    text: string,
+    color: number,
+    x: number,
+    y: number,
+    key = text,
+    icon?: string,
+    big = false,
+    amount = Number.NaN,
+  ): boolean {
     // merge into a same-key popup in the same spot
     for (const p of this.live) {
       if (p.key !== key || p.age > MERGE_AGE) continue
       if (Math.abs(p.x - x) < MERGE_DIST && Math.abs(p.y + p.rise - y) < MERGE_DIST) {
-        this.bump(p)
+        this.bump(p, amount)
         return false
       }
     }
@@ -136,17 +149,24 @@ export class PopupLayer {
       let newest: Pop | null = null
       for (const p of this.live) if (p.key === key && (!newest || p.age < newest.age)) newest = p
       if (newest) {
-        this.bump(newest)
+        this.bump(newest, amount)
         return false
       }
     }
-    const slotY = this.freeSlot(x, y)
+    // lay the text out first: the slot search needs its width (a long label next door must not overprint)
+    const p = this.spare.pop() ?? this.make()
+    p.text.text = text
+    p.text.style.fontSize = big ? 17 : 13
+    const tex = icon ? this.iconFor(icon) : null
+    const halfW = Math.ceil(p.text.width / 2) + (tex ? 8 : 0)
+    const slotY = this.freeSlot(x, y, halfW)
     if (slotY === null) {
+      this.spare.push(p)
       // every stacking slot here is taken: fold into a same-key popup nearby, or let
       // the outcome glyph carry it alone rather than overprint text
-      for (const p of this.live) {
-        if (p.key === key && Math.abs(p.x - x) < 64 && Math.abs(p.y - y) < 64) {
-          this.bump(p)
+      for (const q of this.live) {
+        if (q.key === key && Math.abs(q.x - x) < 64 && Math.abs(q.y - y) < 64) {
+          this.bump(q, amount)
           break
         }
       }
@@ -155,14 +175,12 @@ export class PopupLayer {
     stamps.push(this.clock)
     this.keyStamps.set(key, stamps)
     if (this.live.length >= POP_CAP) this.recycle(this.live.shift()!)
-    const p = this.spare.pop() ?? this.make()
     p.key = key
     p.base = text
     p.count = 1
-    p.text.text = text
+    p.amount = amount
+    p.halfW = halfW
     p.text.tint = color
-    p.text.style.fontSize = big ? 17 : 13
-    const tex = icon ? this.iconFor(icon) : null
     if (tex) {
       p.icon.texture = tex
       p.icon.visible = true
@@ -190,7 +208,7 @@ export class PopupLayer {
     for (const [k, b] of this.cashBins) {
       if (this.clock - b.t < window) continue
       this.cashBins.delete(k)
-      this.show(t('fx.cash', { v: fmtCredits(b.sum) }), COLORS.cash, b.x, b.y - 10, 'cash:' + k)
+      this.show(t('fx.cash', { v: fmtCredits(b.sum) }), COLORS.cash, b.x, b.y - 10, 'cash:' + k, undefined, false, b.sum)
     }
     const calm = reducedMotion()
     for (let i = this.live.length - 1; i >= 0; i--) {
@@ -217,20 +235,31 @@ export class PopupLayer {
     this.keyStamps.clear()
   }
 
-  private bump(p: Pop): void {
+  /** Fold a repeat into `p`: income adds up ("+$1.2" → "+$1.9"), anything else counts "×N". */
+  private bump(p: Pop, amount = Number.NaN): void {
     p.count++
-    p.text.text = `${p.base} ×${p.count}`
+    if (Number.isFinite(p.amount) && Number.isFinite(amount)) {
+      p.amount += amount
+      p.text.text = t('fx.cash', { v: fmtCredits(p.amount) })
+    } else p.text.text = `${p.base} ×${p.count}`
+    p.halfW = Math.ceil(p.text.width / 2) + (p.icon.visible ? 8 : 0)
     p.age = Math.min(p.age, 0.05)
     if (p.icon.visible) p.icon.x = -Math.round(p.text.width / 2) - 7
   }
 
   /** Lowest free stacking slot at (x, y), or null when all are taken (popups never overprint). */
-  private freeSlot(x: number, y: number): number | null {
+  private freeSlot(x: number, y: number, halfW: number): number | null {
     let ty = y
     for (let slot = 0; slot < 4; slot++) {
       let hit = false
       for (const p of this.live) {
-        if (Math.abs(p.x - x) < 34 && Math.abs(p.y + p.rise - ty) < SLOT_H) {
+        // two labels collide when their extents overlap (both centred on their x), either
+        // where the older one is now or where both end up (every popup rises the same
+        // curve, so two with one base row would converge as the older one slows)
+        if (
+          Math.abs(p.x - x) < p.halfW + halfW + 2 &&
+          (Math.abs(p.y + p.rise - ty) < SLOT_H || Math.abs(p.y - ty) < SLOT_H)
+        ) {
           hit = true
           break
         }
@@ -248,7 +277,7 @@ export class PopupLayer {
     const icon = new Sprite()
     icon.anchor.set(0.5)
     root.addChild(icon, text)
-    return { root, text, icon, key: '', base: '', count: 0, x: 0, y: 0, age: 0, life: 1, rise: 0 }
+    return { root, text, icon, key: '', base: '', count: 0, x: 0, y: 0, age: 0, life: 1, rise: 0, halfW: 0, amount: Number.NaN }
   }
 
   private recycle(p: Pop): void {

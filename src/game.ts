@@ -1,5 +1,5 @@
 import { Application, Container, Graphics, type FederatedPointerEvent } from 'pixi.js'
-import { AudioEngine, type AudioBus } from './audio/engine'
+import { AudioEngine } from './audio/engine'
 import { COLORS, DESIGN_H, DESIGN_W, MAX_STEPS, SIM_DT, TILE } from './config'
 import type { GameEvent, GameState, PostTrainMethod, PostTrainTarget, Tower } from './core/types'
 import { TextureFactory } from './render/textures'
@@ -39,6 +39,7 @@ import { MetricsHistory } from './ui/metricsHistory'
 import { MetricsPanel } from './ui/metricsPanel'
 import { NextWaveCard } from './ui/nextWave'
 import { NotificationStack } from './ui/notifications'
+import { rolloutTargets } from './ui/metrics'
 import { RequestInspector } from './ui/requestInspector'
 import { setTooltipsEnabled, tooltip } from './ui/tooltip'
 import { uiSound } from './ui/uiSound'
@@ -88,6 +89,8 @@ const TOUCH_PAINT_HOLD_MS = 250
 const HOVER_CARD_DELAY = 0.35
 /** How long the X-key / START "press again" arm lasts. */
 const ARM_MS = 2500
+/** The run's last moment plays on the board (core shatter / win sparkle) before the end screen. */
+const END_HOLD_SEC = 1.2
 
 export class Game {
   readonly root = new Container()
@@ -174,9 +177,15 @@ export class Game {
   private heatNoticed = false
   /** dedupe a checkpoint announced by both research-done and posttrain-done. */
   private lastCheckpoint = ''
+  /** checkpoints minted mid-wave: offered for one-click rollout once the wave ends (deploys are between waves). */
+  private pendingRollouts: string[] = []
   private modalCount = 0
   /** estimated length of the live wave (cached from its preview at start) — the runway's yardstick. */
   private waveEstSec = 0
+  /** the surge lane last handed to the board (undefined = resend on the next build frame). */
+  private ingressLane: number | null | undefined = undefined
+  /** seconds since the run ended (the end screen waits END_HOLD_SEC so the board's last beat reads). */
+  private endHold = 0
 
   constructor(private app: Application) {
     this.state = createState((Math.floor(performance.now()) ^ 0x5f3759df) >>> 0)
@@ -233,7 +242,7 @@ export class Game {
     this.tutorial = new Tutorial(this.codex)
     this.settingsPanel = new SettingsPanel({
       onBack: () => this.closeSettings(),
-      onPreview: (bus?: AudioBus) => this.audio.preview(bus),
+      onPreview: (target) => this.audio.preview(target),
       onReplayTutorial: () => this.tutorial.replay(),
       isModeUnlocked: () => this.state.phase === 'menu' || this.tutorial.finished,
     })
@@ -301,6 +310,9 @@ export class Game {
       if (this.hotkeys.visible) this.hotkeys.refresh()
     })
 
+    // fly-to-meter chips land on the live HUD meters, which pop as each one arrives
+    this.world.fx.meterAnchor = (m) => this.hud.meterAnchor(m)
+    this.world.fx.onChipLand = (m) => this.hud.bump(m)
     this.world.onTileTap = (c, r) => this.onTileTap(c, r)
     this.world.onRequestTap = (id) => this.onRequestTap(id)
     this.installPointer()
@@ -532,6 +544,11 @@ export class Game {
       const tgt = e.target as HTMLElement | null
       const editable = !!tgt && (tgt.tagName === 'INPUT' || tgt.tagName === 'TEXTAREA' || tgt.isContentEditable)
       if (editable && e.code !== 'Escape') return
+      // holding Alt peeks at every coverage ring (released on keyup / focus loss)
+      if (e.code === 'AltLeft' || e.code === 'AltRight') {
+        this.world.setRangeHold(true)
+        return
+      }
       if (e.ctrlKey || e.metaKey || e.altKey) return
       const code = e.code
       if (e.repeat) {
@@ -541,6 +558,13 @@ export class Game {
       }
       if (this.onKey(code)) e.preventDefault()
     })
+    window.addEventListener('keyup', (e) => {
+      if (e.code === 'AltLeft' || e.code === 'AltRight') {
+        this.world.setRangeHold(false)
+        e.preventDefault() // a lone Alt must not move focus to the browser menu
+      }
+    })
+    window.addEventListener('blur', () => this.world.setRangeHold(false))
   }
 
   /** Route one key press; true when the game used it. */
@@ -568,8 +592,10 @@ export class Game {
     if (this.activeBrowser) return this.activeBrowser.key(code)
     if (this.settingsOpen) return this.settingsPanel.key(code)
     if (this.systemMenuOpen) return this.systemMenu.key(code)
-    // the Training Lab / Model Overview modals keep their own controls; the toggle keys still close them
+    // the Training Lab / Model Overview modals: their own keyboard navigation, and the toggle keys close them
     if (this.trainingOpen || this.modelsOpen) {
+      if (this.trainingOpen && this.training.key(code)) return true
+      if (this.modelsOpen && this.models.key(code)) return true
       if (code === KEY.train && this.trainingOpen) this.trainingOpen = false
       else if (code === KEY.models && this.modelsOpen) this.modelsOpen = false
       else return false
@@ -595,6 +621,19 @@ export class Game {
       case KEY.mute:
         this.toggleMute()
         return true
+      case KEY.ranges:
+        uiSound('toggle', { on: this.world.toggleRanges() })
+        return true
+      case KEY.tabPrev:
+      case KEY.tabNext:
+        // a selected rack's inspect tabs (Overview / Deploy / Telemetry)
+        if (!this.inspect.cycleTab(code === KEY.tabNext ? 1 : -1)) return false
+        uiSound('click')
+        return true
+      case 'PageUp':
+      case 'PageDown':
+        // a long inspect body (the deploy picker) pages under the keyboard
+        return this.inspect.page(code === 'PageDown' ? 1 : -1)
       case KEY.metrics:
       case KEY.metricsAlt:
         this.toggleMetrics()
@@ -1076,6 +1115,9 @@ export class Game {
   }
   private openTraining(fromKey = false): void {
     if (this.state.phase === 'build' && hasLab(this.state)) {
+      // the Studio starts on the selected rack's model (else its most-deployed one)
+      const sel = this.selectedTowerId != null ? this.state.towers.find((tw) => tw.id === this.selectedTowerId) : undefined
+      if (!this.trainingOpen) this.training.open(sel?.def.kind === 'server' ? (sel.modelId ?? null) : null)
       this.trainingOpen = true
       this.cancelAutoStart()
       if (fromKey) uiSound('open')
@@ -1238,8 +1280,10 @@ export class Game {
     this.powerNoticed = false
     this.heatNoticed = false
     this.lastCheckpoint = ''
+    this.pendingRollouts.length = 0
     this.hoverTowerId = null
     this.preview = null
+    this.ingressLane = undefined
     this.notices.clear()
     this.denied.hide()
     this.hotkeys.hide()
@@ -1420,10 +1464,28 @@ export class Game {
     }
   }
 
+  /**
+   * The one surge visual: during the build phase the board's lane layer highlights the
+   * single ingress the next wave funnels into (the sim's surge rule, via the preview);
+   * from `wave-start` on the renderer takes it from the event itself.
+   */
+  private syncIngressPreview(s: GameState): void {
+    if (s.phase !== 'build') {
+      this.ingressLane = undefined
+      return
+    }
+    const lane = this.preview?.surgeLane ?? null
+    if (lane === this.ingressLane) return
+    this.ingressLane = lane
+    this.world.setIngressPreview(lane === null ? null : [lane])
+  }
+
   /** The mini card for a hovered building. */
   private hoverCard(tw: Tower): string {
     const s = this.state
-    const parts = [towerName(tw.def)]
+    // a rack is named by its CURRENT hardware tier, like its inspect panel title
+    const hw = tw.def.kind === 'server' && tw.hwId ? HARDWARE_DEFS[tw.hwId] : undefined
+    const parts = [hw ? t(`hw.${hw.id}.name`, undefined, hw.name) : towerName(tw.def)]
     if (tw.def.kind === 'server') {
       const m = tw.modelId ? resolveModel(s, tw.modelId) : null
       if (m) parts.push(modelName(m))
@@ -1568,6 +1630,8 @@ export class Game {
     // alpha = the unconsumed fraction of a sim step: the board interpolates between steps
     const alpha = simRunning ? Math.min(1, this.acc / SIM_DT) : 1
     this.world.sync(s, wv, dt, { alpha, speed: this.speed, running: simRunning })
+    // after sync: a swapped GameState resets the board first, then gets its preview
+    this.syncIngressPreview(s)
 
     // hovering a placed building (no tool): its range ring, then a one-line card
     const modal = this.modalOpen()
@@ -1585,10 +1649,7 @@ export class Game {
     } else this.hoverTowerId = null
     const narrow = window.innerWidth < 600 && window.innerHeight > window.innerWidth
     this.board.update({
-      time: s.time,
       hover,
-      surgeLanes: this.preview && this.preview.surgeLane !== null ? [this.preview.surgeLane] : [],
-      surgeLabel: t('next.surgeTag'),
       cursor: modal ? null : this.cursorLabel(),
       paused:
         this.paused && s.phase === 'wave'
@@ -1623,7 +1684,7 @@ export class Game {
     this.inspect.update(s, modalOpen ? null : this.selectedTowerId)
     this.requestInspect.update(s, modalOpen ? null : this.selectedRequestId)
     this.banner.update(s)
-    this.report.update(s)
+    this.report.update(s, !!tool) // a held build tool turns the report into a click-through ghost
     // NEXT WAVE card: right column under the incident banner; the inspect panel owns the column while open
     const bannerBottom = this.banner.view.visible ? this.banner.view.y + this.banner.view.height + 8 : 108
     this.nextWave.update(
@@ -1639,12 +1700,19 @@ export class Game {
     if (this.modelsOpen) this.models.update(s)
 
     const reportOpen = this.report.blocksCodex
-    if (this.trainingOpen || this.modelsOpen || reportOpen) this.codex.hide()
+    // the Codex corner (bottom-left) yields to the modals, the report, a left-docked inspect
+    // panel and the request inspector, which all share that corner (an agent's narration is
+    // the point of agent mode, so it keeps the corner)
+    const corner = !this.agentMode && (this.inspect.dockedLeft || this.requestInspect.view.visible)
+    if (this.trainingOpen || this.modelsOpen || reportOpen || corner) this.codex.hide()
     else if (!this.agentMode && !this.demoActive) this.tutorial.update(s)
     this.codex.update(dt)
 
-    if (s.phase === 'won' && !this.overlay.view.visible) this.overlay.show('won', s)
-    if (s.phase === 'lost' && !this.overlay.view.visible) this.overlay.show('lost', s)
+    if (s.phase === 'won' || s.phase === 'lost') {
+      this.endHold += dt
+      const hold = getSettings().a11y.reducedMotion ? 0 : END_HOLD_SEC
+      if (!this.overlay.view.visible && this.endHold >= hold) this.overlay.show(s.phase, s)
+    } else this.endHold = 0
 
     // achievements: scan live state, surface any unlocks in the notification stack (not in demo)
     if (!this.demoActive && (s.phase === 'build' || s.phase === 'wave')) this.achievements.tick(s)
@@ -1732,17 +1800,9 @@ export class Game {
         this.autoStartCancelled = false
         this.autoStartLeft = null
         if (this.demoActive) break
-        const rep = s.lastReport
-        const gp = ev.goodputPct ?? rep?.goodputPct
-        this.notices.push({
-          kind: 'waveClear',
-          head: t('toast.waveClear.head', { n: ev.index + 1 }),
-          title: t('toast.waveClear', {
-            goodput: gp !== undefined ? Math.round(gp) : '—',
-            bonus: Math.round(rep?.clearBonus ?? 0),
-          }),
-          accent: COLORS.trust,
-        })
+        // the board's banner and the wave report tell the clear itself; the checkpoints
+        // minted during this wave can now be rolled out
+        for (const id of this.pendingRollouts.splice(0)) this.rolloutNotice(id)
         break
       }
       case 'research-done': {
@@ -1766,18 +1826,64 @@ export class Game {
     }
   }
 
-  /** A freshly minted checkpoint (announced once even if two events name it). */
+  /**
+   * A freshly minted checkpoint (announced once even if two events name it). Deploys
+   * happen between waves, so a mid-wave mint is announced now and offered for a
+   * one-click rollout when the wave ends.
+   */
   private checkpointNotice(modelId: string): void {
     if (this.lastCheckpoint === modelId) return
     this.lastCheckpoint = modelId
+    if (this.state.phase === 'build') {
+      this.rolloutNotice(modelId)
+      return
+    }
     const m = resolveModel(this.state, modelId)
     this.notices.push({
       kind: 'checkpoint',
       head: t('toast.checkpoint.head'),
       title: m ? modelName(m) : modelId,
       accent: COLORS.data,
-      onClick: () => (isExpert() ? (this.modelsOpen = true) : this.openTraining()),
+      onClick: () => this.openCheckpoint(),
     })
+    if (!this.pendingRollouts.includes(modelId)) this.pendingRollouts.push(modelId)
+  }
+
+  /** Build phase: a checkpoint card with "DEPLOY ×n" — every rack it fits and does not already run. */
+  private rolloutNotice(modelId: string): void {
+    const s = this.state
+    const m = resolveModel(s, modelId)
+    if (!m) return
+    const n = rolloutTargets(s, modelId).length
+    this.notices.push({
+      kind: 'checkpoint',
+      head: t(n > 0 ? 'toast.checkpoint.ready' : 'toast.checkpoint.head'),
+      title: modelName(m),
+      accent: COLORS.data,
+      onClick: () => this.openCheckpoint(),
+      action: n > 0 && !this.agentMode && !this.demoActive ? { label: t('toast.deployAll', { n }), run: () => this.rollout(modelId) } : undefined,
+    })
+  }
+
+  /** One-click rollout: deploy `modelId` to every rack it fits, in id order (each a normal deploy). */
+  private rollout(modelId: string): void {
+    const targets = rolloutTargets(this.state, modelId)
+    if (!targets.length || this.state.phase !== 'build') {
+      this.deny({ fn: 'deploy', towerId: targets[0]?.id ?? -1, modelId })
+      return
+    }
+    let done = 0
+    for (const tw of targets) if (this.doDeploy(tw.id, modelId)) done++
+    const m = resolveModel(this.state, modelId)
+    if (done > 0) this.showDenied(t('toast.deployedAll', { n: done, model: m ? modelName(m) : modelId }), undefined, undefined, 'info')
+  }
+
+  /** Where a checkpoint lives: the Model Overview (Expert) or the Training Lab Studio. */
+  private openCheckpoint(): void {
+    if (isExpert()) {
+      this.trainingOpen = false
+      this.modelsOpen = true
+    } else this.openTraining()
   }
 
   private dispatch(ev: GameEvent): void {

@@ -7,13 +7,18 @@
  *  setButton     re-lays out a UIButton only when its copy changed (layout()
  *                re-measures and re-rasterizes its text on every call)
  *  fitLabel      memoized shrink-then-ellipsize of a Text into a width
- *  uiPref        per-viewer panel state (open tab, sort, collapsed report) kept
- *                in localStorage; it degrades to the default when storage fails
+ *  uiPref        per-viewer panel state (open tab, sort, collapsed report), a
+ *                constrained view over the shell's prefs store (ui/prefs.ts)
  *
  * Presentation only — nothing here reads or writes GameState.
  */
 import type { Container, FederatedPointerEvent, FederatedWheelEvent, Text } from 'pixi.js'
+import { getPref, setPref } from './prefs'
 import type { UIButton } from './theme'
+
+/** The rack inspect column: width and screen margin (other overlays keep clear of it). */
+export const INSPECT_W = 400
+export const INSPECT_MARGIN = 12
 
 /* ------------------------------------------------------------------ *
  *  Wheel + drag scrolling                                            *
@@ -137,37 +142,12 @@ export function fitLabel(t: Text, text: string, maxW: number, size: number, minS
  *  Per-viewer panel state                                            *
  * ------------------------------------------------------------------ */
 
-const PREF_KEY = 'gptd_ui_panels'
-let prefs: Record<string, string> | null = null
-
-function loadPrefs(): Record<string, string> {
-  if (prefs) return prefs
-  prefs = {}
-  try {
-    const raw = typeof localStorage !== 'undefined' ? localStorage.getItem(PREF_KEY) : null
-    const parsed: unknown = raw ? JSON.parse(raw) : null
-    if (parsed && typeof parsed === 'object') {
-      for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) if (typeof v === 'string') prefs[k] = v
-    }
-  } catch {
-    /* storage blocked or corrupt: keep the defaults */
-  }
-  return prefs
-}
-
-/** A remembered panel choice, constrained to `allowed` (falls back to `fallback`). */
+/** A remembered panel choice, constrained to `allowed` (falls back to `fallback`); stored with the shell's prefs. */
 export function uiPref<T extends string>(key: string, fallback: T, allowed: readonly T[]): T {
-  const v = loadPrefs()[key]
-  return (allowed as readonly string[]).includes(v ?? '') ? (v as T) : fallback
+  const v = getPref(key, '')
+  return (allowed as readonly string[]).includes(v) ? (v as T) : fallback
 }
 
 export function setUiPref(key: string, value: string): void {
-  const p = loadPrefs()
-  if (p[key] === value) return
-  p[key] = value
-  try {
-    localStorage.setItem(PREF_KEY, JSON.stringify(p))
-  } catch {
-    /* non-persistent session: the choice still holds until reload */
-  }
+  setPref(key, value)
 }

@@ -1,4 +1,4 @@
-import type { GameEvent, GameState, Outcome, RefusedBy, Request } from '../core/types'
+import type { GameState, Outcome, RefusedBy, Request } from '../core/types'
 import { dataMult, serveRevenue } from './effects'
 import { addToLedger, recordOutcome } from './telemetry'
 
@@ -69,8 +69,7 @@ function applyMeter(s: GameState, meter: 'trust' | 'sla', delta: number): number
 
 /**
  * Resolve one request into a terminal outcome: pay it out, move the meters, update the
- * run stats + ledgers + wave telemetry, and emit the precise `outcome` event (plus the
- * legacy `serve` / `leak` event the presentation layer still consumes).
+ * run stats + ledgers + wave telemetry, and emit the precise `outcome` event.
  */
 export function resolveOutcome(s: GameState, r: Request, outcome: Outcome, detail: ResolveDetail = {}): void {
   r.alive = false
@@ -130,25 +129,4 @@ export function resolveOutcome(s: GameState, r: Request, outcome: Outcome, detai
     modelId: r.answeredModelId,
     cached: r.cachedTokens > 0,
   })
-  const legacy = legacyEvent(r, outcome, pay)
-  if (legacy) s.events.push(legacy)
-}
-
-/** The pre-`outcome` event vocabulary, kept until every presentation consumer reads `outcome`. */
-function legacyEvent(r: Request, outcome: Outcome, pay: number): GameEvent | null {
-  const amount = Math.round(pay)
-  switch (outcome) {
-    case 'served':
-      return { type: 'serve', x: r.x, y: r.y, kind: 'good', amount }
-    case 'sloMiss':
-    case 'bad':
-      return { type: 'serve', x: r.x, y: r.y, kind: 'bad', amount }
-    case 'unsafe':
-      return { type: 'serve', x: r.x, y: r.y, kind: 'unsafe', amount: 0 }
-    case 'overRefused':
-      return { type: 'serve', x: r.x, y: r.y, kind: 'over_refused', amount: 0 }
-    case 'unservable':
-    case 'leaked':
-      return { type: 'leak', x: r.x, y: r.y, unsafe: false }
-  }
 }

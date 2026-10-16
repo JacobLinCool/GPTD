@@ -199,8 +199,6 @@ export function updateCombat(s: GameState, dt: number): void {
 
   for (const t of s.towers) {
     if (t.def.kind !== 'server') continue
-    if (t.muzzle > 0) t.muzzle -= dt
-    if (t.cooldown > 0) t.cooldown -= dt
     // reset the display state; a serving rack rewrites it below (a browned-out, frozen,
     // requisitioned or model-less rack stays dark this tick)
     clearRackDisplay(t)
@@ -266,7 +264,6 @@ export function updateCombat(s: GameState, dt: number): void {
 }
 
 function clearRackDisplay(t: Tower): void {
-  t.targetId = null
   t.load = 0
   t.prefillId = null
   t.kvFrac = 0
@@ -319,7 +316,6 @@ function lookupPrefix(s: GameState, r: Request, h: Host): void {
   if (remaining >= r.prefill) return // already ingested past the shared prefix: nothing to reuse
   r.cachedTokens = r.prefill - remaining
   r.prefill = remaining
-  r.cacheFlash = 0.45
   recordCacheHit(s)
   s.events.push({ type: 'cache', x: r.x, y: r.y, towerId: h.t.id, requestId: r.id })
 }
@@ -442,7 +438,6 @@ function serveRack(
     if (ar !== br) return br - ar // requests a router reserved for this rack first
     return remainingPath(a.laneId, a.dist) - remainingPath(b.laneId, b.dist) // then closest to the core
   })
-  t.targetId = cands[0].id
 
   let slotsUsed = 0
   let kvUsed = 0
@@ -497,7 +492,6 @@ function serveRack(
     if (rate > 0) {
       const need = prefillJob.prefill / rate
       busy = Math.min(need, prefillCap * realDt)
-      prefillJob.hitFlash = 0.12
       if (busy >= need) {
         // the fractional completing tick counts: wall time = busy / share (time-sliced when chunked)
         firstToken(s, prefillJob, h, busy / prefillCap)
@@ -515,7 +509,6 @@ function serveRack(
     serverPerUserDecodeTokS(s, h.lo, batch) *
     (t.role === 'decode' ? DECODE_POOL_MUL : 1) *
     decodeThrottle(t.throttle)
-  let fired = busy > 0
   if (decodeShare > 1e-9 && perUser > 0) {
     const cap = perUser * decodeShare * realDt // tokens one stream can emit on this rack this tick
     const secPerToken = 1 / (perUser * decodeShare) // wall seconds per token, the prefill's share included
@@ -532,8 +525,6 @@ function serveRack(
       credit(r, t, gen)
       scoreQuality(s, r, h, gen)
       checkE2el(r)
-      r.hitFlash = 0.12
-      fired = true
     }
   } else {
     for (const r of decodeJobs) stalled.add(r)
@@ -547,12 +538,6 @@ function serveRack(
   t.kvFrac = h.kvBudget > 0 ? Math.min(1, kvUsed / h.kvBudget) : 0
   t.batch = decodeJobs.length
   t.load = h.slots > 0 ? Math.min(1, slotsUsed / h.slots) : 0
-  if (fired && t.cooldown <= 0) {
-    const tgt = cands[0]
-    s.events.push({ type: 'fire', fx: { x: t.x, y: t.y }, tx: tgt.x, ty: tgt.y, color: t.def.color })
-    t.cooldown = 0.09
-    t.muzzle = 0.12
-  }
 }
 
 /**

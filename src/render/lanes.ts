@@ -1,10 +1,12 @@
-import { Container, Graphics, Sprite } from 'pixi.js'
+import { BitmapText, Container, Graphics, Sprite } from 'pixi.js'
 import { COLORS, GRID_COLS, GRID_ROWS, GRID_X, GRID_Y, TILE } from '../config'
 import type { GameState } from '../core/types'
+import { t } from '../i18n'
 import { CAMPAIGN_THEMES } from '../sim/campaign-data'
 import { LANE_PATHS, isBuildable, isPathTile, posAt } from '../sim/pathing'
 import { clamp01, easeInOutSine, fxLevel, reducedMotion } from './anim'
 import type { FxManager } from './fx'
+import { POP_FONT, ensurePopFont } from './popups'
 import type { TextureFactory } from './textures'
 
 const LANE_FLOOR = 0x152b4b // laneFloor blended with laneEdge, drawn opaque
@@ -36,7 +38,10 @@ interface Portal {
  * The board floor and the four ingress lanes. The static floor sits in its own
  * render group (its ~500 tile shapes are never rebuilt). On top: chevrons that flow
  * toward the core during a wave (brighter on lanes that are taking traffic), ingress
- * portals that flash on every spawn, the surge / funnel lane highlight, and a light
+ * portals that flash on every spawn, the surge / funnel lane highlight (the one
+ * surge visual: the flooded lane brightens, the others dim, and a single-entry surge
+ * gets a SURGE tag at its portal — fed by the sim's surge lane through the next-wave
+ * preview during the build phase and by `wave-start` during the wave), and a light
  * sweep into the core when a wave is cleared.
  */
 export class LaneLayer {
@@ -47,6 +52,8 @@ export class LaneLayer {
   private flow = new Container()
   private chevrons: Sprite[][] = []
   private portals: Portal[] = []
+  /** one SURGE tag per lane, shown at the portal of a single-entry surge */
+  private surgeTags: BitmapText[] = []
   private clock = 0
   private phase = 0
   private surgeKey = ''
@@ -88,6 +95,43 @@ export class LaneLayer {
       this.view.addChild(glow, ring)
       this.portals.push({ glow, ring, flash: 0, live: 0 })
     }
+    ensurePopFont()
+    for (const lane of LANE_PATHS) {
+      const tag = new BitmapText({ text: '', style: { fontFamily: POP_FONT, fontSize: 11 } })
+      tag.tint = COLORS.warn
+      tag.visible = false
+      this.placeTag(tag, lane.id)
+      this.view.addChild(tag)
+      this.surgeTags.push(tag)
+    }
+    this.refreshLanguage()
+  }
+
+  /** Re-label the SURGE tags in the current language. */
+  refreshLanguage(): void {
+    const label = t('next.surgeTag')
+    this.surgeTags.forEach((tag, laneId) => {
+      tag.text = label
+      this.placeTag(tag, laneId)
+    })
+  }
+
+  /** Park a lane's tag just outside its ingress portal, kept on the board. */
+  private placeTag(tag: BitmapText, laneId: number): void {
+    const lane = LANE_PATHS[laneId]
+    if (!lane || lane.waypoints.length < 2) return
+    const a = lane.waypoints[0]
+    const b = lane.waypoints[1]
+    const len = Math.hypot(b.x - a.x, b.y - a.y) || 1
+    const ux = (b.x - a.x) / len
+    const uy = (b.y - a.y) / len
+    const w = tag.width
+    const tx = a.x - ux * 14 - w / 2 + (Math.abs(uy) > 0.5 ? 22 + w / 2 : 0)
+    const ty = a.y - uy * 14 - (Math.abs(uy) > 0.5 ? 6 : 22)
+    tag.position.set(
+      Math.round(Math.max(GRID_X + 2, Math.min(GRID_X + GRID_COLS * TILE - w - 2, tx))),
+      Math.round(Math.max(GRID_Y + 2, Math.min(GRID_Y + GRID_ROWS * TILE - 14, ty))),
+    )
   }
 
   private buildFloor(): void {
@@ -243,12 +287,20 @@ export class LaneLayer {
   private drawSurge(lanes: number[]): void {
     const key = lanes.join(',')
     if (key === this.surgeKey) {
-      if (lanes.length)
-        this.surgeG.alpha = reducedMotion() ? 0.8 : 0.6 + 0.4 * Math.abs(Math.sin(this.clock * 2.4))
+      if (lanes.length) {
+        const a = reducedMotion() ? 0.8 : 0.6 + 0.4 * Math.abs(Math.sin(this.clock * 2.4))
+        this.surgeG.alpha = a
+        if (lanes.length === 1) {
+          const tag = this.surgeTags[lanes[0]]
+          if (tag) tag.alpha = 0.55 + 0.45 * a
+        }
+      }
       return
     }
     this.surgeKey = key
     this.surgeLanes = lanes
+    // the SURGE tag marks a single-entry surge only (a multi-lane window is a funnel, not a surge)
+    this.surgeTags.forEach((tag, i) => (tag.visible = lanes.length === 1 && lanes[0] === i))
     const g = this.surgeG
     g.clear()
     if (!lanes.length) return
