@@ -23,7 +23,7 @@
 //
 // Action vocab (fn / args): build [defId,col,row] · sell [towerId] ·
 //   deploy [towerId,modelId] · upgradeHardware [towerId] · cycleRackRole [towerId] ·
-//   buyUpgrade [upgradeId] · research [researchId] · postTrain [baseIds[],method,target,effort] ·
+//   setRackPrecision [towerId,format|auto] · buyUpgrade [upgradeId] · research [researchId] · postTrain [baseIds[],method,target,effort] ·
 //   startWave · continueEndless · select [towerId] · startGame
 import http from 'node:http'
 
@@ -154,6 +154,7 @@ const HELP = {
     deploy: '[towerId, modelId]  — deploy a checkpoint onto a rack (only models in its deployableModelIds fit); build phase only',
     upgradeHardware: '[towerId]  — upgrade a rack one GPU tier; build phase only',
     cycleRackRole: '[towerId]  — cycle P/D disaggregation role (needs inf_disagg research)',
+    setRackPrecision: '[towerId, format]  — set a rack\'s weight format: one of its towers[].formats (bf16 | fp8 | int4 | nvfp4), or "auto" (the fastest format that costs no quality and fits). A 4-bit format below the model\'s release precision fits bigger models but costs some quality; build phase only (it reloads the weights)',
     buyUpgrade: '[upgradeId]  — needs a Lab',
     research: '[researchId]  — from state.research.options',
     postTrain: '[baseIds[], method, target, effort]  — derive a checkpoint in the Studio (see state.studio). Over GET, args=baseId,method,target,effort works for a SINGLE base; merge (2 bases) needs the POST JSON form with a nested array, and two DIFFERENT checkpoints of the same base with one shared architecture.',
@@ -167,10 +168,10 @@ const HELP = {
     'phase, wave, totalWaves, isLastWave, waveActive, endless',
     'meters{cash,trust,sla,data}, power{used,cap}, cooling{used,cap}, coolingLiquid{used,cap} (live kW in every phase), flags{hasLab,hasLiquidLoop}, modifiers{buildCost,powerPrice,coolingCap,safetyDamage,volume,reward,powerCap,powerBuild,slaDamage}',
     'incident{id,name,desc,good} | null, nextWave{wave,name,brief,clearBonus (SLA contract at 100% Goodput),totalRequests,mix[{typeId,count,latClass,axis,difficulty,inputTokens,outputTokens,hazards}],volumeMul,estDurationSec,projectedBill,boss,surgeLane,incidentId} | null (build phase)',
-    'lastReport{wave,served,sloMiss,bad,unservable,unsafe,overRefused,leaked,total,goodputPct,sloAttainPct,trustLostBy,slaLostBy,sloCauses,overRefusedBy,guardCaught,selfHandled,byType,…} | null',
-    'board{cols,rows,core,freeTiles[{col,row,nearLane}]}, towers[{id,defId,col,row,online,range,coversLanes(guards),hwId,modelId,role,sellValue,nextHwId,upgradeCost,deployableModelIds}]',
-    'catalog[{defId,cost,range,guardrail{archetype,side,latencyMs,recall,falsePositiveRate,catches[{hazard,locked,unlockedBy}]}}], hardware[{id,name,hbmGb,cooling,deployableModelIds}]',
-    'models[{id,qualityBy,contextWindowK,paramsTotalB,paramsActiveB,isMoE,isReasoning,thinking(always|hybrid|never),qualityByInstant (hybrids),thinkTokens,alignment{safety,refusalStyle,overRefusal},alignmentTax}], upgrades[], research{infra,posttrain,eval,options[{id,name,desc,dataCost,requires}],requisition{rackIds,lentTflops,capTflops,servingLossPct,blocked}}',
+    'lastReport{wave,served,sloMiss,bad,unservable,unsafe,overRefused,leaked,total,goodputPct,sloAttainPct,trustLostBy,slaLostBy,sloCauses,overRefusedBy,guardCaught,selfHandled,byType,cashIn,clearBonus (the SLA contract paid),powerCost (= gpuCost GPU-hours + energyCost),…} | null',
+    'board{cols,rows,core,freeTiles[{col,row,nearLane}]}, towers[{id,defId,name,kind,col,row,level,online,range,coversLanes(guards),hwId,modelId,role,format,formatSetting,formats (servers),training,load,sellValue,nextHwId,upgradeCost,deployableModelIds}]',
+    'catalog[{defId,name,kind,cost,range,affordable,blockedReason,guardrail{archetype,side,latencyMs (quoted at a 512-token prompt; the generative guard reads the real turn, so a longer prompt costs it more),recall,falsePositiveRate,catches[{hazard,locked,unlockedBy}]}}], hardware[{id,name,hbmGb,gpus,cooling,tier,deployableModelIds}]',
+    'models[{id,name,tier (a display band from capability and size, not a size class),qualityBy,contextWindowK,paramsTotalB,paramsActiveB,isMoE,isReasoning,thinking(always|hybrid|never),qualityByInstant (hybrids),thinkTokens,alignment{safety,refusalStyle,overRefusal},alignmentTax}], upgrades[], research{infra,posttrain,eval,options[{id,name,desc,dataCost,requires}],requisition{rackIds,lentTflops,capTflops,servingLossPct,blocked}}',
     'studio{available,baseModelIds,targets,effortNotches,methods[{id,name,allowedTargets,dataCost,unlocked,requiresTech}],activeRun}',
     'stats{served,sloMiss,bad,unservable,unsafe,overRefused,leaked,cashEarned,peakConcurrent,lastReportWave,trustLostBy,slaLostBy}',
   ],

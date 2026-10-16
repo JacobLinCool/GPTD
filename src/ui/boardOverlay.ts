@@ -4,7 +4,8 @@
  *   • the hovered building's range ring + a one-line mini card (no tool active);
  *   • a cursor label for the active tool (blueprint cost, paint running total,
  *     "tap again to build" on touch);
- *   • the PAUSED pill over a dimmed board, naming why it paused;
+ *   • the PAUSED pill over a dimmed board, naming why it paused (the pill lives in
+ *     `pauseView`, which the game layers above the Codex bubble so a tip never hides it);
  *   • a rotate-to-landscape hint on narrow portrait screens.
  * Presentation only: it reads state handed to it and owns no game rules.
  */
@@ -37,6 +38,8 @@ const BOARD_H = GRID_ROWS * TILE
 
 export class BoardOverlay {
   readonly view = new Container()
+  /** the PAUSED pill, layered separately (above the Codex bubble). */
+  readonly pauseView = new Container()
   private g = new Graphics()
   private dim = new Graphics()
   private hoverBg = new Graphics()
@@ -52,6 +55,9 @@ export class BoardOverlay {
   constructor() {
     this.view.eventMode = 'none'
     this.view.interactiveChildren = false
+    this.pauseView.eventMode = 'none'
+    this.pauseView.interactiveChildren = false
+    this.pauseView.addChild(this.pauseBg, this.pauseTxt)
     this.dim.rect(GRID_X, GRID_Y, BOARD_W, BOARD_H).fill({ color: 0x05080d, alpha: 0.45 })
     this.view.addChild(
       this.dim,
@@ -60,8 +66,6 @@ export class BoardOverlay {
       this.hoverTxt,
       this.cursorBg,
       this.cursorTxt,
-      this.pauseBg,
-      this.pauseTxt,
       this.rotateBg,
       this.rotateTxt,
     )

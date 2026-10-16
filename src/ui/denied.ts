@@ -12,7 +12,7 @@
 import { Container, Graphics } from 'pixi.js'
 import { COLORS, DESIGN_H, DESIGN_W, HUD_H } from '../config'
 import type { GameState, PostTrainMethod, PostTrainTarget } from '../core/types'
-import { modelName, t, towerName } from '../i18n'
+import { hwName, modelName, t, towerName } from '../i18n'
 import { prefersReducedMotion } from '../settings'
 import { buildCost, hardwareUpgradeCost, nextHardware } from '../sim/actions'
 import { HARDWARE_DEFS, METHOD_RECIPES, RESEARCH_DEFS, TOWER_DEFS, WAVES } from '../sim/content'
@@ -104,7 +104,7 @@ export function denyReason(s: GameState, a: DenyAction): DenyReason {
         if (!inPlay(s)) return r('phasePlay')
         const next = nextHardware(tw)
         if (!next) return r('maxTier')
-        if (hwNeedsLiquid(next) && !hasLiquidLoop(s)) return r('liquid', { name: next.name })
+        if (hwNeedsLiquid(next) && !hasLiquidLoop(s)) return r('liquid', { name: hwName(next) })
         const cost = hardwareUpgradeCost(s, tw)
         if (s.meters.cash < cost) return cashShort(s, cost)
         return s.phase === 'wave' ? r('upgradeBetweenWaves') : r('generic')

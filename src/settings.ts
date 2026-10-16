@@ -18,14 +18,19 @@ export type { Lang } from './i18n'
 export { getMode, setMode, isExpert, MODES } from './mode'
 export type { GameMode } from './mode'
 
+/**
+ * Volume sliders are 0..1 positions, not gains: the mixer (audio/mixer.ts) maps each
+ * through a perceptual taper (`taper`, half-way ≈ −12 dB) times its bus scale
+ * (`MIX_SCALE`).
+ */
 export interface AudioSettings {
-  /** master bus, 0..1 (raw gain). */
+  /** master volume, 0..1 slider. */
   master: number
-  /** music bus, 0..1 UI scale (mapped to a 0..0.32 gain). */
+  /** music volume, 0..1 slider. */
   music: number
-  /** sfx bus, 0..1 (raw gain). */
+  /** sound-effect volume, 0..1 slider; it also drives the alert and ambience buses. */
   sfx: number
-  /** interface sounds bus (hover / click / toggle), 0..1. */
+  /** interface sounds (hover / click / toggle), 0..1 slider. */
   ui: number
   muted: boolean
   /** silence everything while the tab is hidden / unfocused. */

@@ -10,6 +10,7 @@
 import { Container, Graphics } from 'pixi.js'
 import { COLORS, DESIGN_H, DESIGN_W } from '../config'
 import { t } from '../i18n'
+import { getSettings } from '../settings'
 import { drawPanel, label, UIButton } from './theme'
 
 /** Physical keys for the build bar, left to right (BUILD_ORDER[0..9]). */
@@ -106,6 +107,12 @@ interface HotkeyGroup {
   rows: HotkeyRow[]
 }
 
+/** A row's description: selling names the second press only while Confirm Before Selling is on. */
+function rowDesc(id: string): string {
+  if (id === 'sell' && !getSettings().gameplay.confirmSell) return t('key.sellNow')
+  return t('key.' + id)
+}
+
 /** literal caps for pointer gestures (localized). */
 const GESTURE = (k: string): string => `@${k}`
 
@@ -165,7 +172,7 @@ export function capText(cap: string): string {
 export function hotkeyRows(): { caps: string; desc: string }[] {
   const out: { caps: string; desc: string }[] = []
   for (const g of HOTKEY_GROUPS) {
-    for (const r of g.rows) out.push({ caps: r.caps.map(capText).join(' '), desc: t('key.' + r.id) })
+    for (const r of g.rows) out.push({ caps: r.caps.map(capText).join(' '), desc: rowDesc(r.id) })
   }
   return out
 }
@@ -258,7 +265,7 @@ export class HotkeyOverlay {
           this.body.addChild(bg, k)
           cx += w + 4
         }
-        const d = label(t('key.' + r.id), 11, COLORS.text)
+        const d = label(rowDesc(r.id), 11, COLORS.text)
         d.x = Math.max(cx + 6, x + 150)
         d.y = y + 3
         d.style.wordWrap = true

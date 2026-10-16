@@ -106,7 +106,7 @@ src/
   game.ts          orchestrator: wires sim + render + audio + ui, input + hotkeys, the state machine, demo + agent hooks
   main.ts          bootstrap (PixiJS Application, fixed-timestep loop, resize, CJK wrapping, dev flags)
 data/              model data: aa-reference-2026-06-21.json (frozen reference scale), aa-snapshot.json (latest pull), aa-bridges.json (equating, bridges, instant pair fit), model-arch.json, model-thinking.json, roster-aa-map.json
-tests/             vitest: sim, metrics, models, economy, preview, forecast, panels, audio, cjkWrap (units) + playthrough (balance autoplay)
+tests/             vitest: sim, metrics, models, economy, preview, forecast, panels, audio, render, i18n (locale parity + key coverage), achievements, agent, cjkWrap (units) + playthrough (balance autoplay)
 scripts/           model-data pipelines (aa-cells/aa-sync, arch-sync, thinking-sync, gen-roster, roster-report, resolve-arch), screenshot.mjs (E2E), audio-check.mjs, perf-probe.mjs, agent-smoke.mjs
 public/            bridge.mjs (the zero-dependency agent relay, served by the built game)
 ```
@@ -156,7 +156,7 @@ Most of these are data edits in `src/sim/content.ts` (or `campaign-data.ts` for 
 
 The app and manuals are multilingual. **Default language is English; Traditional Chinese (`zh-TW`) is the second.**
 
-- **Never hardcode a player-facing string.** All UI text goes through `t(key, params?, fallback?)` from `src/i18n`. Add the key to **both** `src/i18n/en.ts` and `src/i18n/zh-TW.ts`, in the same `// --- topic ---` section of each file, next to its siblings.
+- **Never hardcode a player-facing string.** All UI text goes through `t(key, params?, fallback?)` from `src/i18n`. Add the key to **both** `src/i18n/en.ts` and `src/i18n/zh-TW.ts`, in the same `// --- topic ---` section of each file, next to its siblings. `tests/i18n.test.ts` fails on a key missing from either locale, a `{placeholder}` mismatch, or a composed key (`spec.<axis>`, `hw.<id>.name`, `research.<id>.desc`, `wave.<i>.teaches`, …) that does not resolve.
 - **Content** (request / tower / wave / incident names, briefs and descriptions) keeps its canonical English in `src/sim/content.ts` and `campaign-data.ts`; the display helpers fall back to it when a locale key is missing, so those tables are the source of truth for English. Add the zh-TW translations under the matching keys (`req.<id>.*`, `tower.<id>.*`, `inc.<id>.*`, `wave.<i>.name` / `brief` / `teaches`) in `src/i18n/zh-TW.ts`. Research and method names live in both locale files.
 - Keep established term choices consistent with `docs/manual/zh-TW.md`: technical terms such as `SLA`, `GPU`, `KV`, `TTFT`, `TPOT`, `Goodput`, `Router`, `Cache` stay in English. zh-TW is Taiwan Traditional Chinese.
 - Pixi wraps only at spaces, so `ui/cjkWrap.ts` (installed in `main.ts`) breaks Han text for word-wrapped labels; never insert spaces into zh-TW copy to make it wrap.

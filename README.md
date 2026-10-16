@@ -218,7 +218,7 @@ GPTD/
 │  ├─ AGENT-BRIDGE.md   # let a terminal agent play your open tab (protocol + snapshot shape)
 │  └─ manual/           # player manual: en.md, zh-TW.md, README.md (language index)
 ├─ AGENTS.md            # contributor working rules (kept at repo root for agent discovery)
-├─ tests/               # Vitest: sim, metrics, models, economy, preview, forecast, panels, audio, cjkWrap units + playthrough (balance autoplay)
+├─ tests/               # Vitest: sim, metrics, models, economy, preview, forecast, panels, audio, render, i18n, achievements, agent, cjkWrap units + playthrough (balance autoplay)
 └─ scripts/             # model data pipelines (aa-cells/aa-sync, arch-sync, thinking-sync, gen-roster, roster-report, resolve-arch),
                         # screenshot.mjs (E2E playtest), audio-check.mjs, perf-probe.mjs, agent-smoke.mjs (bridge E2E)
 ```

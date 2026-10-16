@@ -585,8 +585,8 @@ export class Hud {
       this.phaseText.text = t('hud.prelaunchSub')
     } else {
       const idx = Math.max(0, s.waveIndex)
-      const fullName =
-        idx < WAVES.length ? waveName(WAVES[idx], idx) : (s.currentWave?.name ?? `Surge ${idx - WAVES.length + 1}`)
+      const w = idx < WAVES.length ? WAVES[idx] : s.currentWave
+      const fullName = w ? waveName(w, idx) : t('next.endlessTitle', { n: idx - WAVES.length + 1 })
       const total = s.endless ? '∞' : WAVES.length
       const n = s.waveIndex + 1
       this.fitWaveTitle(`wave|${n}|${total}|${getLang()}|${fullName}|${maxTitleW}`, 'hud.wave', n, total, fullName, maxTitleW)

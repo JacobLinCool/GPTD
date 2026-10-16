@@ -277,11 +277,12 @@ export class NextWaveCard {
   constructor(private factory: TextureFactory) {
     this.view.x = DESIGN_W - W - 12
     this.view.addChild(this.bg, this.head, this.counter, this.title, this.brief, this.lesson, this.chips, this.rule)
-    for (const tl of [this.brief, this.lesson, this.title]) {
+    // the chip line (incident · surge lane · volume) wraps too: the lane number is the actionable part
+    for (const tl of [this.brief, this.lesson, this.title, this.chips, this.note]) {
       tl.style.wordWrap = true
       tl.style.breakWords = true // CJK runs have no spaces to wrap at
       tl.style.wordWrapWidth = W - PAD * 2
-      tl.style.lineHeight = tl === this.title ? 18 : 15
+      tl.style.lineHeight = tl === this.title ? 18 : tl === this.note ? 12 : 15
     }
     for (let i = 0; i < CHECKS.length; i++) {
       const c = label('', 9, COLORS.textDim, 'bold')
@@ -394,7 +395,8 @@ export class NextWaveCard {
     const lesson = p.def ? waveLesson(p.def.teaches, p.index) : ''
     this.brief.text = brief
     this.lesson.text = lesson ? t('next.lesson', { v: lesson }) : ''
-    const fixed = y + (chips.length ? 20 : 0) + 22 + entries.length * ROW_H + 40
+    this.note.text = t('next.estimate')
+    const fixed = y + (chips.length ? this.chips.height + 4 : 0) + 22 + entries.length * ROW_H + 28 + this.note.height
     const room = DESIGN_H - BUILDBAR_H - 12 - top
     let showBrief = true
     let showLesson = !!lesson
@@ -416,7 +418,7 @@ export class NextWaveCard {
     if (chips.length) {
       this.chips.x = PAD
       this.chips.y = y
-      y += 18
+      y += this.chips.height + 4
     }
 
     if (!entries.length) {
@@ -481,11 +483,10 @@ export class NextWaveCard {
     })
     this.foot.x = PAD
     this.foot.y = y + 2
-    this.note.text = t('next.estimate')
     this.note.x = PAD
     this.note.y = y + 17
     this.note.visible = true
-    this.finish(y + 32)
+    this.finish(y + 21 + this.note.height)
   }
 
   private finish(h: number): void {
@@ -544,7 +545,6 @@ export class NextWaveCard {
         t('econ.next.novelTip', {
           pct: Math.round(e.novelShare * 100),
           enc: Math.round(NOVEL_RECALL_MUL.encoder * 100),
-          mod: Math.round(NOVEL_RECALL_MUL.moderation * 100),
         }),
       )
     lines.push(t('next.estimate'))

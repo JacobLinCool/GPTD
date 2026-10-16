@@ -5,7 +5,7 @@ import { onLangChange, t, waveName } from '../i18n'
 import { outcomeColor } from '../outcomes'
 import { CAMPAIGN_THEMES } from '../sim/campaign-data'
 import { HARDWARE_DEFS, WAVES } from '../sim/content'
-import { defLoadout, serverPower, towerRangeTiles } from '../sim/effects'
+import { defLoadout, guardPower, serverPower, towerRangeTiles } from '../sim/effects'
 import { CORE_POS, LANE_PATHS, isBuildable, posAt, tileCenter, worldToTile } from '../sim/pathing'
 import { clamp01, fxLevel, reducedMotion } from './anim'
 import { BannerLayer } from './banners'
@@ -386,7 +386,7 @@ export class WorldRenderer {
         this.fx.ring(x, y, 8, 46, col, 0.45, 2)
         this.fx.popup(label, col, x, y - 22, 'unsafe', undefined, true)
         this.fx.burst(x, y, col, 10, 110, 'shard', 0.6)
-        if (!atCore) {
+        if (!atCore && !reducedMotion()) {
           // a red shard streaks from the delivering rack into the Trust Core
           const dx = CORE_POS.x - x
           const dy = CORE_POS.y - y
@@ -669,8 +669,14 @@ export class WorldRenderer {
         }
       }
     }
-    // projected power: the rack's real draw against the substation + plant capacity
-    const add = def.kind === 'server' ? serverPower(s, defLoadout(def)) : (def.powerDraw ?? 0)
+    // projected power: the rack's real draw against the substation + plant capacity (a generative
+    // guard runs on its own GPU and draws that rack's kW, like power.ts bills it)
+    const add =
+      def.kind === 'server'
+        ? serverPower(s, defLoadout(def))
+        : def.kind === 'guardrail' && def.guardrail?.runsOnRoofline
+          ? guardPower(s, def.guardrail)
+          : (def.powerDraw ?? 0)
     if (add > 0 || def.kind === 'power') {
       const cap = s.power.cap + (def.power ?? 0)
       const used = s.power.used + add

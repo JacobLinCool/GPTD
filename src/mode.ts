@@ -5,7 +5,8 @@
  * reveals the full SRE telemetry (hardware rooflines, rack load, live ops
  * strip, wave reports) that Normal Mode keeps tucked away.
  *
- * The mode is chosen on the title screen and locked for the run; the choice
+ * The mode is chosen on the title screen and can be switched mid-run from
+ * Settings ▸ Display once the tutorial is finished or skipped; the choice
  * persists to localStorage as the default for the next session. `src/sim/**`
  * must never import or branch on this module (see AGENTS.md §2).
  */

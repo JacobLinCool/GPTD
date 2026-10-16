@@ -129,8 +129,15 @@ Right-click on the board performs steps 7–8 without falling through to the hub
 - **Content browser / Settings / hub:** only that surface's own keys act
   (§8 FocusList, §10); game keys are ignored, so Space can never start a wave behind
   the menu.
-- **Training Lab / Model Overview:** their own keys first; L closes the Training Lab.
-  Letters typed while the Model Overview is open go to its name filter.
+- **Training Lab / Model Overview:** their own keys first; L closes the Training Lab and
+  K the Model Overview. Letters typed while the Model Overview is open go to its name
+  filter, except K while no filter has been typed (so the toggle key still closes it).
+- **Demo / agent runs:** the viewing keys (speed, mute, ranges, the Model Overview, the
+  telemetry panel, the hotkey sheet) still act, and the Training Lab opens to be read;
+  every run-changing key is ignored, and a run-changing button (sell, deploy, upgrade,
+  role, weight format, research, a Studio run, START, a build tool) shows "the agent /
+  demo is playing this run" instead of acting. The agent's own moves arrive through
+  `Game.agentAct` and never pass through these gates.
 
 ### Pause integration
 
@@ -138,17 +145,19 @@ The sim advances only when
 
 ```
 simRunning = phase === 'wave' && !paused && !trainingOpen && !modelsOpen && !systemMenuOpen
+             && !hotkeySheetOpen
 ```
 
 `systemMenuOpen` stays true while Settings or a content browser is shown over the
-hub, so every hub sub-view freezes the run. The floating telemetry panel and the
-hotkey sheet do not freeze it. While frozen, the music is muffled (§6). A wave never
+hub, so every hub sub-view freezes the run; the hotkey sheet covers the board, so it
+freezes the run too. The floating telemetry panel does not. While frozen, the music is
+muffled (§6). A wave never
 starts paused (`wave-start` clears the pause), and the HUD pause button is disabled
 between waves, with a tooltip saying why.
 
 **Pause When Unfocused** (Settings ▸ Gameplay) pauses a running wave on window blur
 or when the tab is hidden — never in demo or agent mode — and the PAUSED pill reads
-"window lost focus".
+"window lost focus". The pill is layered above the Codex bubble, so a tip never hides it.
 
 ### Apply model
 
@@ -362,9 +371,9 @@ surfaces (HUD tally blinks, notification slides, chips, banners).
 
 | Setting | Board behavior | Shell behavior |
 | --- | --- | --- |
-| Reduced Motion | the core pulse, rack breathing and packet bob hold steady; a spawn fades instead of popping; resolve animations crossfade; particle bursts are removed; tweens shorten | HUD meter pops and tally blinks are skipped; the end screen appears without its hold |
-| Screen Shake | Trust Core hits and severe failures shake the board view (never the HUD); off → a border flash | — |
-| Reduce Flashing | additive flashes (core hit, brownout dip, guard flash) are dimmed and routed through the flash limiter, which otherwise allows at most three full-brightness flashes per second across the board | meter-edge flashes are skipped |
+| Reduced Motion | the core pulse, rack breathing and packet bob hold steady; a spawn fades instead of popping; resolve animations crossfade; the FX budget emits no particles (bursts, shatters, glows, ambient motes, the clear sweep and the confetti), token streams fall back to the dotted links, the unsafe shard streak is skipped; stamps, rings and guard beams stay; tweens shorten | HUD meter pops and tally blinks are skipped; the end screen appears without its hold |
+| Screen Shake | Trust Core hits and severe failures shake the board view (never the HUD); off → a border flash that shares the core flash's limiter decision | — |
+| Reduce Flashing | additive flashes (core hit, its border flash, brownout dip, guard flash) are routed through the flash limiter, which allows none under this setting and otherwise at most three full-brightness flashes per second across the board | meter-edge flashes are skipped |
 | Colorblind-Safe Colors | every outcome uses its `colorCb` color; each outcome keeps its distinct glyph, so meaning never rests on hue alone | the HUD tally, wave report, end screen and Settings ▸ Audio glyphs follow the palette |
 | Effects: Full / Reduced / Minimal | particle density 1 / 0.5 / 0 within the FX budget; Minimal keeps the outcome glyph stamps, the meaning-carrying guard beams and dotted token-stream links, and drops flow chevrons and confetti | — |
 
@@ -430,6 +439,20 @@ vector glyph in the house pixel-neon style (`drawAchIcon`, `src/ui/achievements.
 - **No early flood:** tutorial-step "first X" milestones are deliberately absent — the
   earliest unlock needs real progress, and the lowest tier thresholds sit above what a
   first wave yields.
+- **Every achievement is earnable under the current rules, none is free:**
+  - *Tech Tree Complete* (`infraTreeComplete`) — every infra node researched, or closed
+    off by the side of its fork that was (chunked prefill ⟂ P/D disaggregation, SGLang ⟂
+    TensorRT-LLM).
+  - *Defense in Depth* (`laneHasTwoGuardFamilies`) — one lane screened by two different
+    online guard families at once (Prompt Guard + Llama Guard); copies of one family do
+    not count.
+  - *David* (hidden) — a boss wave, or any wave from 20 on, cleared with only models of
+    9B or fewer parameters deployed.
+  - *Collector* — tiers scale with the active roster: 10, ≈60% of it, all of it; only
+    checkpoints still in the active roster count.
+  - *Flawless* — a wave whose every outcome was clean (served = total, i.e. 100% honest
+    Goodput).
+  `tests/achievements.test.ts` pins these rules.
 - **i18n:** chrome plus per-achievement `ach.<id>.name / desc` (English in the defs as
   the fallback; zh-TW in the dictionary).
 
@@ -456,8 +479,8 @@ along with the title, the hotkey sheet and the end screen.
 - **Persistence.** Every Settings control changes its effect immediately and survives
   a reload; Reset to Defaults restores the three store sections and leaves language
   and mode alone.
-- **Freeze and resume.** Opening the hub, Settings or a browser during a wave freezes
-  the sim and muffles the music; closing returns to the identical state.
+- **Freeze and resume.** Opening the hub, Settings, a browser or the hotkey sheet during
+  a wave freezes the sim and muffles the music; closing returns to the identical state.
 - **Esc.** Esc follows the §3 stack from any surface, and with nothing to cancel opens
   the hub (never during a demo or agent run, never on the title).
 - **No keys behind a menu.** While the hub, Settings, a browser or the hotkey sheet is

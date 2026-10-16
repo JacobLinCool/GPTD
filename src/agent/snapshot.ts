@@ -17,7 +17,19 @@ import {
   UPGRADES,
   WAVES,
 } from '../sim/content'
-import { guardLatencyMs, hasLab, hasLiquidLoop, hwNeedsLiquid, loadout, serverFitsMemory, towerRangeTiles } from '../sim/effects'
+import {
+  availableFormats,
+  guardLatencyMs,
+  hasLab,
+  hasLiquidLoop,
+  hwNeedsLiquid,
+  loadout,
+  loadoutOf,
+  servingFormat,
+  serverFitsMemory,
+  towerRangeTiles,
+} from '../sim/effects'
+import { en } from '../i18n/en'
 import { guardCoveredLanes } from '../sim/guards'
 import { EFFORT_NOTCHES, postTrainDataCost, resolveModel } from '../sim/models'
 import { CORE_TILE, isBuildable, isPathTile } from '../sim/pathing'
@@ -41,6 +53,12 @@ export interface AgentTowerView {
   hwId?: string
   modelId?: string
   role?: string
+  /** servers: the weight format the rack serves in right now ('bf16' | 'fp8' | 'int4' | 'nvfp4'). */
+  format?: string
+  /** servers: the rack's format setting — 'auto' (the fastest lossless one that fits) or an explicit format. */
+  formatSetting?: string
+  /** servers: the formats this rack may be set to with setRackPrecision (researched + its model's release format). */
+  formats?: string[]
   training?: boolean
   load: number
   sellValue: number
@@ -78,6 +96,11 @@ export interface AgentCatalogEntry {
 export interface AgentModelView {
   id: string
   name: string
+  /**
+   * display class (small / general / coding / frontier): the band the UI files a checkpoint
+   * under, set by its peak capability as well as its size, so a strong small model can read
+   * 'frontier'. It is not a size class: read paramsTotalB for size.
+   */
   tier: string
   quality: number
   /** answer quality per capability axis (before the alignment tax); a request is judged on ONE axis. */
@@ -251,6 +274,8 @@ export interface AgentSnapshot {
 }
 
 const round2 = (v: number): number => Math.round(v * 100) / 100
+/** the operating-bill lines are small credit amounts (1 credit = $1,000): keep a tenth of a cent of a credit. */
+const round3 = (v: number): number => Math.round(v * 1000) / 1000
 
 /** The racks one more research / Studio project would lend right now (research.ts requisitionPreview). */
 function requisitionView(s: GameState): AgentSnapshot['research']['requisition'] {
@@ -331,7 +356,11 @@ function reportView(r: WaveReport | null): AgentWaveReport | null {
     ...rest,
     wave: waveIndex + 1,
     cashIn: round2(r.cashIn),
-    powerCost: round2(r.powerCost),
+    clearBonus: round2(r.clearBonus),
+    // the operating bill and its split: GPU-hour amortization + energy (powerCost = gpuCost + energyCost)
+    powerCost: round3(r.powerCost),
+    gpuCost: r.gpuCost === undefined ? undefined : round3(r.gpuCost),
+    energyCost: r.energyCost === undefined ? undefined : round3(r.energyCost),
     avgLatency: Math.round(r.avgLatency * 1000) / 1000,
     p95Latency: Math.round(r.p95Latency * 1000) / 1000,
     avgTtft: Math.round(r.avgTtft * 1000) / 1000,
@@ -420,6 +449,13 @@ export function serializeState(s: GameState): AgentSnapshot {
       hwId: t.hwId,
       modelId: t.modelId,
       role: t.role,
+      ...(t.def.kind === 'server' && t.hwId
+        ? {
+            format: servingFormat(s, loadoutOf(s, t)),
+            formatSetting: t.precision ?? 'auto',
+            formats: availableFormats(s, HARDWARE_DEFS[t.hwId], t.modelId ? resolveModel(s, t.modelId) : null),
+          }
+        : {}),
       training: t.training,
       load: Math.round(t.load * 100) / 100,
       sellValue: towerValue(s, t),
@@ -457,7 +493,8 @@ export function serializeState(s: GameState): AgentSnapshot {
     id: def.id,
     kind: def.kind,
     name: def.name,
-    desc: def.desc,
+    // the infra nodes keep their description in the locale files only: an agent reads the English one
+    desc: def.desc || en[`research.${def.id}.desc`] || '',
     dataCost: def.dataCost,
     compute: def.compute,
     requires: (def.requires ?? []).map((r) => RESEARCH_DEFS[r]?.name ?? r),

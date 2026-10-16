@@ -9,6 +9,7 @@
 // downloads public/bridge.mjs from this origin and runs it with the right
 // --allow-origin), plus a live "bridge connected" status.
 import type { Game } from '../game'
+import { onLangChange, t } from '../i18n'
 
 interface AgentCommand {
   id: number
@@ -52,7 +53,7 @@ export function attach(game: Game): void {
       // the agent's last reason visible in the Codex bubble instead of clobbering it.
       if (!announced) {
         announced = true
-        game.agentNote('Bridge connected — waiting for the agent to make a move.')
+        game.agentNote(t('agent.note.connected'))
       }
     }
 
@@ -158,7 +159,6 @@ function createPanel(base: string, token: string, port: string | null): ConnectP
   const dot = document.createElement('span')
   dot.style.cssText = 'width:9px;height:9px;border-radius:50%;background:#fb4;flex:none'
   const status = document.createElement('strong')
-  status.textContent = 'Agent bridge — waiting for local bridge…'
   status.style.cssText = 'flex:1;font-weight:600'
   const close = document.createElement('button')
   close.textContent = '×'
@@ -167,7 +167,6 @@ function createPanel(base: string, token: string, port: string | null): ConnectP
   head.append(dot, status, close)
 
   const help = document.createElement('div')
-  help.textContent = 'Paste this to your Codex / Claude Code:'
   help.style.cssText = 'color:#9ab;margin-bottom:4px'
 
   const pre = document.createElement('pre')
@@ -176,12 +175,11 @@ function createPanel(base: string, token: string, port: string | null): ConnectP
     'margin:0;white-space:pre-wrap;word-break:break-all;background:#06090e;padding:8px;border-radius:6px;max-height:160px;overflow:auto'
 
   const copy = document.createElement('button')
-  copy.textContent = 'Copy setup'
   copy.style.cssText =
     'margin-top:6px;background:#1b5;border:none;color:#031;font-weight:600;padding:5px 10px;border-radius:6px;cursor:pointer'
   const flashCopy = (label: string): void => {
     copy.textContent = label
-    window.setTimeout(() => (copy.textContent = 'Copy setup'), 1600)
+    window.setTimeout(() => (copy.textContent = t('agent.panel.copy')), 1600)
   }
   const selectPrompt = (): void => {
     // Insecure context (no navigator.clipboard): select the text so the player can
@@ -191,11 +189,11 @@ function createPanel(base: string, token: string, port: string | null): ConnectP
     const sel = window.getSelection()
     sel?.removeAllRanges()
     sel?.addRange(range)
-    flashCopy('Selected — press ⌘/Ctrl-C')
+    flashCopy(t('agent.panel.selected'))
   }
   copy.onclick = (): void => {
     const clip = navigator.clipboard
-    if (clip) void clip.writeText(prompt).then(() => flashCopy('Copied ✓'), selectPrompt)
+    if (clip) void clip.writeText(prompt).then(() => flashCopy(t('agent.panel.copied')), selectPrompt)
     else selectPrompt()
   }
 
@@ -203,9 +201,9 @@ function createPanel(base: string, token: string, port: string | null): ConnectP
   moves.style.cssText = 'color:#9ab;margin-top:6px;min-height:14px'
 
   const tip = document.createElement('div')
-  tip.textContent = 'Tip: open with ?agent=auto to get a random port — run several agents on different games at once.'
   tip.style.cssText = 'color:#678;margin-top:6px;font-size:11px'
 
+  // (the paste-prompt itself stays English: it is instructions for the agent, not UI)
   // The paste-prompt is only useful until the agent connects; collapse it once
   // connected so the panel becomes just a compact status + move counter.
   const setup = document.createElement('div')
@@ -215,17 +213,29 @@ function createPanel(base: string, token: string, port: string | null): ConnectP
   document.body.appendChild(el)
 
   let moveCount = 0
+  let lastFn = ''
+  let connected = false
+  // every label re-reads the locale, so a language switch relabels the panel live
+  const relabel = (): void => {
+    status.textContent = t(connected ? 'agent.panel.connected' : 'agent.panel.waiting')
+    help.textContent = t('agent.panel.paste')
+    copy.textContent = t('agent.panel.copy')
+    tip.textContent = t('agent.panel.tip')
+    moves.textContent = moveCount ? t('agent.panel.moves', { n: moveCount, fn: lastFn }) : ''
+  }
+  relabel()
+  onLangChange(relabel)
   return {
     setConnected(on: boolean): void {
+      connected = on
       dot.style.background = on ? '#2d6' : '#fb4'
-      status.textContent = on
-        ? 'Agent bridge — connected ✓'
-        : 'Agent bridge — waiting for local bridge…'
       setup.style.display = on ? 'none' : ''
+      relabel()
     },
     onMove(fn: string): void {
       moveCount++
-      moves.textContent = `moves: ${moveCount} · last: ${fn}`
+      lastFn = fn
+      relabel()
     },
   }
 }

@@ -21,7 +21,7 @@ import { startPostTrain, startResearch } from './sim/research'
 import { BUILD_ORDER, HARDWARE_DEFS, HARDWARE_TIERS, RESEARCH_DEFS, TOWER_DEFS } from './sim/content'
 import { buildCost } from './sim/actions'
 import { demoCanContinueCampaign, demoPlan, nextDemoWaveNumber } from './sim/demo'
-import { hasLab, hasLiquidLoop, hwNeedsLiquid, loadout, resolveModel, serverFitsMemory } from './sim/effects'
+import { hasLab, hasLiquidLoop, hwNeedsLiquid, loadout, resolveModel, serverFitsMemory, WEIGHT_FORMATS } from './sim/effects'
 import { isBrownout, isLiquidGated, isThrottling } from './sim/power'
 import { fleetBurnPerSec, previewNextWave, type WavePreview } from './sim/preview'
 import { step } from './sim/sim'
@@ -29,7 +29,7 @@ import { createState } from './sim/state'
 import { tileCenter, worldToTile } from './sim/pathing'
 import { getMode, isExpert, setMode } from './mode'
 import { Tutorial } from './tutorial'
-import { modelName, t, towerName } from './i18n'
+import { hwName, modelName, t, towerName } from './i18n'
 import { BuildBar } from './ui/buildbar'
 import { BoardOverlay, type CursorLabel } from './ui/boardOverlay'
 import { Codex } from './ui/codex'
@@ -284,6 +284,7 @@ export class Game {
       this.world.screen, // FX chips that fly up to the HUD meters
       this.metrics.view,
       this.codex.view,
+      this.board.pauseView, // the PAUSED pill reads over the Codex bubble
       this.notices.view,
       this.training.view,
       this.models.view,
@@ -385,6 +386,22 @@ export class Game {
   }
 
   /**
+   * The demo or a bridged agent owns the run: every human run-changing input — keys,
+   * board presses, and the panel / notice buttons — is ignored (viewing stays open).
+   */
+  private get autopilot(): boolean {
+    return this.demoActive || this.agentMode
+  }
+
+  /** A human pressed a run-changing control under autopilot: say why nothing happened. */
+  private autopilotBlocked(x?: number, y?: number): boolean {
+    if (!this.autopilot) return false
+    uiSound('denied')
+    this.showDenied(t(this.agentMode ? 'deny.agentOwns' : 'deny.demoOwns'), x, y)
+    return true
+  }
+
+  /**
    * Enter agent-bridge mode from the UI (the title-screen AGENT button or `?agent`):
    * default the display to Expert, hand the run to the bridge, and dial out the
    * connector (idempotent). The local relay + CLI agent connect from the panel.
@@ -421,7 +438,7 @@ export class Game {
     }
     // Agent MODE is on, but nothing is connected yet — the bridge/agent dials in
     // later (the connector's onopen posts the real "connected" note).
-    this.agentNote('Agent mode on — waiting for the bridge. I will narrate each move here once it connects.')
+    this.agentNote(t('agent.note.on'))
   }
 
   /** Free-form status line from the agent (no action), shown in the Codex bubble. */
@@ -488,6 +505,14 @@ export class Game {
         case 'cycleRackRole': {
           const [id] = args as [number]
           ok = cycleRackRole(s, id)
+          if (ok) this.selectedTowerId = id
+          break
+        }
+        case 'setRackPrecision': {
+          // args: [towerId, format] — 'bf16' | 'fp8' | 'int4' | 'nvfp4', or null / 'auto' for the default
+          const [id, raw] = args as [number, string | null | undefined]
+          const fmt = raw == null || raw === 'auto' ? undefined : (String(raw) as WeightFormat)
+          ok = (fmt === undefined || (WEIGHT_FORMATS as readonly string[]).includes(fmt)) && setRackPrecision(s, id, fmt)
           if (ok) this.selectedTowerId = id
           break
         }
@@ -654,11 +679,11 @@ export class Game {
     }
     if (code === KEY.start) {
       if (s.phase === 'wave') this.togglePause()
-      else if (!this.demoActive && !this.agentMode) this.doStartWave()
+      else if (!this.autopilot) this.doStartWave()
       return true
     }
     // everything below changes the run — the demo / agent own it
-    if (this.demoActive || this.agentMode) return false
+    if (this.autopilot) return false
     const buildIdx = (BUILD_CODES as readonly string[]).indexOf(code)
     if (buildIdx >= 0) {
       const id = BUILD_ORDER[buildIdx]
@@ -772,7 +797,7 @@ export class Game {
       if (this.cancelToolOrSelection()) uiSound('close')
       return
     }
-    if (e.button !== 0 || this.demoActive || this.agentMode) return
+    if (e.button !== 0 || this.autopilot) return
     const s = this.state
     if (s.phase !== 'build' && s.phase !== 'wave') return
     const def = this.toolDef()
@@ -858,7 +883,7 @@ export class Game {
 
   // ---- actions ----
   private selectBuild(id: string): void {
-    if (this.demoActive) return
+    if (this.autopilotBlocked()) return
     this.blueprint = null
     this.pendingTouchTile = null
     this.selectedDefId = this.selectedDefId === id ? null : id
@@ -889,7 +914,7 @@ export class Game {
     }
     const def = this.toolDef()
     if (def) {
-      if (this.demoActive || this.agentMode) return
+      if (this.autopilot) return
       // touch has no hover: the first tap previews the ghost + cost, a second tap on it builds
       if (this.lastPointerType === 'touch') {
         const pend = this.pendingTouchTile
@@ -1000,7 +1025,7 @@ export class Game {
     const m = resolveModel(this.state, tw.modelId)
     this.showDenied(
       t('deny.blueprintPicked', {
-        hw: HARDWARE_DEFS[tw.hwId]?.name ?? tw.hwId,
+        hw: HARDWARE_DEFS[tw.hwId] ? hwName(HARDWARE_DEFS[tw.hwId]) : tw.hwId,
         model: modelName(m),
         cost: this.blueprintCost(this.blueprint),
       }),
@@ -1046,7 +1071,7 @@ export class Game {
     }
     const reconfig = bp.hwId !== def.hardwareId || bp.modelId !== def.defaultModelId || bp.role !== undefined
     if (reconfig && s.phase !== 'build') return fail(t('deny.blueprintBetweenWaves'))
-    if (hwNeedsLiquid(hw) && !hasLiquidLoop(s)) return fail(t('deny.liquid', { name: hw.name }))
+    if (hwNeedsLiquid(hw) && !hasLiquidLoop(s)) return fail(t('deny.liquid', { name: hwName(hw) }))
     if (!serverFitsMemory(s, loadout(s, bp.hwId, bp.modelId))) {
       return fail(t('deny.noFit', { model: modelName(resolveModel(s, bp.modelId)), gb: Math.round(hw.hbmGb) }))
     }
@@ -1066,17 +1091,17 @@ export class Game {
   }
 
   private doSell(id: number): void {
-    if (this.demoActive) return
+    if (this.autopilotBlocked()) return
     this.cancelAutoStart()
     if (!sellTower(this.state, id)) this.deny({ fn: 'sell', towerId: id })
     this.selectedTowerId = null
   }
   private doBuy(id: string): void {
-    if (this.demoActive) return
+    if (this.autopilotBlocked()) return
     buyUpgrade(this.state, id)
   }
   private doResearch(id: string): boolean {
-    if (this.demoActive) return false
+    if (this.autopilotBlocked()) return false
     const ok = startResearch(this.state, id)
     if (!ok) this.deny({ fn: 'research', id })
     return ok
@@ -1087,20 +1112,20 @@ export class Game {
     target: PostTrainTarget,
     effort: number,
   ): boolean {
-    if (this.demoActive) return false
+    if (this.autopilotBlocked()) return false
     const ok = startPostTrain(this.state, baseIds, method, target, effort)
     if (!ok) this.deny({ fn: 'postTrain', baseIds, method, target, effort })
     return ok
   }
   private doDeploy(id: number, modelId: string): boolean {
-    if (this.demoActive) return false
+    if (this.autopilotBlocked()) return false
     this.cancelAutoStart()
     const ok = deployModel(this.state, id, modelId)
     if (!ok) this.deny({ fn: 'deploy', towerId: id, modelId })
     return ok
   }
   private doUpgradeHardware(id: number, atRack = false): boolean {
-    if (this.demoActive) return false
+    if (this.autopilotBlocked()) return false
     this.cancelAutoStart()
     const ok = upgradeHardware(this.state, id)
     if (!ok) this.deny({ fn: 'upgrade', towerId: id }, atRack ? id : undefined)
@@ -1108,7 +1133,7 @@ export class Game {
     return ok
   }
   private doRackRole(id: number, atRack = false): boolean {
-    if (this.demoActive) return false
+    if (this.autopilotBlocked()) return false
     this.cancelAutoStart()
     const ok = cycleRackRole(this.state, id)
     if (!ok) this.deny({ fn: 'role', towerId: id }, atRack ? id : undefined)
@@ -1117,7 +1142,7 @@ export class Game {
   }
   /** §4.5 switch a rack's weight format (between waves). */
   private doRackPrecision(id: number, fmt: WeightFormat | undefined): boolean {
-    if (this.demoActive) return false
+    if (this.autopilotBlocked()) return false
     this.cancelAutoStart()
     const ok = setRackPrecision(this.state, id, fmt)
     if (!ok) {
@@ -1127,6 +1152,10 @@ export class Game {
     }
     return ok
   }
+  /**
+   * Open the Training Lab. Under autopilot it still opens to be read (the demo / agent
+   * keep every action: its research and Studio buttons go through the guarded do* paths).
+   */
   private openTraining(fromKey = false): void {
     if (this.state.phase === 'build' && hasLab(this.state)) {
       // the Studio starts on the selected rack's model (else its most-deployed one)
@@ -1161,7 +1190,7 @@ export class Game {
    * second press within a few seconds starts anyway.
    */
   private doStartWave(): void {
-    if (this.demoActive || this.agentMode) return
+    if (this.autopilotBlocked(this.buildbar.startAnchor.x, this.buildbar.startAnchor.y)) return
     const s = this.state
     if (s.phase !== 'build') {
       this.deny({ fn: 'startWave' })
@@ -1194,7 +1223,7 @@ export class Game {
   private installFocusPause(): void {
     const away = (): void => {
       if (!getSettings().gameplay.pauseOnBlur) return
-      if (this.agentMode || this.demoActive) return
+      if (this.autopilot) return
       if (this.state.phase !== 'wave' || this.paused) return
       this.paused = true
       this.pauseReason = 'blur'
@@ -1241,7 +1270,7 @@ export class Game {
 
   // ---- system menu / settings hub (docs/SYSTEM-MENU.md §3) ----
   private openSystemMenu(): void {
-    if (this.demoActive || this.agentMode) return
+    if (this.autopilot) return
     if (this.state.phase !== 'build' && this.state.phase !== 'wave') return
     this.audio.resume()
     this.cancelAutoStart()
@@ -1359,8 +1388,8 @@ export class Game {
       this.state.phase = 'build'
       this.overlay.hide()
     } else {
-      // Restart → back to the title screen, where the display mode can be
-      // changed (it is locked while a run is in progress).
+      // Restart → back to the title screen (the display mode picker lives there;
+      // mid-run it is Settings ▸ Display once the tutorial is done).
       this.state = createState((Math.floor(performance.now()) ^ 0xa5a5a5a5) >>> 0)
       this.demoActive = false
       this.demoPlannedWave = 0
@@ -1499,7 +1528,7 @@ export class Game {
     const s = this.state
     // a rack is named by its CURRENT hardware tier, like its inspect panel title
     const hw = tw.def.kind === 'server' && tw.hwId ? HARDWARE_DEFS[tw.hwId] : undefined
-    const parts = [hw ? t(`hw.${hw.id}.name`, undefined, hw.name) : towerName(tw.def)]
+    const parts = [hw ? hwName(hw) : towerName(tw.def)]
     if (tw.def.kind === 'server') {
       const m = tw.modelId ? resolveModel(s, tw.modelId) : null
       if (m) parts.push(modelName(m))
@@ -1546,7 +1575,7 @@ export class Game {
       const cost = this.blueprintCost(bp)
       return {
         text: t('place.blueprint', {
-          hw: HARDWARE_DEFS[bp.hwId]?.name ?? bp.hwId,
+          hw: HARDWARE_DEFS[bp.hwId] ? hwName(HARDWARE_DEFS[bp.hwId]) : bp.hwId,
           model: modelName(resolveModel(s, bp.modelId)),
           cost,
         }),
@@ -1579,8 +1608,14 @@ export class Game {
     const s = this.state
     this.updateDemo(dt)
 
+    // every full-board surface freezes the wave (the hotkey sheet too: it covers the board)
     const simRunning =
-      s.phase === 'wave' && !this.paused && !this.trainingOpen && !this.modelsOpen && !this.systemMenuOpen
+      s.phase === 'wave' &&
+      !this.paused &&
+      !this.trainingOpen &&
+      !this.modelsOpen &&
+      !this.systemMenuOpen &&
+      !this.hotkeys.visible
     if (simRunning) {
       this.acc += dt * this.speed
       let n = 0
@@ -1698,7 +1733,10 @@ export class Game {
     this.inspect.update(s, modalOpen ? null : this.selectedTowerId)
     this.requestInspect.update(s, modalOpen ? null : this.selectedRequestId)
     this.banner.update(s)
-    this.report.update(s, !!tool) // a held build tool turns the report into a click-through ghost
+    // a held build tool turns the report into a click-through ghost; an agent's narration
+    // bubble keeps the corner below it (the report scrolls above the bubble instead)
+    const narration = this.agentMode ? this.codex.top : null
+    this.report.update(s, !!tool, narration !== null ? narration - 8 : null)
     // NEXT WAVE card: right column under the incident banner; the inspect panel owns the column while open
     const bannerBottom = this.banner.view.visible ? this.banner.view.y + this.banner.view.height + 8 : 108
     this.nextWave.update(
@@ -1713,12 +1751,12 @@ export class Game {
     this.models.view.visible = this.modelsOpen
     if (this.modelsOpen) this.models.update(s)
 
-    const reportOpen = this.report.blocksCodex
-    // the Codex corner (bottom-left) yields to the modals, the report, a left-docked inspect
-    // panel and the request inspector, which all share that corner (an agent's narration is
-    // the point of agent mode, so it keeps the corner)
-    const corner = !this.agentMode && (this.inspect.dockedLeft || this.requestInspect.view.visible)
-    if (this.trainingOpen || this.modelsOpen || reportOpen || corner) this.codex.hide()
+    // the Codex corner (bottom-left) yields to the modals, the expanded report, a left-docked
+    // inspect panel and the request inspector, which all share that corner (an agent's
+    // narration is the point of agent mode, so it keeps the corner and draws over them)
+    const corner =
+      !this.agentMode && (this.report.blocksCodex || this.inspect.dockedLeft || this.requestInspect.view.visible)
+    if (this.trainingOpen || this.modelsOpen || corner) this.codex.hide()
     else if (!this.agentMode && !this.demoActive) this.tutorial.update(s)
     this.codex.update(dt)
 

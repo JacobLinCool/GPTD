@@ -57,6 +57,12 @@ function unlockEval(h: SafetyHazard): string {
   return t(`research.${h === 'pii' ? 'r_eval_redteam_v2' : 'r_eval_redteam_v1'}.name`)
 }
 
+/** A rack has taken the request on: it is prefilling or decoding it, or its first token is out. */
+function admitted(r: Request, d: RequestDiagnosis): boolean {
+  if (r.prefillDoneAt !== undefined || r.answeredBy != null) return true
+  return !!d.rack && (d.rack.prefillId === r.id || !!d.rack.decodeIds?.includes(r.id))
+}
+
 export class RequestInspector {
   readonly view = new Container()
   private bg = new Graphics()
@@ -103,8 +109,10 @@ export class RequestInspector {
     this.sub.text = expert
       ? t('reqi.archetype', { axis: t('spec.' + r.def.primaryAxis), cls: r.def.latClass })
       : t('reqi.n.cls.' + r.def.latClass)
-    this.chip.text = this.forecastText(d)
-    this.chip.style.fill = outcomeColor(d.forecast)
+    // until a rack admits it there is nothing to judge yet: a neutral status, not "on track"
+    const waiting = d.forecast === 'served' && !admitted(r, d)
+    this.chip.text = waiting ? t('reqi.predict.waiting') : this.forecastText(d)
+    this.chip.style.fill = waiting ? COLORS.textDim : outcomeColor(d.forecast)
     this.chip.y = this.sub.y + this.sub.height + 6
 
     let y = this.chip.y + this.chip.height + 8
@@ -127,7 +135,7 @@ export class RequestInspector {
     }
     const h = y + 10
     this.bg.clear()
-    drawPanel(this.bg, 0, 0, W, h, { alpha: 0.95, edge: outcomeColor(d.forecast) })
+    drawPanel(this.bg, 0, 0, W, h, { alpha: 0.95, edge: waiting ? COLORS.panelEdge : outcomeColor(d.forecast) })
     // bottom-left, clear of the BuildBar
     this.view.x = 12
     this.view.y = DESIGN_H - BUILDBAR_H - h - 10

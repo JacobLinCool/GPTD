@@ -2,7 +2,7 @@
 // boolean, so when one fails we re-walk its gates (on the unchanged state — a
 // failed action never mutates) and produce a specific, human-readable reason.
 // This is what lets a hosted agent (no repo source) understand a `{ok:false}`.
-import type { GameState, PostTrainMethod, PostTrainTarget } from '../core/types'
+import type { GameState, PostTrainMethod, PostTrainTarget, WeightFormat } from '../core/types'
 import { buildCost, hardwareUpgradeCost, nextHardware } from '../sim/actions'
 import {
   HARDWARE_DEFS,
@@ -12,7 +12,18 @@ import {
   UPGRADE_MAP,
   WAVES,
 } from '../sim/content'
-import { deployBlocker, hasLab, hasLiquidLoop, hwNeedsLiquid, loadout, serverFitsMemory } from '../sim/effects'
+import {
+  availableFormats,
+  deployBlocker,
+  formatResearched,
+  hasLab,
+  hasLiquidLoop,
+  hwNeedsLiquid,
+  isBlackwell,
+  loadout,
+  serverFitsMemory,
+  WEIGHT_FORMATS,
+} from '../sim/effects'
 import { mergeBlock, postTrainDataCost, resolveModel } from '../sim/models'
 import { isBuildable } from '../sim/pathing'
 import { powerBuildOpen } from '../sim/power'
@@ -66,7 +77,7 @@ export function explainRejection(s: GameState, fn: string, args: unknown[]): str
           if (blocker === 'pp')
             return `${m.name} needs more than 8 GPUs per copy — research Pipeline Parallelism (inf_par_pp) first`
           const hbm = HARDWARE_DEFS[t.hwId ?? '']?.hbmGb
-          return `${m.name} (${m.paramsTotalB}B) does not fit rack ${towerId}'s VRAM${hbm ? ` (${hbm}GB)` : ''} — upgrade the rack, research weight quantization (inf_wq_fp8), or set the rack to a 4-bit format`
+          return `${m.name} (${m.paramsTotalB}B) does not fit rack ${towerId}'s VRAM${hbm ? ` (${hbm}GB)` : ''} — upgrade the rack, research weight quantization (inf_wq_fp8 / inf_wq_int4), or set the rack to a smaller researched format first (setRackPrecision [${towerId}, "int4"]; a 4-bit format below the release precision costs some quality)`
         }
         return 'deploy rejected'
       }
@@ -92,6 +103,27 @@ export function explainRejection(s: GameState, fn: string, args: unknown[]): str
         const t = s.towers.find((x) => x.id === towerId)
         if (!t || t.def.kind !== 'server') return `tower ${towerId} is not a server rack`
         return 'role change rejected'
+      }
+      case 'setRackPrecision': {
+        const [towerId, raw] = args as [number, string | null | undefined]
+        const t = s.towers.find((x) => x.id === towerId)
+        if (!t) return `no tower with id ${towerId}`
+        if (t.def.kind !== 'server' || !t.hwId) return `tower ${towerId} (${t.def.name}) is not a server rack`
+        if (s.phase !== 'build') return `a rack's weight format can only change between waves (phase "build"): it reloads the weights`
+        const fmt = raw == null || raw === 'auto' ? undefined : (String(raw) as WeightFormat)
+        if (fmt !== undefined && !WEIGHT_FORMATS.includes(fmt))
+          return `unknown format "${raw}" — use one of ${WEIGHT_FORMATS.join(', ')}, or "auto" for the default`
+        if (t.precision === fmt) return `rack ${towerId} is already set to ${fmt ?? 'auto'}`
+        const hw = HARDWARE_DEFS[t.hwId]
+        const m = t.modelId ? resolveModel(s, t.modelId) : null
+        if (fmt !== undefined && !availableFormats(s, hw, m).includes(fmt)) {
+          if (fmt === 'nvfp4' && !isBlackwell(hw)) return `NVFP4 runs only on Blackwell racks (DGX B200 / GB200 NVL72) with FP4 Tensor Cores`
+          if (!formatResearched(s, fmt)) return `${fmt.toUpperCase()} weights are not researched yet (inf_wq_${fmt})`
+          return `${fmt.toUpperCase()} is not available on rack ${towerId}`
+        }
+        if (m && !serverFitsMemory(s, loadout(s, t.hwId, t.modelId, fmt)))
+          return `${m.name} would not fit rack ${towerId}'s VRAM in ${fmt ?? 'its auto format'}`
+        return 'precision change rejected'
       }
       case 'buyUpgrade': {
         const [id] = args as [string]

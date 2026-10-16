@@ -31,7 +31,8 @@ grounded in real data. Waves of AI user requests stream from four ingress lanes
 toward a central Trust Core. The player builds a serving platform — GPU racks,
 models, caches, routers, guardrails, power and cooling — to answer each request
 correctly, safely, and within its latency SLO before it reaches the core. A
-request that times out or is answered unsafely at the core hurts SLA and Trust.
+request that times out at the core hurts SLA and Trust; an unsafe answer costs
+Trust the moment it is delivered.
 
 The board is the metaphor; the numbers are real. The roster is real open-weight
 models, each model's capability vector is calibrated from public Artificial
@@ -39,9 +40,9 @@ Analysis benchmark scores, and the serving math — rooflines, KV cache, power a
 cooling in real kW, token-priced revenue — is grounded in real hardware and pricing.
 
 ## Meters
-- Trust — reputation. Unsafe answers and timeouts drain it. Hits zero → game over.
-- SLA — service level. Late / wrong serves erode it.
-- Cash — token revenue funds racks; idle / over-provisioned racks still bleed the operating bill.
+- Trust — reputation. Wrong, unsafe, too-long and timed-out requests drain it (late answers and wrongful refusals a little). Hits zero → game over.
+- SLA — service level. Late answers, wrongful refusals, too-long and timed-out requests erode it (wrong or unsafe answers do not). Hits zero → game over.
+- Cash — token revenue plus each wave's SLA contract (paid × the wave's Goodput) funds racks; idle / over-provisioned racks still bleed the operating bill (GPU-hours + energy). Below zero → bankrupt.
 - Power (kW) — racks draw real power; over capacity browns out GPUs. Build Power Plants.
 - Cooling (kW) — racks emit heat; over capacity thermal-throttles them. Build Cooling Towers.
 - Data — research currency earned per served request; spent in the research tree.
@@ -50,7 +51,7 @@ cooling in real kW, token-priced revenue — is grounded in real hardware and pr
 - Prefill (prompt processing) is compute-bound; decode (token generation) is bandwidth-bound.
 - KV cache holds attention state; it is gated by GPU HBM and the model's context window.
 - Latency SLO classes: IN interactive (tight TTFT/TPOT), NR near-real-time (relaxed), TO throughput/offline (no hard latency SLO).
-- Two-layer safety: a high-safety model can self-handle a hazard (layer 1, no latency); otherwise a guardrail covering the request's lane must catch it (layer 2, adding its latency to every request on that lane) or the unsafe answer is delivered.
+- Two-layer safety: a high-safety model can self-handle a hazard (layer 1, no latency); otherwise a guardrail covering the request's lane must catch it (layer 2) or the unsafe answer is delivered. Each guard family on a lane (encoder classifier, LLM judge) adds its check latency and its false positives once; extra copies of the same family add coverage, not recall or delay.
 - Outcomes: served (paid in full), sloMiss (correct but late, paid half), bad (wrong, refunded), unsafe, overRefused (a benign request refused by the model or a guard), unservable (too long for the window or KV), leaked (a 504).`
 
 function buildingsSection(): string {

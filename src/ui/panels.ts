@@ -54,6 +54,7 @@ import {
   serverPower,
   towerRangeTiles,
 } from '../sim/effects'
+import { guardCoveredLanes } from '../sim/guards'
 import {
   deployCandidates,
   effectiveBatch,
@@ -95,6 +96,7 @@ import { GoodputGauge, OUTCOME_CHAR, OutcomeBar, QualitySparks, qualityScale, Ro
 import {
   cycleLang,
   getLang,
+  hwName,
   incDesc,
   incName,
   LANG_LABEL,
@@ -731,7 +733,7 @@ export class InspectPanel {
 
     // ---- header ----
     if (isServer && lo) {
-      fitLabel(this.title, lo.hw ? t(`hw.${lo.hw.id}.name`, undefined, lo.hw.name) : towerName(tw.def), 250, 15, 12)
+      fitLabel(this.title, lo.hw ? hwName(lo.hw) : towerName(tw.def), 250, 15, 12)
       fitLabel(this.tag, lo.model ? modelName(lo.model) : towerTagline(tw.def), BODY_W, 12, 10)
       const st = rackStatus(s, tw, lo)
       this.chip.visible = true
@@ -1347,6 +1349,12 @@ function statLines(s: GameState, tw: Tower): { text: string; fill: number }[] {
           COLORS.danger,
         )
     }
+    // it screens by lane coverage: name the lanes (1-based, as the surge chip counts them)
+    const lanes = guardCoveredLanes(tw)
+    line(
+      lanes.length ? t('guard.lanes', { lanes: lanes.map((l) => l + 1).join(', ') }) : t('guard.lanes.none'),
+      lanes.length ? COLORS.textDim : COLORS.warn,
+    )
     line(rangeLine(tw), COLORS.textDim)
     if (g.runsOnRoofline) line(t('inspect.guardrail.power', { v: guardPower(s, g).toFixed(1) }), COLORS.power)
   } else if (d.kind === 'power') {
@@ -1429,8 +1437,8 @@ const INFRA_CATEGORY_ORDER: InfraCategory[] = [
 ]
 
 /**
- * S9 TechLab + Post-Training Studio (§5.2). Three tabs:
- *  - UPGRADES: the four instant cash engineering paths (unchanged).
+ * S9 TechLab + Post-Training Studio (§5.2). Two tabs (a third, UPGRADES, appears only
+ * when UPGRADE_DEFS ships cash upgrades — none do):
  *  - INFRA: the serving-stack research tree grouped by InfraCategory, plus the
  *    post-training method-unlock nodes (r_pt_*) and the red-team eval nodes —
  *    each card showing cost / optimizes / coupling / prereq + conflict state.
@@ -1966,7 +1974,7 @@ export class Overlay {
     this.agentBtn.visible = false
     this.view.addChild(this.agentBtn)
 
-    // Display-mode selector (menu only): chosen here, locked for the run.
+    // Display-mode selector (menu only); mid-run the mode switches from Settings ▸ Display.
     const modes: ('normal' | 'expert')[] = ['normal', 'expert']
     modes.forEach((mode, i) => {
       const btn = new UIButton({
@@ -2312,6 +2320,11 @@ function outcomeTokens(c: OutcomeTally, plain: boolean, always: Outcome[] = ['se
   }))
 }
 
+/** A bill line in credits: whole above 10, one decimal above 1, cents below. */
+function billCredits(v: number): string {
+  return v >= 10 ? String(Math.round(v)) : v >= 1 ? v.toFixed(1) : v.toFixed(2)
+}
+
 const REPORT_X = 12
 const REPORT_Y = 142
 const REPORT_W = 360
@@ -2429,9 +2442,11 @@ export class WaveReportPanel {
 
   /**
    * `ghost` = the player holds a build tool: like the NEXT WAVE card, the report fades
-   * and lets clicks through, so the board tiles under it stay buildable.
+   * and lets clicks through, so the board tiles under it stay buildable. `bottom` caps
+   * the panel's lower edge (an agent's narration bubble keeps the corner below it; the
+   * report then scrolls).
    */
-  update(s: GameState, ghost = false): void {
+  update(s: GameState, ghost = false, bottom: number | null = null): void {
     const rep = s.lastReport
     const show = s.phase === 'build' && !!rep
     this.view.visible = show
@@ -2452,14 +2467,14 @@ export class WaveReportPanel {
     }
     const expert = isExpert()
     // the report only changes when a new wave settles, the mode or language flips, or the palette swaps
-    const key = `${rep.waveIndex}|${s.waveIndex}|${expert}|${getLang()}|${getSettings().a11y.colorblind}|${s.towers.length}`
+    const key = `${rep.waveIndex}|${s.waveIndex}|${expert}|${getLang()}|${getSettings().a11y.colorblind}|${s.towers.length}|${bottom ?? ''}`
     if (key === this.key && rep === this.rep) return
     if (rep !== this.rep) this.scroll = 0
     this.key = key
     this.rep = rep
 
     const w = rep.waveIndex === s.waveIndex && s.currentWave ? s.currentWave : WAVES[rep.waveIndex]
-    const name = w ? (rep.waveIndex < WAVES.length ? waveName(w, rep.waveIndex) : w.name) : ''
+    const name = w ? waveName(w, rep.waveIndex) : ''
     this.title.text = expert
       ? `${t('report.title', { n: rep.waveIndex + 1 })} — ${name}`
       : t('report.n.title', { n: rep.waveIndex + 1, name })
@@ -2508,7 +2523,8 @@ export class WaveReportPanel {
       y += row.height + 3
     }
     const contentH = y + 8
-    this.panelH = Math.min(REPORT_MAX_H - (this.view.y - REPORT_Y), contentH)
+    const room = REPORT_MAX_H - (this.view.y - REPORT_Y)
+    this.panelH = Math.min(bottom !== null ? Math.max(120, Math.min(room, bottom - this.view.y)) : room, contentH)
     this.maxScroll = Math.max(0, contentH - this.panelH)
     this.scroll = clamp(this.scroll, 0, this.maxScroll)
     this.body.y = -this.scroll
@@ -2562,7 +2578,15 @@ export class WaveReportPanel {
     out.push({ text: t('report.dpmt', { v: fmtDollarsPerMtoken(fleetMeanDollarsPerMtoken(s)) }), fill: COLORS.cash })
     const net = Math.round(rep.cashIn + rep.clearBonus - rep.powerCost)
     out.push({ text: t('report.income', { cash: Math.round(rep.cashIn), bonus: Math.round(rep.clearBonus) }), fill: COLORS.cash })
-    out.push({ text: t('report.power', { v: rep.powerCost.toFixed(0) }), fill: COLORS.power })
+    // the operating bill and its split: GPU-hour amortization + the energy the fleet drew
+    // (small early bills keep their cents, so a $0.40 line never reads "$0")
+    out.push({
+      text:
+        rep.gpuCost !== undefined && rep.energyCost !== undefined
+          ? t('report.powerSplit', { v: billCredits(rep.powerCost), gpu: billCredits(rep.gpuCost), energy: billCredits(rep.energyCost) })
+          : t('report.power', { v: billCredits(rep.powerCost) }),
+      fill: COLORS.power,
+    })
     out.push({ text: t('report.net', { v: net }), fill: net >= 0 ? COLORS.good : COLORS.danger })
     out.push({ text: '', fill: COLORS.text })
     out.push({ text: t('report.byType'), fill: COLORS.textBright, bold: true })

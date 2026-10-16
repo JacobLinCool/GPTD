@@ -38,6 +38,7 @@ import {
 } from './metrics'
 import { QualitySparks, qualityScale } from './charts'
 import { getLang, modelName, t } from '../i18n'
+import { KEY } from './help'
 import { drawPanel, label, UIButton } from './theme'
 import { DragScroll, fitLabel, setButton, setUiPref, uiPref } from './panelKit'
 import { instantSourceLine, thinkingLine } from './thinkingCopy'
@@ -109,7 +110,10 @@ function fmtVramPair(fp16: number, fp8: number): string {
   return `${fmtGbCompact(fp16)}/${fmtGbCompact(fp8)}`
 }
 
-/** Single-stream decode speed on the cheapest rack that holds the model — "how fast is it where it fits". */
+/**
+ * Per-user decode speed on the cheapest rack that holds the model, with one cohort batched
+ * (a light load, not a lone stream) — "how fast is it where it fits".
+ */
 function homeSpeed(s: GameState, m: ModelDef): { speed: number; tpotMs: number; hwId: string | null } {
   const hw = smallestRackFor(s, m)
   if (!hw) return { speed: 0, tpotMs: Infinity, hwId: null }
@@ -526,6 +530,8 @@ export class ModelOverview {
     const tgt = e.target as HTMLElement | null
     if (tgt && (tgt.tagName === 'INPUT' || tgt.tagName === 'TEXTAREA' || tgt.isContentEditable)) return
     if (e.metaKey || e.ctrlKey || e.altKey) return
+    // the panel's own toggle key closes it (Game.onKey) unless a query is being typed
+    if (!this.query && e.code === KEY.models) return
     const consume = (): void => {
       e.preventDefault()
       e.stopImmediatePropagation()

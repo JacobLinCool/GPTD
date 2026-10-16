@@ -43,7 +43,15 @@ This is the zero-setup path for someone with Claude Code / Codex installed:
 3. The panel flips to **connected ✓**. Your agent reads `GET /state` and plays the
    **whole run in a loop** — each build phase: make moves via `POST /do`, `startWave`,
    poll `/state` until the wave clears, repeat until the run ends (`won`/`lost`) —
-   narrating each move. You watch the live board and the Codex bubble.
+   narrating each move. You watch the live board and the Codex bubble, which keeps its
+   corner over the wave report (the report scrolls above it).
+
+The panel and the Codex notes follow the game's language; the paste-prompt stays in
+English, since it is written for the agent. While the agent plays, the run is its own:
+you can click racks, requests, the Model Overview and the Training Lab to read them,
+but a run-changing control (sell, deploy, upgrade, role, weight format, research, a
+Studio run, START, a build tool, the board, the run-changing hotkeys) only says that
+the agent is playing this run.
 
 The default paste-prompt tells the agent to **survive as deep as possible** and not
 stop between waves, so it plays the full campaign autonomously rather than a short
@@ -105,6 +113,7 @@ re-posts its snapshot every second, so `GET /state` stays live mid-wave.
 | `deploy` | `[towerId, modelId]` | deploy a checkpoint (only models in that rack's `deployableModelIds` fit) — **build phase only**: loading new weights drains the rack. The one mid-wave exception is a LoRA adapter of the loaded base (or its base) once Multi-LoRA Serving (`inf_multilora`) is researched |
 | `upgradeHardware` | `[towerId]` | upgrade a rack one GPU tier — **build phase only**: new GPUs mean reloading the model |
 | `cycleRackRole` | `[towerId]` | cycle the P/D disaggregation role auto → prefill → decode — **build phase only**, needs `inf_disagg` |
+| `setRackPrecision` | `[towerId, format]` | set a rack's weight format to one of its `towers[].formats` (`bf16` · `fp8` · `int4` · `nvfp4`), or `"auto"` / `null` for the default — **build phase only** (it reloads the weights). A format below the model's release precision fits a bigger model but pays a quality tax; NVFP4 needs a Blackwell rack |
 | `buyUpgrade` | `[upgradeId]` | buy a cash upgrade listed in `upgrades[]` (needs a Lab; the list is empty in the current tech tree) |
 | `research` | `[researchId]` | start a research project (from `research.options`) — build phase only, needs a Lab |
 | `postTrain` | `[baseIds[], method, target, effort]` | derive a checkpoint in the Studio (see `studio`) — build phase only, needs a Lab; over GET use `args=baseId,method,target,effort` (single base) — `merge` (2 bases) needs the POST JSON form and two DIFFERENT checkpoints of the same base model with one shared architecture |
@@ -113,9 +122,10 @@ re-posts its snapshot every second, so `GET /state` stays live mid-wave.
 | `select` | `[towerId]` | highlight a rack in the inspect panel (visibility) |
 | `startGame` | `[]` | leave the title menu (agent mode already does this on connect) |
 
-A rack's weight format (the inspect panel's per-rack precision control) is not in the
-agent vocabulary: racks an agent runs keep the default *auto* format, the fastest
-researched format that costs no quality.
+A rack starts on the *auto* format: the fastest researched format that costs its model
+no quality and fits. `setRackPrecision` is the inspect panel's per-rack weight control:
+a lossy 4-bit format is how a model that does not fit a rack in its release precision
+gets onto it, and a rejected deploy names that option.
 
 Do **not** hardcode ids — read them live from `/state`: buildable `defId`s and
 costs come from `catalog`, valid tiles from `board.freeTiles`, `towerId`s from
@@ -161,8 +171,11 @@ guessing. Unknown actions are rejected the same way, never a crash.
   "board":  { "cols": 24, "rows": 11, "core": { "col": 11, "row": 5 },
               "freeTiles": [ { "col": 0, "row": 3, "nearLane": false }, { "col": 0, "row": 4, "nearLane": true }, … ] },
   "towers": [ { "id": 1, "defId": "srv_edge", "name": "Edge GPU Rack", "kind": "server", "col": 4, "row": 2,
-               "level": 1, "online": true, "range": 2.8, "hwId": "hw_edge", "modelId": "…", "training": false,
-               "load": 0, "sellValue": 5, "nextHwId": "hw_standard", "upgradeCost": 11,
+               "level": 1, "online": true, "range": 2.8, "hwId": "hw_edge", "modelId": "…",
+               "format": "bf16",          // the weight format it serves in now
+               "formatSetting": "auto",   // "auto" or the explicit format setRackPrecision chose
+               "formats": [ "bf16" ],     // what setRackPrecision may set here (researched + the model's release format)
+               "training": false, "load": 0, "sellValue": 5, "nextHwId": "hw_standard", "upgradeCost": 11,
                "deployableModelIds": [ "…" ] },   // models that fit THIS rack's VRAM now
              { "id": 5, "defId": "guard_encoder", "kind": "guardrail", "range": 2.9, "coversLanes": [ 0 ], … } ],
   "catalog":[ { "defId": "srv_edge", "name": "Edge GPU Rack", "kind": "server", "cost": 5, "range": 2.8,
@@ -175,6 +188,8 @@ guessing. Unknown actions are rejected the same way, never a crash.
                                             { "hazard": "injection", "locked": true, "unlockedBy": "r_eval_redteam_v1" } ] } } ],
   "hardware":[ { "id": "hw_edge", "name": "Edge GPU Rack", "hbmGb": 24, "gpus": 1, "cooling": "air", "tier": 0,
                  "deployableModelIds": [ "…" ] } ],   // the GPU-tier ladder + what fits each tier
+  // tier is a display band (small / general / coding / frontier) set by peak capability as well
+  // as size — a strong 9B can read "frontier"; read paramsTotalB for size
   "models": [ { "id": "…", "name": "Qwen3.5 9B", "tier": "frontier", "quality": 94,
                "qualityBy": { "chat": 95, "general": 94, "coding": 84, "reasoning": 96, "agentic": 81 },
                "contextWindowK": 262, "paramsTotalB": 9, "paramsActiveB": 9, "isMoE": false, "isReasoning": true,
@@ -187,6 +202,7 @@ guessing. Unknown actions are rejected the same way, never a crash.
                "alignmentTax": 1.62 } ],
   "upgrades": [],              // cash upgrades: listed only with a Lab, and the current tech tree has none
   "research": { "infra": null, "posttrain": null, "eval": null,
+                // desc is the English description, also for the infra nodes whose text lives in the locale files
                 "options": [ { "id": "inf_batching", "kind": "tech", "name": "Continuous Batching", "desc": "…",
                                "dataCost": 32, "compute": 7200, "requires": [] } ],
                 // what one more project would lend now: the strongest racks that fit under the 45% cap
@@ -218,7 +234,7 @@ starter Edge racks and one Prompt Guard):
   "guardCaught": 0, "selfHandled": 0, "cacheHits": 0,
   "cashIn": 0.21,              // token revenue
   "clearBonus": 13,            // the SLA contract actually paid: nextWave.clearBonus × Goodput
-  "powerCost": 0.42,           // the whole operating bill = gpuCost + energyCost
+  "powerCost": 0.423,          // the whole operating bill = gpuCost + energyCost (credits, rounded to 0.001)
   "gpuCost": 0.42, "energyCost": 0.003,   // the GPU-hour line and the energy line (power-price incidents scale only energy)
   "avgTtft": 1.222, "p95Ttft": 8.04, "avgLatency": 9.873, "p95Latency": 16.493, "duration": 27.1,
   "byType": { "chat": { "served": 5, "sloMiss": 1, …, "cash": 0.21 } } }
@@ -316,6 +332,11 @@ Stop the relay when you're done; it holds no state and nothing persists.
 - `src/agent/snapshot.ts` — builds the JSON-safe `/state` snapshot from the live
   `GameState` (which itself is *not* `JSON.stringify`-safe).
 - `src/game.ts` — `enableAgentMode` / `agentAct` / `agentSnapshot` / `agentNote`;
-  agent mode suppresses the tutorial so it doesn't overwrite the reason bubble.
+  agent mode suppresses the tutorial so it doesn't overwrite the reason bubble, keeps
+  the bubble's corner over the wave report, and routes every human run-changing input
+  through one ownership gate (`autopilot`, shared with the demo). `agentAct` calls the
+  sim actions directly, so the gate never blocks the agent.
+- `src/agent/diagnose.ts` — `explainRejection`: the specific reason behind a rejected
+  move (it re-walks the action's gates on the unchanged state).
 - `scripts/agent-smoke.mjs` — `node scripts/agent-smoke.mjs http://127.0.0.1:5173/`
   drives the whole loop through a real browser tab and asserts it works.
