@@ -7,15 +7,19 @@
  *
  *   RooflineBars    prefill compute vs decode bandwidth twin-bars, binding marked
  *   VramBar         stacked weights + KV + headroom bar
- *   QualitySparks   per-axis quality sparkbars (5 axes; agentic highlighted)
+ *   QualitySparks   per-axis quality sparkbars (5 axes; agentic highlighted),
+ *                   optionally with the difficulty each axis must clear (ticks)
+ *   OutcomeBar      the seven-outcome stacked bar (one color per outcome)
  *   GoodputGauge    the Goodput headline gauge (§1.3)
  *   LineChart       a generic series line (used for $/Mtoken, utilization)
  *   HeadroomBar     power-vs-cooling headroom bar with a red threshold at the cap
  */
 import { Container, Graphics, Text } from 'pixi.js'
 import { COLORS } from '../config'
-import { AXES } from './metrics'
-import type { CapabilityAxis } from '../core/types'
+import { MODEL_LIST } from '../sim/content'
+import { AXES, type OutcomeTally } from './metrics'
+import { OUTCOMES, type CapabilityAxis, type Outcome } from '../core/types'
+import { outcomeColor } from '../outcomes'
 import { label } from './theme'
 import { t } from '../i18n'
 
@@ -131,7 +135,12 @@ export class VramBar extends Container {
     seg(kvGb, COLORS.cooling) // KV cache — blue
     seg(headroomGb, 0x2a3550) // unused headroom — grey
     g.roundRect(0.5, 0.5, this.w - 1, h - 1, 3).stroke({ width: 1, color: COLORS.panelEdge, alpha: 0.8 })
-    this.legend.text = `■ Weights ${weightsGb.toFixed(0)}  ■ KV ${kvGb.toFixed(0)}  ■ Free ${headroomGb.toFixed(0)}  / ${totalGb} GB`
+    this.legend.text = t('rack.vram.legend', {
+      w: weightsGb.toFixed(0),
+      kv: kvGb.toFixed(0),
+      free: headroomGb.toFixed(0),
+      total: totalGb,
+    })
     this.legend.x = 0
     this.legend.y = h + 3
   }
@@ -141,17 +150,33 @@ export class VramBar extends Container {
  *  Per-axis quality sparkbars (§5.4): 5 axes, agentic highlighted     *
  * ------------------------------------------------------------------ */
 
+/**
+ * Right end of every quality bar: 100, or the strongest score in the roster
+ * (rounded up to 10) so 100+ checkpoints still differ instead of all pinning full.
+ */
+let qualityScaleCache = 0
+export function qualityScale(): number {
+  if (!qualityScaleCache) {
+    let m = 100
+    for (const md of MODEL_LIST) for (const a of AXES) m = Math.max(m, md.qualityBy[a])
+    qualityScaleCache = Math.ceil(m / 10) * 10
+  }
+  return qualityScaleCache
+}
+
+export interface SparkOpts {
+  /** per-axis difficulty the bar must clear: drawn as a marker; the bar turns red below it. */
+  ticks?: Partial<Record<CapabilityAxis, number>>
+  /** value at the right end of the track (default 100; raise it so 100+ scores still differ). */
+  max?: number
+  /** the axis to outline (default agentic, the discriminative one §6.4); null = none. */
+  highlight?: CapabilityAxis | null
+}
+
 export class QualitySparks extends Container {
   private g = new Graphics()
   private labels: Text[] = []
   private vals: Text[] = []
-  private static SHORT: Record<CapabilityAxis, string> = {
-    chat: 'Chat',
-    coding: 'Code',
-    reasoning: 'Rsn',
-    general: 'Gen',
-    agentic: 'Agnt',
-  }
 
   constructor(
     private w = 320,
@@ -168,30 +193,50 @@ export class QualitySparks extends Container {
     }
   }
 
-  /** qualityBy values (0..~100 band). The `agentic` axis is highlighted (§6.4). */
-  draw(quality: Record<CapabilityAxis, number>): void {
+  /** qualityBy values; ticks mark what a request needs on that axis (Normal + Expert inspect). */
+  draw(quality: Record<CapabilityAxis, number>, opts: SparkOpts = {}): void {
     const g = this.g
     g.clear()
     const barX = 52
     const barW = this.w - barX - 36
+    const max = Math.max(1, opts.max ?? 100)
+    const hlAxis = opts.highlight === undefined ? 'agentic' : opts.highlight
     AXES.forEach((axis, i) => {
       const y = i * this.rowH
       const q = quality[axis] ?? 0
-      const frac = Math.max(0, Math.min(1, q / 100))
-      const highlight = axis === 'agentic'
-      const col = highlight ? COLORS.cash : lerpColor(COLORS.danger, COLORS.good, frac)
+      const frac = Math.max(0, Math.min(1, q / max))
+      const tick = opts.ticks?.[axis]
+      const highlight = axis === hlAxis
+      // with ticks, only the judged axes carry a pass/fail color; the rest stay neutral
+      const judgedView = !!opts.ticks && Object.keys(opts.ticks).length > 0
+      const col =
+        tick !== undefined
+          ? q >= tick
+            ? COLORS.good
+            : COLORS.danger
+          : highlight
+            ? COLORS.cash
+            : judgedView
+              ? COLORS.sla
+              : lerpColor(COLORS.danger, COLORS.good, Math.min(1, q / 100))
+      const alpha = tick !== undefined || highlight ? 1 : judgedView ? 0.35 : 0.9
       g.roundRect(barX, y + 2, barW, 9, 2).fill({ color: TRACK, alpha: 0.85 })
-      g.roundRect(barX, y + 2, Math.max(2, barW * frac), 9, 2).fill({ color: col })
+      g.roundRect(barX, y + 2, Math.max(2, barW * frac), 9, 2).fill({ color: col, alpha })
+      if (tick !== undefined) {
+        const tx = barX + barW * Math.max(0, Math.min(1, tick / max))
+        g.rect(Math.round(tx) - 1, y, 2, 13).fill({ color: COLORS.textBright })
+      }
       if (highlight) {
         g.roundRect(barX - 1, y + 1, barW + 2, 11, 3).stroke({ width: 1, color: COLORS.cash, alpha: 0.7 })
       }
       const l = this.labels[i]
-      l.text = QualitySparks.SHORT[axis]
-      l.style.fill = highlight ? COLORS.cash : COLORS.textDim
+      l.text = t('axis.short.' + axis)
+      l.style.fill = highlight ? COLORS.cash : tick !== undefined ? COLORS.text : COLORS.textDim
       l.x = 0
       l.y = y
       const v = this.vals[i]
       v.text = q.toFixed(0)
+      v.style.fill = tick !== undefined && q < tick ? COLORS.danger : COLORS.text
       v.x = barX + barW + 6
       v.y = y
     })
@@ -199,6 +244,55 @@ export class QualitySparks extends Container {
 
   get height2(): number {
     return AXES.length * this.rowH
+  }
+}
+
+/* ------------------------------------------------------------------ *
+ *  Seven-outcome stacked bar (wave report, end screen)                *
+ * ------------------------------------------------------------------ */
+
+/** Text glyph per outcome for legends — so meaning never rests on color alone. */
+export const OUTCOME_CHAR: Record<Outcome, string> = {
+  served: '✓',
+  sloMiss: '◷',
+  bad: '✗',
+  unsafe: '⚠',
+  overRefused: '⊘',
+  unservable: '⇥',
+  leaked: '↓',
+}
+
+export class OutcomeBar extends Container {
+  private g = new Graphics()
+
+  constructor(
+    private w = 320,
+    private h = 12,
+  ) {
+    super()
+    this.addChild(this.g)
+  }
+
+  /** Segments in outcome order, each as wide as its share of every terminal outcome. */
+  draw(c: OutcomeTally): void {
+    const g = this.g
+    g.clear()
+    g.roundRect(0, 0, this.w, this.h, 3).fill({ color: TRACK, alpha: 0.85 })
+    let total = 0
+    for (const o of OUTCOMES) total += c[o]
+    if (total > 0) {
+      let x = 0
+      for (const o of OUTCOMES) {
+        const n = c[o]
+        if (n <= 0) continue
+        const segW = (n / total) * this.w
+        g.rect(x, 0, segW, this.h).fill({ color: outcomeColor(o) })
+        // a hairline between segments keeps adjacent similar hues apart
+        if (x > 0) g.rect(x, 0, 1, this.h).fill({ color: TRACK, alpha: 0.9 })
+        x += segW
+      }
+    }
+    g.roundRect(0.5, 0.5, this.w - 1, this.h - 1, 3).stroke({ width: 1, color: COLORS.panelEdge, alpha: 0.8 })
   }
 }
 

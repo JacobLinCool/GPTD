@@ -210,7 +210,10 @@ export class Game {
       (baseIds, method, target, effort) => this.doPostTrain(baseIds, method, target, effort),
       () => (this.trainingOpen = false),
     )
-    this.models = new ModelOverview(() => (this.modelsOpen = false))
+    this.models = new ModelOverview(
+      () => (this.modelsOpen = false),
+      (id, modelId) => this.doDeploy(id, modelId),
+    )
     this.banner = new IncidentBanner()
     this.report = new WaveReportPanel()
     this.nextWave = new NextWaveCard(this.factory)
@@ -1635,7 +1638,7 @@ export class Game {
     this.models.view.visible = this.modelsOpen
     if (this.modelsOpen) this.models.update(s)
 
-    const reportOpen = this.report.view.visible
+    const reportOpen = this.report.blocksCodex
     if (this.trainingOpen || this.modelsOpen || reportOpen) this.codex.hide()
     else if (!this.agentMode && !this.demoActive) this.tutorial.update(s)
     this.codex.update(dt)
