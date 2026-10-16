@@ -91,25 +91,28 @@ import { explainRejection } from '../src/agent/diagnose'
 
 /* --------------------------------------------------------------------------
  * Active-roster checkpoints used by the tests (the frontier-tolerance gate, §calibrate,
- * trims the candidate pool to ~42). Open weights are owned for free; gates are VRAM
- * (paramsTotalB) and METHOD unlocks (MoE/Reasoning).
- *   STARTER  : Granite 4.0 H 1B  — 1 GB, dense, no method. The free default starter.
- *   GENERAL  : Qwen3.6-27B       — 27 GB dense, REASONING model. Fits Standard at FP8.
- *   CODER    : Gemma 4 31B       — 31 GB dense, no method. The most code-leaning kept model.
- *   BIG      : Qwen3-Next-80B    — 80 GB total / 3 B active, MoE. Overflows Frontier, fits Pod.
- *   WEAK     : Nemotron 3 Nano 4B— 4 GB dense; below the reasoning/agentic lines (post-train headroom).
- *   MOE      : Nemotron 3 Nano 30B — 30 GB total / 3.5 B active, MoE+reasoning.
- *   FRONTIER : Qwen3-235B-A22B   — 235 GB MoE+reasoning. Fits SuperPod; big yet agentic < 82 (scale≠agentic).
- *   MLA      : Kimi K2 Thinking  — 1 T MoE, MLA attention (latent-KV tests).
+ * trims the candidate pool to ~60). Open weights are owned for free; the gate is VRAM
+ * (paramsTotalB × the resident bytes/param).
+ *   STARTER  : the smallest dense non-thinking kept model (DEFAULT_MODEL_ID).
+ *   GENERAL  : Qwen3.6-27B       — 27B dense BF16, REASONING model. Fits Standard at FP8.
+ *   CODER    : Gemma 4 31B       — 31B dense BF16. The most code-leaning kept model.
+ *   BIG      : Qwen3.5-122B-A10B — 122B total / 10B active BF16 MoE. Overflows Frontier at
+ *              BF16, fits it at FP8, fits a Pod.
+ *   WEAK     : Nemotron 3 Nano 4B— 4B dense; below the reasoning/agentic lines (post-train headroom).
+ *   MOE      : Nemotron Cascade 2 30B-A3B — 31.6B total / 3.2B active hybrid Mamba-2 MoE, thinking.
+ *   FRONTIER : MiniMax-M3        — 428B/23B BF16 MoE thinking model; a terminal-agent frontier.
+ *   MLA      : GLM-5.2           — 753B MoE, MLA attention (latent-KV tests).
+ *   AGENT_SHORT : gpt-oss 120B   — big (117B) yet agentic < 82: scale alone is not agentic skill.
  * ------------------------------------------------------------------------ */
 const STARTER = DEFAULT_MODEL_ID
 const GENERAL = 'qwen36_27b'
 const CODER = 'g_gemma_4_31b_2'
-const BIG = 'qwen3_next_80b'
+const BIG = 'qwen35_122b'
 const WEAK = 'g_nvidia_nemotron_3_nano_4b_2'
-const MOE = 'nemotron3_nano_30b'
-const FRONTIER = 'qwen3_235b'
-const MLA = 'kimi_k2'
+const MOE = 'g_nemotron_cascade_2_30b_a3b_2'
+const FRONTIER = 'minimax_m3'
+const MLA = 'glm_5_2'
+const AGENT_SHORT = 'gptoss_120b'
 
 function runFor(s: GameState, seconds: number): void {
   const steps = Math.round(seconds / SIM_DT)
@@ -278,7 +281,7 @@ describe('power & cooling (REAL watts / kW, §6.5)', () => {
     infraOn(s, 'inf_wq_fp8') // FP8
     expect(serverPower(s, fp16)).toBeCloseTo((700 / 1000) * RACK_UTILIZATION * 0.85, 6)
     // an NVL72 (72× 1000 W = 72 kW TDP) reads in real tens of kW — and ≈ its heat.
-    const giga = loadout(s, 'hw_giga', 'kimi_k2')
+    const giga = loadout(s, 'hw_giga', MLA)
     expect(serverPower(s, giga)).toBeGreaterThan(40) // tens of kW, real datacenter scale
     expect(serverHeat(s, giga)).toBeCloseTo(serverPower(s, giga), 6) // heat ≈ power
   })
@@ -492,7 +495,7 @@ describe('racks & model deployment', () => {
     expect(deployModel(s, t.id, GENERAL)).toBe(true)
     expect(t.modelId).toBe(GENERAL)
     expect(s.meters.cash).toBe(cash) // deployment is free
-    // BIG (Llama-3.3-70B, 70 GB FP8) still does not fit a Standard rack
+    // BIG (Qwen3.5-122B, 122 GB at FP8) still does not fit a Standard rack
     expect(deployModel(s, t.id, BIG)).toBe(false)
     // redeploying the same model is a no-op
     expect(deployModel(s, t.id, GENERAL)).toBe(false)
@@ -502,12 +505,12 @@ describe('racks & model deployment', () => {
     const s = createState(34)
     s.meters.cash = 99999
     s.phase = 'build'
-    infraOn(s, 'inf_batching', 'inf_wq_fp8') // FP8 so a 24–30B model fits the 48 GB standard rack
+    infraOn(s, 'inf_batching', 'inf_wq_fp8') // FP8 so a 30B-class model fits the 48 GB standard rack
     tryBuild(s, 'srv_edge', 3, 2)
     const t = lastTower(s)
     upgradeHardware(s, t.id) // → standard (48 GB)
-    // Devstral-24B (dense coder) and Qwen3-30B-A3B (MoE + reasoning) BOTH deploy
-    // freely now: MoE sparsity / reasoning are model attributes, not deploy gates.
+    // Gemma 4 31B (dense coder) and Nemotron Cascade 2 30B-A3B (MoE + reasoning) BOTH
+    // deploy freely: MoE sparsity / reasoning are model attributes, not deploy gates.
     expect(deployModel(s, t.id, CODER)).toBe(true)
     expect(deployModel(s, t.id, MOE)).toBe(true)
   })
@@ -553,7 +556,7 @@ describe('model methods (MoE / Reasoning as deploy gates)', () => {
 
   it('MoE serves cheap (active params) but VRAM tracks ALL experts (total params)', () => {
     const s = createState(42)
-    const moeLo = loadout(s, 'hw_perf', MOE) // 30.5B total / 3.3B active
+    const moeLo = loadout(s, 'hw_perf', MOE) // 31.6B total / 3.2B active
     const denseLo = loadout(s, 'hw_perf', 'qwen36_27b') // 27B dense, ~27B active
     expect(serverFitsMemory(s, moeLo)).toBe(true)
     expect(serverFitsMemory(s, denseLo)).toBe(true)
@@ -652,7 +655,7 @@ describe('Post-Training Studio (§1)', () => {
   })
 
   it('a recipe pays Data, occupies the posttrain track, and on completion creates a derived model with the expected gain + lineage', () => {
-    // GRPO reasoning on Llama-3.3-70B (a real R1-style self-built reasoner, §1.4).
+    // GRPO reasoning on Qwen3.5-122B (an R1-style self-built reasoner, §1.4).
     const s = studioRig(50, ['pt_rl'])
     const base = MODEL_DEFS[BIG]
     expect(methodUnlocked(s, 'grpo')).toBe(true)
@@ -756,7 +759,7 @@ describe('Post-Training Studio (§1)', () => {
 
   it('a derived model is deployable (resolveModel + fits VRAM) and serves in combat', () => {
     const s = studioRig(56, ['pt_rl'])
-    infraOn(s, 'inf_wq_fp8') // FP8: a 70B fits a 141 GB H200
+    infraOn(s, 'inf_wq_fp8') // FP8: a 122B fits a 141 GB H200
     expect(startPostTrain(s, [BIG], 'grpo', 'agentic', 1.0)).toBe(true)
     trainToCompletion(s)
     const drv = s.derivedModels[`drv_0`]
@@ -806,9 +809,9 @@ describe('Post-Training Studio (§1)', () => {
     // a GRPO-agentic run on a frontier base closes the agentic lane (§1.5: this is
     // the player-created replacement for the deleted ft_agent card).
     const s = studioRig(58, ['pt_rl'])
-    const base = MODEL_DEFS[BIG] // 70B, agentic well below 82
+    const base = MODEL_DEFS[AGENT_SHORT] // 117B, agentic below 82
     expect(base.qualityBy.agentic).toBeLessThan(82)
-    expect(startPostTrain(s, [BIG], 'grpo', 'agentic', 1.5)).toBe(true)
+    expect(startPostTrain(s, [AGENT_SHORT], 'grpo', 'agentic', 1.5)).toBe(true)
     trainToCompletion(s)
     const drv = s.derivedModels[`drv_0`]
     expect(drv.qualityBy.agentic).toBeGreaterThan(base.qualityBy.agentic)
@@ -864,7 +867,10 @@ describe('Studio preview parity (§5.2 S9)', () => {
     expect(prev.fields.paramsActiveB).toBe(drv.paramsActiveB)
     expect(prev.fields.isMoE).toBe(drv.isMoE)
     expect(prev.fields.isReasoning).toBe(drv.isReasoning)
-    expect(prev.fields.weightBytes).toBe(drv.weightBytes)
+    expect(prev.fields.nativeWeightBytes).toBe(drv.nativeWeightBytes)
+    expect(prev.fields.kvBytesPerToken).toBe(drv.kvBytesPerToken)
+    expect(prev.fields.kvStateMbPerReq).toBe(drv.kvStateMbPerReq)
+    expect(prev.fields.thinkTokens).toBe(drv.thinkTokens)
     expect(prev.fields.contextWindowK).toBe(drv.contextWindowK)
     expect(prev.fields.alignment.safety).toBeCloseTo(drv.alignment.safety, 6)
     expect(prev.fields.alignment.overRefusal).toBeCloseTo(drv.alignment.overRefusal, 6)
@@ -885,7 +891,7 @@ describe('Studio preview parity (§5.2 S9)', () => {
   it('CAI safety preview (safe-completion Pareto) matches', () => {
     assertParity(studioRig(122, ['pt_lora', 'pt_pref', 'pt_cai']), BIG, 'cai', 'safety', 1.0)
   })
-  it('QAT preview (reshapes deploy: weightBytes → 0.5, −2 quality) matches', () => {
+  it('QAT preview (reshapes deploy: nativeWeightBytes → 0.5, −2 quality) matches', () => {
     assertParity(studioRig(123, ['pt_qat']), BIG, 'qat', 'general', 1.0)
   })
   it('Distill preview (student body swap) matches', () => {
@@ -922,12 +928,12 @@ describe('roster balance fixes (§1.5)', () => {
     // the small MoE answers fast but its agentic axis is below the wall
     expect(MODEL_DEFS[MOE].qualityBy.agentic).toBeLessThan(AGENT_DIFFICULTY)
     // a top terminal-agent frontier clears the lane outright
-    expect(MODEL_DEFS['kimi_k2'].qualityBy.agentic).toBeGreaterThanOrEqual(AGENT_DIFFICULTY)
-    // …but even a 235B SuperPod frontier (Qwen3-235B) is only MID on Terminal-Bench Hard,
-    // so its base agentic is short of the wall — a player GRPO-agentic run lifts it over.
+    expect(MODEL_DEFS[FRONTIER].qualityBy.agentic).toBeGreaterThanOrEqual(AGENT_DIFFICULTY)
+    // …but a big model that is only MID on Terminal-Bench Hard (gpt-oss 120B) is short
+    // of the wall — a player GRPO-agentic run lifts it over.
     const s = studioRig(59, ['pt_rl'])
-    expect(MODEL_DEFS[FRONTIER].qualityBy.agentic).toBeLessThan(AGENT_DIFFICULTY)
-    expect(startPostTrain(s, [FRONTIER], 'grpo', 'agentic', 2.0)).toBe(true)
+    expect(MODEL_DEFS[AGENT_SHORT].qualityBy.agentic).toBeLessThan(AGENT_DIFFICULTY)
+    expect(startPostTrain(s, [AGENT_SHORT], 'grpo', 'agentic', 2.0)).toBe(true)
     trainToCompletion(s)
     const drv = s.derivedModels[`drv_0`]
     expect(drv.qualityBy.agentic).toBeGreaterThanOrEqual(AGENT_DIFFICULTY)
@@ -942,8 +948,7 @@ describe('roster balance fixes (§1.5)', () => {
     expect(nem.paramsActiveB).toBe(12)
     // a real active-param advantage → cheaper to serve than the old dense 253B:
     // decode b=1 ∝ 1 / activeB, so 12B active decodes far faster than 253B dense.
-    const s = createState(60)
-    infraOn(s, 'inf_wq_fp8') // FP8 → 120 GB fits the 8× H200 pod
+    const s = createState(60) // BF16: 240 GB of weights fit the 8× H200 pod
     expect(serverFitsMemory(s, loadout(s, 'hw_pod', 'nemotron_super'))).toBe(true)
     expect(serverSpeed(s, loadout(s, 'hw_pod', 'nemotron_super'))).toBeGreaterThan(0)
   })
@@ -951,15 +956,15 @@ describe('roster balance fixes (§1.5)', () => {
 
 describe('hardware/model split (expert mechanics)', () => {
   // each rack tier paired with the model it hosts on the real ladder; tested at
-  // FP8 (the standard serving precision that fits a 70B on a single H200, etc.).
+  // FP8 (the standard serving precision that fits a 122B on a single H200, etc.).
   const PAIRS: [string, string][] = [
-    ['hw_edge', STARTER], // 8B → 24 GB L4
-    ['hw_standard', GENERAL], // 32.8B → 48 GB L40S
-    ['hw_perf', 'qwen36_27b'], // 27B → 80 GB H100
-    ['hw_frontier', BIG], // 70B (FP8) → 141 GB H200
+    ['hw_edge', STARTER], // sub-1B → 24 GB L4
+    ['hw_standard', GENERAL], // 27B (FP8) → 48 GB L40S
+    ['hw_perf', AGENT_SHORT], // 117B MXFP4 (~65 GB) → 80 GB H100
+    ['hw_frontier', BIG], // 122B (FP8) → 141 GB H200
     ['hw_pod', 'nemotron_super'], // 120B MoE / 12B active → 8× H200 (1128 GB)
-    ['hw_superpod', FRONTIER], // 671B → 8× B200 (1536 GB)
-    ['hw_giga', 'kimi_k2'], // 1T → NVL72 (13824 GB)
+    ['hw_superpod', MLA], // 753B (FP8) → 8× B200 (1536 GB)
+    ['hw_giga', 'kimi_k3'], // 2.78T MXFP4 (~1.56 TB) → NVL72 (13824 GB)
   ]
   const fp8State = (seed: number): GameState => {
     const s = createState(seed)
@@ -1014,26 +1019,25 @@ describe('hardware/model split (expert mechanics)', () => {
   })
 
   it('a model that does not fit VRAM cannot serve at all', () => {
-    const s = createState(21) // FP16
-    // Llama-3.3-70B (140 GB FP16) jammed into a 24 GB edge rack
+    const s = createState(21) // BF16
+    // Qwen3.5-122B (244 GB BF16) jammed into a 24 GB edge rack
     const lo = loadout(s, 'hw_edge', BIG)
     expect(serverFitsMemory(s, lo)).toBe(false)
     expect(serverTargets(s, lo)).toBe(0)
     expect(serverSpeed(s, lo)).toBe(0)
-    // 70B FP16 = 140 GB > one H200 (141 with framework) — needs a Pod or FP8
+    // 122B BF16 = 244 GB > one H200 (141) — needs a Pod or FP8
     expect(serverFitsMemory(s, loadout(s, 'hw_frontier', BIG))).toBe(false)
     expect(serverFitsMemory(s, loadout(s, 'hw_pod', BIG))).toBe(true)
-    // a trillion-param Kimi K2 (2000 GB FP16) needs SuperPod-or-larger VRAM
-    expect(serverFitsMemory(s, loadout(s, 'hw_frontier', 'kimi_k2'))).toBe(false)
-    expect(serverFitsMemory(s, loadout(s, 'hw_pod', 'kimi_k2'))).toBe(false)
-    expect(serverFitsMemory(s, loadout(s, 'hw_superpod', 'kimi_k2'))).toBe(false) // 2000 > 1536
-    expect(serverFitsMemory(s, loadout(s, 'hw_giga', 'kimi_k2'))).toBe(true)
+    // the 2.78T Kimi K3 is already MXFP4 (~1.56 TB): beyond an 8× B200 (1536 GB) — NVL72 only
+    expect(serverFitsMemory(s, loadout(s, 'hw_pod', 'kimi_k3'))).toBe(false)
+    expect(serverFitsMemory(s, loadout(s, 'hw_superpod', 'kimi_k3'))).toBe(false)
+    expect(serverFitsMemory(s, loadout(s, 'hw_giga', 'kimi_k3'))).toBe(true)
   })
 
   it('FP8 quantization is effectively lossless: memory halves, decode speeds up, quality intact', () => {
     const base = createState(22) // FP16
     const fp8 = fp8State(22)
-    const lo = loadout(base, 'hw_pod', BIG) // FP16 70B fits a Pod; FP8 fits a frontier too
+    const lo = loadout(base, 'hw_pod', BIG) // BF16 122B fits a Pod; FP8 fits a frontier too
     const model = MODEL_DEFS[BIG]
     // VRAM = paramsTotalB × bytesPerParam: FP16=2 bytes → FP8=1 byte (half)
     expect(serverModelMemory(base, lo)).toBeCloseTo(model.paramsTotalB * 2, 6)
@@ -1068,11 +1072,11 @@ describe('hardware/model split (expert mechanics)', () => {
     expect(int4ContextPenalty(fp8, 16000)).toBe(0)
   })
 
-  it('Quantization lets a 70B model squeeze onto a single frontier GPU', () => {
+  it('Quantization lets a 122B model squeeze onto a single frontier GPU', () => {
     const s = createState(26)
-    const lo = loadout(s, 'hw_frontier', BIG) // 70B FP16 = 140 GB > 141 with framework
+    const lo = loadout(s, 'hw_frontier', BIG) // 122B BF16 = 244 GB > 141
     expect(serverFitsMemory(s, lo)).toBe(false)
-    infraOn(s, 'inf_wq_fp8') // FP8 = 70 GB → fits 141 GB H200
+    infraOn(s, 'inf_wq_fp8') // FP8 = 122 GB → fits 141 GB H200
     expect(serverFitsMemory(s, lo)).toBe(true)
   })
 
@@ -1307,27 +1311,23 @@ describe('the serving-systems era ladder (Orca → vLLM, s.infra-driven)', () =>
     expect(kvFreeGb(s, lo)).toBeCloseTo(headroom * 0.96, 6)
   })
 
-  it('per-request KV follows the real formula (2·layers·kvHeads·headDim·seq·bytes)', () => {
+  it('per-request KV = per-token KV over the KV-bearing layers × context + the constant state', () => {
     const s = createState(92)
-    const model = MODEL_DEFS[GENERAL] // Qwen3.6-27B: 64 layers, 8 kvHeads, 128 headDim, GQA
-    // 27B @ 8192 tokens, FP16 KV (2 bytes/elem); GQA is reflected by the low kvHeads
-    // already (NO global GQA ×0.4 any more — R4: attention family is a model attr).
-    const expected = (2 * 64 * 8 * 128 * 8192 * 2) / 1e9
-    expect(kvPerReqGb(s, model, 8192)).toBeCloseTo(expected, 4)
-    // KV grows linearly with sequence length (decode inflates it)
-    expect(kvPerReqGb(s, model, 16384)).toBeCloseTo(kvPerReqGb(s, model, 8192) * 2, 4)
-    // FP8 KV-cache quant (s.infra.kv.quantBytes 2 → 1) halves the per-request KV
+    const model = MODEL_DEFS[GENERAL] // Qwen3.6-27B: 16 full-attention + 48 Gated DeltaNet layers
+    // only the 16 full-attention layers keep a growing cache: 2 (K,V) × 4 kvHeads × 256 headDim × 2 B
+    expect(model.attn).toBe('hybrid-linear')
+    expect(model.kvLayers).toBe(16)
+    expect(model.kvBytesPerToken).toBe(16 * 2 * 4 * 256 * 2)
+    // the DeltaNet layers hold a constant recurrent state per request instead
+    expect(model.kvStateMbPerReq).toBeGreaterThan(100)
+    const expected = (model.kvBytesPerToken * 8192) / 1e9 + model.kvStateMbPerReq / 1000
+    expect(kvPerReqGb(s, model, 8192)).toBeCloseTo(expected, 6)
+    // only the per-token part grows with sequence length (decode inflates it)
+    const grow = kvPerReqGb(s, model, 16384) - kvPerReqGb(s, model, 8192)
+    expect(grow).toBeCloseTo((model.kvBytesPerToken * 8192) / 1e9, 6)
+    // FP8 KV-cache quant (s.infra.kv.quantBytes 2 → 1) halves the GROWING part
     infraOn(s, 'inf_paged', 'inf_kvquant_fp8')
-    expect(kvPerReqGb(s, model, 8192)).toBeCloseTo(expected * 0.5, 4)
-  })
-
-  it('MLA stores a compact latent: far less KV than a GQA model of similar shape', () => {
-    const s = createState(93)
-    const mla = MODEL_DEFS[MLA] // Kimi K2 Thinking: attn MLA
-    expect(mla.attn).toBe('MLA')
-    // MLA applies the ×0.067 latent factor (DeepSeek −93.3%, §4.6)
-    const raw = (2 * mla.layers * mla.kvHeads * mla.headDim * 8192 * 2) / 1e9
-    expect(kvPerReqGb(s, mla, 8192)).toBeCloseTo(raw * 0.067, 4)
+    expect(kvPerReqGb(s, model, 8192)).toBeCloseTo((model.kvBytesPerToken * 8192 * 0.5) / 1e9 + model.kvStateMbPerReq / 1000, 6)
   })
 
   it('the GQA ×0.4 tech-node global is GONE (grouped attention is a model attribute)', () => {
@@ -1408,22 +1408,25 @@ describe('directional fidelity — every technique keeps its real cost', () => {
   })
 })
 
-/** Build a small-window model (Qwen3-1.7B, 32K real window) rack on a Standard GPU rack. */
-function buildPhi4(s: GameState, col: number, row: number): void {
+/** The small-window model of the window tests: Qwen3-0.6B (32,768-token native window). */
+const SMALL_WINDOW = 'g_qwen3_0_6b_instruct_reasonin'
+
+/** Build a small-window model rack on a Standard GPU rack. */
+function buildSmallWindow(s: GameState, col: number, row: number): void {
   tryBuild(s, 'srv_edge', col, row)
   const t = lastTower(s)
-  upgradeHardware(s, t.id) // edge → standard (48 GB fits the 1.7B model easily)
-  deployModel(s, t.id, 'g_qwen3_1_7b_instruct_reasonin')
+  upgradeHardware(s, t.id) // edge → standard (48 GB fits the 0.6B model easily)
+  deployModel(s, t.id, SMALL_WINDOW)
 }
 
 describe('long context (real-token window, KV admission, prefix-cache behavior)', () => {
   it('a prompt beyond the model real context window is unservable, not just worse', () => {
     const s = createState(60)
     richBuild(s)
-    // Qwen3-1.7B's real window is 32K tokens; a 36K-token summ prompt does not fit ANY of them.
-    for (const col of [2, 5, 8, 11]) buildPhi4(s, col, 2)
-    const windowTokens = serverCtxWindowTokens(s, loadout(s, 'hw_standard', 'g_qwen3_1_7b_instruct_reasonin'))
-    expect(windowTokens).toBeCloseTo(32 * 1000 * (1 + 0), 0)
+    // Qwen3-0.6B's real window is ~33K tokens; a 36K-token summ prompt does not fit ANY of them.
+    for (const col of [2, 5, 8, 11]) buildSmallWindow(s, col, 2)
+    const windowTokens = serverCtxWindowTokens(s, loadout(s, 'hw_standard', SMALL_WINDOW))
+    expect(windowTokens).toBeCloseTo(MODEL_DEFS[SMALL_WINDOW].contextWindowK * 1000, 0)
     expect(windowTokens).toBeLessThan(36000) // the oversized prompt
     liveWave(s)
     spawnRequest(s, 'summ', 1, 1, 1, 1, 3) // contextMul 3 → ~36000 input tokens
@@ -1440,10 +1443,10 @@ describe('long context (real-token window, KV admission, prefix-cache behavior)'
   it('a Cache no longer rescues traffic beyond the model window — it only skips prefill', () => {
     const s = createState(61)
     richBuild(s)
-    for (const col of [2, 5, 8]) buildPhi4(s, col, 2)
-    tryBuild(s, 'cache', 5, 0) // aura over the Phi-4 racks
+    for (const col of [2, 5, 8]) buildSmallWindow(s, col, 2)
+    tryBuild(s, 'cache', 5, 0) // aura over the small-window racks
     liveWave(s)
-    // rag is cacheable long-context: 8000 × contextMul 5 = ~40000 tokens, over the 32K window
+    // rag is cacheable long-context: 8000 × contextMul 5 = ~40000 tokens, over the ~33K window
     for (let i = 0; i < 6; i++) spawnRequest(s, 'rag', 1, 1, 1, 1, 5)
     runFor(s, 80)
     // a cache hit now only skips PREFILL; the response still decodes within the model
@@ -1457,24 +1460,24 @@ describe('long context (real-token window, KV admission, prefix-cache behavior)'
   })
 
   it('long contexts crowd out batch concurrency (real KV admission)', () => {
-    // Qwen3.6-27B's KV (64 layers × 8 kvHeads): two 48K-token rag prompts
-    // cannot both fit the KV budget of a Performance (H100, 80 GB) rack.
+    // K2-Horizon-3.7B is plain full-attention GQA (36 layers × 8 KV heads × 128 = 144 KB of
+    // KV per token): two 48K-token rag prompts cannot both fit the KV budget of an Edge
+    // (L4, 24 GB) rack holding its BF16 weights.
+    const MODEL = 'k2h_3_7b'
     const build = (extraUpgrades?: (g: GameState) => void): GameState => {
       const s = createState(62)
       richBuild(s)
-      s.infra.weightQuantBytes = 2 // FP16 so the KV-budget math is the gemma example
+      s.infra.weightQuantBytes = 2 // BF16 weights so the KV budget is the 24 GB example
       extraUpgrades?.(s)
       tryBuild(s, 'srv_edge', 3, 2)
-      const t = lastTower(s)
-      upgradeHardware(s, t.id) // → standard
-      upgradeHardware(s, t.id) // → performance (80 GB)
-      deployModel(s, t.id, 'qwen36_27b')
+      deployModel(s, lastTower(s).id, MODEL)
       return s
     }
     const s = build()
     const t = lastTower(s)
     const lo = loadout(s, t.hwId, t.modelId)
-    const model = MODEL_DEFS['qwen36_27b']
+    const model = MODEL_DEFS[MODEL]
+    expect(model.attn).toBe('GQA')
     // two 48K-token requests exceed the KV budget → only one is admitted (rag ISL 8000 × ctx 6)
     expect(kvPerReqGb(s, model, 48000) * 2).toBeGreaterThan(kvFreeGb(s, lo))
     liveWave(s)
@@ -1483,10 +1486,9 @@ describe('long context (real-token window, KV admission, prefix-cache behavior)'
     runFor(s, 3)
     expect(t.load).toBeCloseTo(0.5, 6) // 1 of 2 slots — the second rag is locked out
 
-    // maxed KV-Cache (prefix) + FlashAttention shrink the footprint and restore batching
+    // FP8 KV-cache quant halves the per-token footprint and restores batching
     const s2 = build((g) => {
-      g.infra.kv.prefixHitCeil = 0.85 // prefix-cache level 2
-      g.infra.kv.flash = 2 // FlashAttention level 2
+      g.infra.kv.quantBytes = 1
     })
     const t2 = lastTower(s2)
     const lo2 = loadout(s2, t2.hwId, t2.modelId)

@@ -49,9 +49,25 @@ export function serverSpec(lo: Loadout): ServerSpec {
   return lo.model?.spec ?? 'general'
 }
 
-/** INT4 PTQ active (s.infra.weightQuantBytes dropped to 0.5): the quality-tax / KV-element switch (§4.5). */
+/** INT4 PTQ researched (s.infra.weightQuantBytes dropped to 0.5): the fleet-wide power switch (§4.5). */
 function int4On(s: GameState): boolean {
   return s.infra.weightQuantBytes <= 0.5
+}
+
+/** Precision class (bits per weight) of a bytes/param figure: 16-bit, 8-bit or 4-bit (block scales included). */
+function precisionBits(bytesPerParam: number): 16 | 8 | 4 {
+  return bytesPerParam >= 1.5 ? 16 : bytesPerParam >= 0.75 ? 8 : 4
+}
+
+/**
+ * Post-training quantization below the checkpoint's NATIVE precision (§4.5): the
+ * serving-layer INT4 PTQ is lossy only for a model that was released (and benchmarked)
+ * at 8 or 16 bits. A natively 4-bit release — gpt-oss's MXFP4, Kimi-K2-Thinking's INT4
+ * QAT, DeepSeek-V4's FP4 experts, a Studio QAT checkpoint — is already measured at that
+ * precision, so re-packing it costs nothing. FP8 is effectively lossless (ACL'25).
+ */
+export function ptqBelowNative(s: GameState, model: ModelDef): boolean {
+  return int4On(s) && precisionBits(model.nativeWeightBytes) > 4
 }
 
 /**
@@ -66,16 +82,15 @@ export function methodsUnlocked(_s: GameState, _model: ModelDef): boolean {
 }
 
 /**
- * Bytes per weight param after PTQ weight-quant (§4.5/§5.6). The deploy default
- * is the model's authored `weightBytes` (FP16=2); serving-layer PTQ lowers it to
- * `s.infra.weightQuantBytes` (FP8=1, INT4/NVFP4=0.5) when that is the more
- * aggressive (smaller) precision. This is the SINGLE quant action point: it feeds
- * VRAM and the decode bandwidth term, but NOT the W4A16 compute roof (we pick the
- * matching tensor rate). A QAT-derived checkpoint authors a low `weightBytes`
- * directly, so `min` lets either path win.
+ * Resident bytes per weight param (§4.5/§5.6): the checkpoint's NATIVE release
+ * precision (`nativeWeightBytes`: BF16 2, FP8 ≈1, MXFP4/INT4/FP4 ≈0.55), lowered by
+ * serving-layer PTQ (`s.infra.weightQuantBytes`: FP8 1, INT4/NVFP4 0.5) when that is
+ * the smaller. This is the SINGLE quant action point: it feeds VRAM and the decode
+ * bandwidth term, and picks the matching tensor rate; whether the quantization costs
+ * quality is `ptqBelowNative`.
  */
 function bytesPerParam(s: GameState, model: ModelDef): number {
-  return Math.min(model.weightBytes, s.infra.weightQuantBytes)
+  return Math.min(model.nativeWeightBytes, s.infra.weightQuantBytes)
 }
 
 /** Resident weight memory in GB = paramsTotalB × bytesPerParam (§5.6; MoE = all experts resident). */
@@ -113,11 +128,10 @@ export function serverDeployable(s: GameState, lo: Loadout): boolean {
  */
 export function serverQualityVs(s: GameState, lo: Loadout, axis: ServerSpec): number {
   if (!lo.model) return 0
-  // FP8 is effectively lossless (ACL'25); INT4 PTQ pays a small flat quality tax
-  // here and a steep long-context tax in combat (see updateCombat). The +quality
-  // buff `scale_pretrain` and the GQA tax are GONE in P3c: model polish is the
-  // Post-Training Studio (P3b) and GQA/MLA are model attributes (R4), not the tree.
-  const int4Tax = int4On(s) ? 2 : 0
+  // FP8 is effectively lossless (ACL'25); INT4 PTQ below the release precision pays a
+  // small flat quality tax here and a steep long-context tax in combat (see
+  // int4ContextPenalty). A natively 4-bit checkpoint pays neither (ptqBelowNative).
+  const int4Tax = ptqBelowNative(s, lo.model) ? 2 : 0
   // §3.2 alignment tax (P3d): an aligned model trades capability for safety — a
   // hard-refusal model pays the steepest tax; a safe-completion model pays less
   // (the §3.1 Pareto point). Applied ON TOP of qualityBy, never baked into it.
@@ -170,18 +184,19 @@ export function serverContext(s: GameState, lo: Loadout): number {
 }
 
 /**
- * KV-cache footprint (GB) of ONE in-flight request at a given REAL sequence
- * length (§5.6): 2 × layers × kvHeads × headDim × contextLen × bytesPerElem.
- * MLA stores a compact latent → ×0.067 (DeepSeek MLA −93.3%, §4.6); GQA/MQA are
- * reflected naturally by the model's low kvHeads — there is NO global GQA ×0.4
- * any more (R4: grouped/latent attention is a model attribute, not a tech node).
- * The KV-element bytes come from `s.infra.kv.quantBytes` (FP16=2 → FP8=1 → INT4 0.5).
+ * KV-cache footprint (GB) of ONE in-flight request at a given REAL sequence length
+ * (§5.6): the model's per-token KV over its KV-bearing layers, scaled by the context and
+ * the KV-quant width, plus the constant per-request state that does not grow:
+ *   kv = kvBytesPerToken × contextLen × (quantBytes / 2) + kvStateMbPerReq
+ * `kvBytesPerToken` is BF16 and architecture-true (config.json → data/model-arch.json):
+ * MLA stores one latent + rope per layer, CSA/HCA a compressed entry, and the sliding-
+ * window and linear/SSM layers of a hybrid none — their bounded windows and recurrent
+ * state are `kvStateMbPerReq`. KV-quant research (`s.infra.kv.quantBytes`, FP16=2 → FP8=1
+ * → INT4 0.5) narrows the growing part.
  */
 export function kvPerReqGb(s: GameState, model: ModelDef, contextLen: number): number {
-  // KV-quant research (s.infra.kv.quantBytes) sets the per-element width.
-  const bytesPerElem = s.infra.kv.quantBytes
-  let kv = (2 * model.layers * model.kvHeads * model.headDim * Math.max(1, contextLen) * bytesPerElem) / 1e9
-  if (model.attn === 'MLA') kv *= 0.067
+  const growing = (model.kvBytesPerToken * Math.max(1, contextLen) * (s.infra.kv.quantBytes / 2)) / 1e9
+  let kv = growing + model.kvStateMbPerReq / 1000
   // FlashAttention / KV-Cache (prefix) research shave per-request KV overhead a little.
   kv *= Math.max(0.55, 1 - 0.08 * s.infra.kv.flash) * Math.max(0.6, 1 - 0.12 * prefixLevel(s))
   return kv
@@ -323,9 +338,14 @@ export function serverBandwidthCeiling(s: GameState, lo: Loadout): number {
   return decodeTokSb1(s, lo) * speedMul(s, lo) * bwMul(s) * specMul(s, 1)
 }
 
-/** INT4's real weak spot: quality collapses on long-context requests (>8K real tokens). */
-export function int4ContextPenalty(s: GameState, contextLenTokens: number): number {
-  return int4On(s) && contextLenTokens > 8000 ? 6 : 0
+/**
+ * INT4 PTQ's real weak spot: quality collapses on long-context requests (>8K real
+ * tokens) — for a checkpoint quantized below its release precision. Without the
+ * serving model, the fleet-wide switch is the conservative answer.
+ */
+export function int4ContextPenalty(s: GameState, contextLenTokens: number, model?: ModelDef): number {
+  const taxed = model ? ptqBelowNative(s, model) : int4On(s)
+  return taxed && contextLenTokens > 8000 ? 6 : 0
 }
 
 /**
@@ -467,13 +487,17 @@ export function guardLoadout(spec: NonNullable<TowerDef['guardrail']>): Loadout 
     paramsActiveB: spec.guardParamsActiveB,
     isMoE: false,
     isReasoning: false,
+    thinkTokens: 0,
     quality: 80,
     qualityBy: { chat: 80, coding: 60, reasoning: 70, general: 80, agentic: 60 },
     layers: 48,
+    kvLayers: 48,
     kvHeads: 8,
     headDim: 128,
     attn: 'GQA',
-    weightBytes: 2,
+    kvBytesPerToken: 2 * 48 * 8 * 128 * 2,
+    kvStateMbPerReq: 0,
+    nativeWeightBytes: 2,
     contextWindowK: 32,
     alignment: { safety: 90, refusalStyle: 'safe-completion', overRefusal: 0.02 },
     instructFollow: 90,

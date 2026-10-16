@@ -746,14 +746,14 @@ describe('balance: heuristic autoplay survives deep into the 100-wave gauntlet',
 
 /**
  * §6.4 / §1.5 H2 teaching invariants — the roster-balance properties the campaign
- * is built to TEACH (capability compression: the agent/SWE lane is the wall that
- * does not compress). These are static facts about the calibrated roster + Studio,
+ * is built to TEACH: the agent/SWE lane is a capability axis of its own, not a
+ * by-product of size. These are static facts about the calibrated roster + Studio,
  * independent of any single playthrough.
  */
 describe('balance: teaching invariants (H2 agent wall / capability compression)', () => {
-  it('H2: the tiny MoE nemotron3_nano_30b is fast+smart but the AGENT lane is its wall', () => {
-    const q = MODEL_DEFS['nemotron3_nano_30b'].qualityBy
-    // it clears chat/reasoning with margin (the MoE "frontier answers at 3.3B active"),
+  it('H2: a tiny 30B-A3B MoE is fast+smart but the AGENT lane is its wall', () => {
+    const q = MODEL_DEFS['g_nemotron_cascade_2_30b_a3b_2'].qualityBy
+    // it clears chat/reasoning with margin (the MoE "frontier answers at 3B active"),
     expect(q.reasoning).toBeGreaterThanOrEqual(82)
     expect(q.chat).toBeGreaterThanOrEqual(82)
     // …but its agentic capability genuinely lags the agent line (82) — the §1.5 [H2]
@@ -761,19 +761,21 @@ describe('balance: teaching invariants (H2 agent wall / capability compression)'
     expect(q.agentic).toBeLessThan(82)
   })
 
-  it('the agent lane requires terminal-agent strength OR a trained specialist (it does not compress)', () => {
+  it('the agent lane requires terminal-agent strength OR a trained specialist — not raw scale', () => {
     const AGENT_LINE = 82
-    // a true terminal-agent-grade frontier (Kimi K2 / GLM-5.2) clears it,
-    expect(MODEL_DEFS['kimi_k2'].qualityBy.agentic).toBeGreaterThanOrEqual(AGENT_LINE)
+    // a true terminal-agent-grade frontier (GLM-5.2 / DeepSeek-V4-Pro) clears it,
     expect(MODEL_DEFS['glm_5_2'].qualityBy.agentic).toBeGreaterThanOrEqual(AGENT_LINE)
-    // …while the cheap mid MoEs do NOT — and crucially, neither does raw SCALE: big MoEs
-    // (Qwen3-235B, gpt-oss-120B, Qwen3-Next-80B) are only MID on the agentic blend
-    // (Terminal-Bench Hard-led), so they fall short of the wall.
-    for (const id of ['nemotron3_nano_30b', 'qwen3_next_80b', 'gptoss_20b', 'qwen3_235b', 'gptoss_120b']) {
+    expect(MODEL_DEFS['deepseek_v4_pro'].qualityBy.agentic).toBeGreaterThanOrEqual(AGENT_LINE)
+    // and capability compression reaches the agent lane too by late 2026: a dense 27B
+    // trained as an agent (Qwen3.8-27B) clears it — skill, not size, is the wall,
+    expect(MODEL_DEFS['qwen38_27b'].qualityBy.agentic).toBeGreaterThanOrEqual(AGENT_LINE)
+    // …while the cheap mid MoEs do NOT — and crucially, neither does raw SCALE: a big MoE
+    // that is only MID on Terminal-Bench Hard (gpt-oss-120B) falls short of the wall.
+    for (const id of ['g_nemotron_cascade_2_30b_a3b_2', 'gptoss_20b', 'gptoss_120b']) {
       expect(MODEL_DEFS[id].qualityBy.agentic).toBeLessThan(AGENT_LINE)
     }
     // …and a PLAYER GRPO-agentic run on an agentic-capable base (gpt-oss-120B — strong but
-    // lands just short of the line, and fits a 141 GB Frontier rack at FP8) DOES close the
+    // lands just short of the line, and its MXFP4 weights fit one 80 GB H100) DOES close the
     // loop — the Studio is the player's path to the agent lane when no frontier is afforded.
     const base = MODEL_DEFS['gptoss_120b']
     const f = computeDerivedFields(base, METHOD_RECIPES['grpo'], 'agentic', 1.5, null)

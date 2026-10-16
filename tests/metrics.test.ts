@@ -21,7 +21,7 @@ import { finalizeReport, goodputPctOf, newWaveStats } from '../src/sim/telemetry
  * Bring s.infra to the modern serving era (continuous batching + paged KV + FP8)
  * so a 70B fits a single 80 GB H100 and the metrics match a real deploy.
  */
-import { INFRA_NODES } from '../src/sim/content'
+import { INFRA_NODES, MODEL_DEFS } from '../src/sim/content'
 import { applyInfraEffects } from '../src/sim/research'
 function modernEra(s: ReturnType<typeof createState>): void {
   for (const id of ['inf_batching', 'inf_paged', 'inf_wq_fp8']) {
@@ -60,10 +60,12 @@ describe('ui/metrics — worked-example parity (§5.7 / §5.8)', () => {
     expect(b1).toBeGreaterThan(26)
     expect(b1).toBeLessThan(28)
     // and the sim's getter agrees once the model fits (FP8 path), differing only by
-    // the bytes-per-param halving — exactly the §5.6 quant effect.
+    // the bytes-per-param halving — exactly the §5.6 quant effect (on the model's real
+    // 30.7B active params).
     const s = createState(11)
     modernEra(s)
-    expect(decodeTokSb1(s, loadout(s, H100, BIG))).toBeCloseTo(b1 * 2, 0)
+    const fp8 = hbmBytesPerSec / (2 * MODEL_DEFS[BIG].paramsActiveB * 1e9 * 1)
+    expect(decodeTokSb1(s, loadout(s, H100, BIG))).toBeCloseTo(fp8, 0)
   })
 
   it('$3/GPU-hr at 500 tok/s ≈ $1.67/Mtoken (§5.8)', () => {
@@ -127,9 +129,9 @@ describe('ui/metrics — VRAM / sparsity', () => {
   it('dense model has sparsity ratio 1, MoE far below', () => {
     const s = createState(6)
     expect(sparsityOf(loadout(s, H100, BIG)).ratio).toBeCloseTo(1, 6)
-    const moe = sparsityOf(loadout(s, H100, 'nemotron3_nano_30b'))
+    const moe = sparsityOf(loadout(s, H100, 'g_nemotron_cascade_2_30b_a3b_2'))
     expect(moe.isMoE).toBe(true)
-    expect(moe.ratio).toBeLessThan(0.2) // 3.5 active / 30 total
+    expect(moe.ratio).toBeLessThan(0.2) // 3.2 active / 31.6 total
   })
 })
 

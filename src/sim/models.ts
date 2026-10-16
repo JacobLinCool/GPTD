@@ -11,6 +11,7 @@ import type {
   PostTrainTarget,
 } from '../core/types'
 import { POSTTRAIN_COMPUTE_SCALE } from '../config'
+import { THINK_TOKENS_FALLBACK } from './calibrate'
 import { DEFAULT_MODEL_ID, METHOD_RECIPES, MODEL_DEFS } from './content'
 
 /**
@@ -204,13 +205,17 @@ export interface DerivedFields {
   paramsActiveB: number
   isMoE: boolean
   isReasoning: boolean
+  thinkTokens: number
   quality: number
   qualityBy: Record<CapabilityAxis, number>
   layers: number
+  kvLayers: number
   kvHeads: number
   headDim: number
   attn: ModelDef['attn']
-  weightBytes: 2 | 1 | 0.5
+  kvBytesPerToken: number
+  kvStateMbPerReq: number
+  nativeWeightBytes: number
   contextWindowK: number
   alignment: AlignmentProfile
   instructFollow: number
@@ -287,27 +292,13 @@ export function computeDerivedFields(
   if (method === 'grpo' || (target === 'reasoning' && method !== 'merge')) isReasoning = true
 
   // --- deployment fields (§4.8/§5.6/§5.7): only distill / qat / merge reshape ---
-  let paramsTotalB = base.paramsTotalB
-  let paramsActiveB = base.paramsActiveB
-  let isMoE = base.isMoE
-  let layers = base.layers
-  let kvHeads = base.kvHeads
-  let headDim = base.headDim
-  let attn = base.attn
-  let weightBytes = base.weightBytes
+  let body: DeployBody = bodyOf(base)
   let contextWindowK = base.contextWindowK
 
   if (method === 'distill') {
     // swap to a smaller STUDENT base's deploy fields + cap qualityBy at min(teacher, student capacity).
     const student = pickDistillStudent(base)
-    paramsTotalB = student.paramsTotalB
-    paramsActiveB = student.paramsActiveB
-    isMoE = student.isMoE
-    layers = student.layers
-    kvHeads = student.kvHeads
-    headDim = student.headDim
-    attn = student.attn
-    weightBytes = student.weightBytes
+    body = bodyOf(student)
     contextWindowK = Math.min(contextWindowK, student.contextWindowK)
     // student-capacity cap: the small body can't hold the full teacher signal.
     for (const a of CAP_AXES) {
@@ -315,24 +306,22 @@ export function computeDerivedFields(
       qualityBy[a] = clampQ(Math.min(qualityBy[a], cap))
     }
   } else if (method === 'qat') {
-    weightBytes = 0.5
+    // trained AT 4-bit: the checkpoint's release precision is now INT4 (no PTQ tax there).
+    body = { ...body, nativeWeightBytes: 0.5 }
     for (const a of CAP_AXES) qualityBy[a] = clampQ(qualityBy[a] - 2)
   } else if (method === 'merge' && other) {
-    // a merge inherits the larger of the two bodies (the union must fit).
-    if (other.paramsTotalB > paramsTotalB) {
-      paramsTotalB = other.paramsTotalB
-      paramsActiveB = other.paramsActiveB
-      isMoE = other.isMoE
-      layers = other.layers
-      kvHeads = other.kvHeads
-      headDim = other.headDim
-      attn = other.attn
-    }
-    isMoE = isMoE || other.isMoE
+    // a merge inherits the larger of the two bodies (the union must fit), materialized at
+    // the higher of the two release precisions (merging dequantizes a low-bit parent).
+    if (other.paramsTotalB > body.paramsTotalB) body = bodyOf(other)
+    body = { ...body, isMoE: body.isMoE || other.isMoE, nativeWeightBytes: Math.max(base.nativeWeightBytes, other.nativeWeightBytes) }
     isReasoning = isReasoning || other.isReasoning
     contextWindowK = Math.min(contextWindowK, other.contextWindowK)
   }
+  // a run that teaches thinking gives the checkpoint a thinking budget; a merge keeps the larger.
+  let thinkTokens = method === 'merge' && other ? Math.max(base.thinkTokens, other.thinkTokens) : base.thinkTokens
+  if (isReasoning && thinkTokens === 0) thinkTokens = THINK_TOKENS_FALLBACK
 
+  const { paramsTotalB } = body
   const tier = pickTier(qualityBy, paramsTotalB)
   const quality = Math.max(...CAP_AXES.map((a) => qualityBy[a]))
   const spec = bestSpec(qualityBy)
@@ -350,22 +339,37 @@ export function computeDerivedFields(
     tier,
     variant: base.variant,
     spec,
-    paramsTotalB,
-    paramsActiveB,
-    isMoE,
+    ...body,
     isReasoning,
+    thinkTokens,
     quality,
     qualityBy,
-    layers,
-    kvHeads,
-    headDim,
-    attn,
-    weightBytes,
     contextWindowK,
     alignment,
     instructFollow,
     desc,
     depth,
+  }
+}
+
+/** The deploy body a derived checkpoint inherits as a unit: size, KV layout, release precision. */
+type DeployBody = Pick<
+  ModelDef,
+  'paramsTotalB' | 'paramsActiveB' | 'isMoE' | 'layers' | 'kvLayers' | 'kvHeads' | 'headDim' | 'attn' | 'kvBytesPerToken' | 'kvStateMbPerReq' | 'nativeWeightBytes'
+>
+function bodyOf(m: ModelDef): DeployBody {
+  return {
+    paramsTotalB: m.paramsTotalB,
+    paramsActiveB: m.paramsActiveB,
+    isMoE: m.isMoE,
+    layers: m.layers,
+    kvLayers: m.kvLayers,
+    kvHeads: m.kvHeads,
+    headDim: m.headDim,
+    attn: m.attn,
+    kvBytesPerToken: m.kvBytesPerToken,
+    kvStateMbPerReq: m.kvStateMbPerReq,
+    nativeWeightBytes: m.nativeWeightBytes,
   }
 }
 
@@ -417,13 +421,17 @@ export function deriveModel(s: GameState, meta: PostTrainMeta): ModelDef | null 
     paramsActiveB: f.paramsActiveB,
     isMoE: f.isMoE,
     isReasoning: f.isReasoning,
+    thinkTokens: f.thinkTokens,
     quality: f.quality,
     qualityBy: f.qualityBy,
     layers: f.layers,
+    kvLayers: f.kvLayers,
     kvHeads: f.kvHeads,
     headDim: f.headDim,
     attn: f.attn,
-    weightBytes: f.weightBytes,
+    kvBytesPerToken: f.kvBytesPerToken,
+    kvStateMbPerReq: f.kvStateMbPerReq,
+    nativeWeightBytes: f.nativeWeightBytes,
     contextWindowK: f.contextWindowK,
     alignment: f.alignment,
     instructFollow: f.instructFollow,

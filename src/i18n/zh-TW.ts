@@ -1007,6 +1007,21 @@ export const zhTW: Record<string, string> = {
   // ===== [/ws:sim] =====
 
   // ===== [ws:models] model roster: new models, provenance labels =====
+  "attn.MHA": "MHA",
+  "attn.MQA": "MQA",
+  "attn.GQA": "GQA",
+  "attn.MLA": "MLA",
+  "attn.hybrid-linear": "混合（線性注意力 + 注意力）",
+  "attn.hybrid-swa": "混合（滑動視窗 + 全域）",
+  "attn.csa": "壓縮稀疏注意力",
+  "models.detail.kv": "KV 每 token {kvb} KB（{layers} 層中 {kvLayers} 層）· 每請求固定 +{state} MB",
+  "models.detail.precision": "原生精度 {precision} · 每參數 {bytes} B",
+  "models.detail.thinking": "每次回答約有 {tokens} 個隱藏思考 token",
+  "models.detail.instant": "不經隱藏推理直接回答",
+  "models.bench.bridged": "≈ 由 {preds} 推估（±{sd}）",
+  "models.bench.equated": "已換算至 2026-06 參考尺度",
+  "models.bench.latest": "取自最新的 Artificial Analysis 快照",
+  "models.bench.legend": "≈ = 推估值：Artificial Analysis 已不再發布此基準",
   // ===== [/ws:models] =====
 
   // ===== [ws:physics] serving physics: thinking tokens, parallelism, batching, infra nodes =====

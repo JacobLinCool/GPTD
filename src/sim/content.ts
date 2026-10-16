@@ -1,6 +1,7 @@
 import { COLORS, CREDIT_USD, RESEARCH_COMPUTE_SCALE, RESEARCH_DATA_SCALE } from '../config'
 import type {
   AlignmentProfile,
+  AttnVariant,
   ServerSpec,
   IncidentDef,
   InfraNodeDef,
@@ -14,8 +15,9 @@ import type {
   UpgradeDef,
   WaveDef,
 } from '../core/types'
-import { calibrateRecipes, qualityFromBenchmarks, withinFrontierTolerance, type BenchInputs } from './calibrate'
-import { AA_BENCH } from './roster.bench.generated'
+import { calibrateRecipes, qualityFromBenchmarks, thinkingOf, withinFrontierTolerance, type BenchInputs } from './calibrate'
+import { MODEL_ARCH } from './roster.arch.generated'
+import { AA_BENCH, AA_BENCH_SOURCE, AA_META } from './roster.bench.generated'
 import { GENERATED_ROSTER } from './roster.generated'
 import { buildCampaign, CAMPAIGN_THEMES, themedIncidentId } from './campaign'
 
@@ -381,18 +383,47 @@ export const HARDWARE_TIERS = ['hw_edge', 'hw_standard', 'hw_perf', 'hw_frontier
 
 /* ------------------------------------------------------------------ *
  *  MODELS — real open-weight checkpoints. Open weights are a free      *
- *  DOWNLOAD, so deploying one costs nothing. What gates a model is     *
- *  rack VRAM (it must fit `paramsTotalB`) and METHOD unlocks: a sparse *
- *  (MoE) model needs the MoE research, a thinking (reasoning) model    *
- *  needs the Reasoning research, before it can be deployed. qualityBy  *
- *  is calibrated from public benchmarks (Artificial Analysis / model   *
- *  cards) via calibrate.ts. Custom checkpoints you finetune/pretrain   *
- *  in the Model Lab are added the same way.                            *
+ *  DOWNLOAD, so deploying one costs nothing; what gates a model is     *
+ *  rack VRAM (its weights at the resident precision must fit).         *
+ *  Three data sources meet here, each owning its own facts:            *
+ *    · this ROSTER (hand-authored) + roster.generated.ts — identity,   *
+ *      lane label, alignment, lineage, description;                    *
+ *    · MODEL_ARCH (data/model-arch.json, from each Hugging Face        *
+ *      config.json) — params, KV layout, native precision, window,     *
+ *      licence;                                                        *
+ *    · AA_BENCH / AA_META (Artificial Analysis) — the benchmark cells  *
+ *      qualityBy is calibrated from, and the serving telemetry the     *
+ *      thinking budget is derived from (calibrate.ts).                 *
+ *  Checkpoints you post-train in the Studio are derived the same way.  *
  * ------------------------------------------------------------------ */
 
 /** Format a billions-of-params count: 8 → "8B", 1000 → "1T". */
 export const sizeLabel = (p: number): string =>
   p >= 1000 ? `${Number((p / 1000).toFixed(p % 1000 ? 1 : 0))}T` : `${p}B`
+
+/**
+ * The architecture + release facts of one open-weight checkpoint, generated from
+ * data/model-arch.json by `node scripts/arch-sync.mjs build` (src/sim/roster.arch.generated.ts).
+ */
+export interface ModelArch {
+  paramsTotalB: number
+  paramsActiveB: number
+  isMoE: boolean
+  layers: number
+  kvLayers: number
+  kvHeads: number
+  headDim: number
+  attn: AttnVariant
+  kvBytesPerToken: number
+  kvStateMbPerReq: number
+  nativeWeightBytes: number
+  precision: string
+  contextWindowK: number
+  license: string
+  /** the model card's own word on thinking mode (used only when AA has no telemetry). */
+  thinkingEvidence?: boolean
+  confidence: 'high' | 'medium' | 'low'
+}
 
 export interface RosterEntry {
   id: string
@@ -400,26 +431,30 @@ export interface RosterEntry {
   tier: ModelDef['tier']
   variant: ModelDef['variant']
   spec: ServerSpec
-  paramsTotalB: number
-  paramsActiveB: number
-  isMoE?: boolean
-  isReasoning?: boolean
-  // --- real architecture (feeds the §5.6 KV / §6.2 roofline formulas) ---
-  layers: number
-  kvHeads: number
-  headDim: number
-  attn: ModelDef['attn']
+  /** the open weights: the Hugging Face repo, the key into MODEL_ARCH for every architecture fact. */
+  hf: string
+  /** model-card cells AA does not publish (display); AA_BENCH is merged OVER this. */
   bench: BenchInputs
   /**
    * §3.4/§OQ-G12 hand-filled intrinsic alignment + instruction-following (no
    * public safety benchmark to calibrate against). Optional: omitted → the
    * instruct-variant defaults below (safety 55 / hard-refusal / overRefusal 0.15
-   * / instructFollow 85). The full per-model roster safety table is P3d.
+   * / instructFollow 85).
    */
   alignment?: AlignmentProfile
   instructFollow?: number
-  real: Omit<NonNullable<ModelDef['real']>, 'benchmarks'>
+  real: RosterProvenance
   desc: string
+}
+
+/** The hand-authored part of a checkpoint's provenance (licence/window/source come from MODEL_ARCH). */
+export interface RosterProvenance {
+  developer: string
+  released: string
+  confidence: 'high' | 'medium' | 'low'
+  /** §6.5/[fix H6] real lineage edge: the roster base this model genuinely derives from. */
+  baseModelId?: string
+  relation?: NonNullable<ModelDef['real']>['relation']
 }
 
 /** §3.4 instruct-variant alignment fallback (hand-filled, grounded; the per-model roster is below). */
@@ -442,283 +477,361 @@ const ALIGN_LLAMA = AL(62, 'hard-refusal', 0.13) // Meta safety SFT
 const ALIGN_QWEN = AL(58, 'hard-refusal', 0.12) // Qwen alignment
 const ALIGN_GPTOSS = AL(84, 'safe-completion', 0.03) // §3.1 OpenAI family (the Pareto point)
 const ALIGN_GEMMA = AL(70, 'hard-refusal', 0.15) // Google, conservative
-const ALIGN_INSTRUCT = AL(55, 'hard-refusal', 0.1) // general instruct (phi/mistral/devstral)
-const ALIGN_FRONTIER = AL(60, 'hard-refusal', 0.11) // frontier instruct (glm/deepseek/kimi)
-const ALIGN_NEMOTRON = AL(64, 'hard-refusal', 0.12) // NVIDIA Llama-based
+const ALIGN_INSTRUCT = AL(55, 'hard-refusal', 0.1) // general instruct (phi/mistral/devstral, smaller labs)
+const ALIGN_FRONTIER = AL(60, 'hard-refusal', 0.11) // frontier instruct (glm/deepseek/kimi/qwen-scale MoEs)
+const ALIGN_NEMOTRON = AL(64, 'hard-refusal', 0.12) // NVIDIA
+// Muse Spark Open carries extra safety post-training for standalone (un-moderated) use,
+// per its card — stronger than Meta's other releases, same refusal style.
+const ALIGN_MUSE_OPEN = AL(72, 'hard-refusal', 0.13)
 
 const R = (
   developer: string,
-  license: string,
-  openWeights: boolean,
   released: string,
-  contextWindowK: number,
-  confidence: 'high' | 'medium' | 'low',
-  source: string,
-  /** §6.5/[fix H6] real lineage edge: the roster base this model genuinely derives from. */
+  confidence: RosterProvenance['confidence'],
   baseModelId?: string,
-  relation?: NonNullable<RosterEntry['real']>['relation'],
-): RosterEntry['real'] => ({ developer, license, openWeights, released, contextWindowK, confidence, source, baseModelId, relation })
+  relation?: RosterProvenance['relation'],
+): RosterProvenance => ({ developer, released, confidence, baseModelId, relation })
 
 /**
- * The curated roster (2025–2026 open-weight models). Benchmark inputs are
- * Artificial-Analysis / model-card figures; a few coding/general cells are
- * filled with documented approximations (confidence 'medium'). Tune in playtest
- * via the calibration curves in calibrate.ts — never hand-edit qualityBy.
+ * The curated roster (2024–2026 open-weight models). Every architecture fact comes
+ * from MODEL_ARCH (`hf`), every benchmark cell from AA_BENCH — never hand-edit
+ * qualityBy; tune through the calibration curves in calibrate.ts.
  */
 const ROSTER: RosterEntry[] = [
-  // --- SMALL (≤21B → Edge/Standard racks). The free baseline; dense ones are
-  //     deployable from turn one (no method needed). ---
+  // --- SMALL (≤21B → Edge/Standard racks). The free baseline. ---
   {
-    id: 'llama31_8b', name: 'Llama 3.1 8B Instruct', tier: 'small', variant: 'instruct', spec: 'chat',
-    paramsTotalB: 8, paramsActiveB: 8, layers: 32, kvHeads: 8, headDim: 128, attn: 'GQA',
+    id: 'llama31_8b', name: 'Llama 3.1 8B Instruct', tier: 'small', variant: 'instruct', spec: 'chat', hf: 'meta-llama/Llama-3.1-8B-Instruct',
     bench: { mmluPro: 48.3, gpqaDiamond: 30.4, humanEval: 72.6 }, alignment: ALIGN_LLAMA,
-    real: R('Meta', 'Llama 3.1 Community', true, '2024-Q3', 128, 'high', 'hf:meta-llama/Llama-3.1-8B-Instruct'),
+    real: R('Meta', '2024-Q3', 'high'),
     desc: 'The reliable free baseline. Soaks chat all day; ships bad code and cannot reason.',
   },
   {
-    id: 'qwen3_8b', name: 'Qwen3 8B', tier: 'small', variant: 'instruct', spec: 'chat',
-    paramsTotalB: 8.2, paramsActiveB: 8.2, layers: 36, kvHeads: 8, headDim: 128, attn: 'GQA',
+    id: 'qwen3_8b', name: 'Qwen3 8B', tier: 'small', variant: 'instruct', spec: 'chat', hf: 'Qwen/Qwen3-8B',
     bench: { mmluPro: 56.7, gpqaDiamond: 44.4, liveCodeBench: 29 }, alignment: ALIGN_QWEN,
-    real: R('Alibaba', 'Apache-2.0', true, '2025-Q2', 32, 'medium', 'hf:Qwen/Qwen3-8B'),
+    real: R('Alibaba', '2025-Q2', 'medium'),
     desc: 'A stronger small generalist than Llama-8B; still no real coding or hard reasoning.',
   },
   {
-    id: 'phi4_14b', name: 'Phi-4 14B', tier: 'small', variant: 'instruct', spec: 'general',
-    paramsTotalB: 14, paramsActiveB: 14, layers: 40, kvHeads: 10, headDim: 128, attn: 'GQA',
+    id: 'phi4_14b', name: 'Phi-4 14B', tier: 'small', variant: 'instruct', spec: 'general', hf: 'microsoft/phi-4',
     bench: { mmluPro: 70.4, gpqaDiamond: 56.1, humanEval: 82.6 }, alignment: ALIGN_INSTRUCT, instructFollow: 80,
-    real: R('Microsoft', 'MIT', true, '2024-Q4', 16, 'high', 'hf:microsoft/phi-4'),
+    real: R('Microsoft', '2024-Q4', 'high'),
     desc: 'A synthetic-data outlier: punches to enterprise-grade knowledge from 14B, but a tiny 16k window.',
   },
   {
-    id: 'gptoss_20b', name: 'gpt-oss 20B', tier: 'small', variant: 'instruct', spec: 'reasoning',
-    paramsTotalB: 20.9, paramsActiveB: 3.6, isMoE: true, isReasoning: true,
-    layers: 24, kvHeads: 8, headDim: 64, attn: 'GQA',
+    id: 'gptoss_20b', name: 'gpt-oss 20B', tier: 'small', variant: 'instruct', spec: 'reasoning', hf: 'openai/gpt-oss-20b',
     bench: { mmluPro: 66, gpqaDiamond: 71.5, aime: 92.1, liveCodeBench: 54 }, alignment: ALIGN_GPTOSS, instructFollow: 86,
-    real: R('OpenAI', 'Apache-2.0', true, '2025-Q3', 131, 'high', 'hf:openai/gpt-oss-20b'),
-    desc: 'A reasoning model in a 3.6B-active body. Needs MoE + Reasoning unlocked, then it punches far above its size.',
+    real: R('OpenAI', '2025-Q3', 'high'),
+    desc: 'A reasoning model in a 3.6B-active body, shipped in MXFP4: ~14 GB of weights fit a 24 GB edge GPU, and it punches far above its size.',
   },
   // --- STANDARD / PERFORMANCE (24–120B → Perf/Frontier/Pod racks) ---
   {
-    id: 'gemma3_27b', name: 'Gemma 3 27B', tier: 'general', variant: 'instruct', spec: 'general',
-    paramsTotalB: 27, paramsActiveB: 27, layers: 62, kvHeads: 16, headDim: 128, attn: 'GQA',
+    id: 'gemma3_27b', name: 'Gemma 3 27B', tier: 'general', variant: 'instruct', spec: 'general', hf: 'google/gemma-3-27b-it',
     bench: { mmluPro: 67.5, gpqaDiamond: 42.4, liveCodeBench: 29.7 }, alignment: ALIGN_GEMMA, instructFollow: 88,
-    real: R('Google', 'Gemma', true, '2025-Q1', 128, 'high', 'hf:google/gemma-3-27b-it'),
+    real: R('Google', '2025-Q1', 'high'),
     desc: 'A dense generalist that just clears coding; not a reasoning model.',
   },
   {
-    id: 'mistral_small_24b', name: 'Mistral Small 3.2 24B', tier: 'general', variant: 'instruct', spec: 'general',
-    paramsTotalB: 24, paramsActiveB: 24, layers: 40, kvHeads: 8, headDim: 128, attn: 'GQA',
+    id: 'mistral_small_24b', name: 'Mistral Small 3.2 24B', tier: 'general', variant: 'instruct', spec: 'general', hf: 'mistralai/Mistral-Small-3.2-24B-Instruct-2506',
     bench: { mmluPro: 69.1, gpqaDiamond: 46.1, humanEval: 92.9 }, alignment: ALIGN_INSTRUCT, instructFollow: 80,
-    real: R('Mistral AI', 'Apache-2.0', true, '2025-Q2', 128, 'medium', 'hf:mistralai/Mistral-Small-3.2-24B-Instruct-2506'),
+    real: R('Mistral AI', '2025-Q2', 'medium'),
     desc: 'A balanced dense workhorse: chat, light code, enterprise — but not the hardest reasoning.',
   },
   {
-    id: 'devstral_24b', name: 'Devstral Small 24B', tier: 'coding', variant: 'coding', spec: 'coding',
-    paramsTotalB: 24, paramsActiveB: 24, layers: 40, kvHeads: 8, headDim: 128, attn: 'GQA',
+    id: 'devstral_24b', name: 'Devstral Small 2 24B', tier: 'coding', variant: 'coding', spec: 'coding', hf: 'mistralai/Devstral-Small-2-24B-Instruct-2512',
     bench: { sweBench: 53.6, mmluPro: 62, gpqaDiamond: 42 }, alignment: ALIGN_INSTRUCT, instructFollow: 80,
-    real: R('Mistral AI', 'Apache-2.0', true, '2025-Q3', 128, 'high', 'hf:mistralai/Devstral-Small-2507'),
-    desc: 'A dedicated code model: strong on coding traffic, ordinary elsewhere.',
+    real: R('Mistral AI', '2025-Q4', 'high'),
+    desc: 'A dedicated code model released in FP8: strong on coding traffic, ordinary elsewhere.',
   },
   {
-    id: 'qwen3_32b', name: 'Qwen3 32B', tier: 'general', variant: 'instruct', spec: 'reasoning',
-    paramsTotalB: 32.8, paramsActiveB: 32.8, isReasoning: true,
-    layers: 64, kvHeads: 8, headDim: 128, attn: 'GQA',
+    id: 'qwen3_32b', name: 'Qwen3 32B', tier: 'general', variant: 'instruct', spec: 'reasoning', hf: 'Qwen/Qwen3-32B',
     bench: { mmluPro: 78.6, gpqaDiamond: 68.9, liveCodeBench: 65.7, aime: 72.9 }, alignment: ALIGN_QWEN, instructFollow: 84,
-    real: R('Alibaba', 'Apache-2.0', true, '2025-Q2', 128, 'high', 'hf:Qwen/Qwen3-32B'),
-    desc: 'A dense thinking model: with Reasoning unlocked it clears every lane, including the hardest reasoning.',
+    real: R('Alibaba', '2025-Q2', 'high'),
+    desc: 'A dense thinking model: it clears every lane of its era, including the hardest reasoning of 2025.',
   },
   {
-    id: 'qwen3_30b_a3b', name: 'Qwen3 30B-A3B', tier: 'general', variant: 'instruct', spec: 'reasoning',
-    paramsTotalB: 30.5, paramsActiveB: 3.3, isMoE: true, isReasoning: true,
-    layers: 48, kvHeads: 4, headDim: 128, attn: 'GQA',
+    id: 'qwen3_30b_a3b', name: 'Qwen3 30B-A3B', tier: 'general', variant: 'instruct', spec: 'reasoning', hf: 'Qwen/Qwen3-30B-A3B-Thinking-2507',
     bench: { mmluPro: 80.9, gpqaDiamond: 73.4, liveCodeBench: 66, aime: 85 }, alignment: ALIGN_QWEN, instructFollow: 84,
-    real: R('Alibaba', 'Apache-2.0', true, '2025-Q3', 262, 'high', 'hf:Qwen/Qwen3-30B-A3B-Instruct-2507'),
+    real: R('Alibaba', '2025-Q3', 'high'),
     desc: 'Frontier-grade answers at 3.3B active — the MoE dream. Fits a mid rack, serves like a tiny model.',
   },
   {
-    id: 'llama33_70b', name: 'Llama 3.3 70B Instruct', tier: 'general', variant: 'instruct', spec: 'general',
-    paramsTotalB: 70, paramsActiveB: 70, layers: 80, kvHeads: 8, headDim: 128, attn: 'GQA',
+    id: 'llama33_70b', name: 'Llama 3.3 70B Instruct', tier: 'general', variant: 'instruct', spec: 'general', hf: 'meta-llama/Llama-3.3-70B-Instruct',
     bench: { mmluPro: 68.9, gpqaDiamond: 50.5, humanEval: 88.4 }, alignment: ALIGN_LLAMA,
-    real: R('Meta', 'Llama 3.3 Community', true, '2024-Q4', 128, 'high', 'hf:meta-llama/Llama-3.3-70B-Instruct'),
+    real: R('Meta', '2024-Q4', 'high'),
     desc: 'A strong dense generalist — great chat and enterprise, but it is not a coder or a reasoner.',
   },
   {
-    id: 'gptoss_120b', name: 'gpt-oss 120B', tier: 'general', variant: 'instruct', spec: 'reasoning',
-    paramsTotalB: 117, paramsActiveB: 5.1, isMoE: true, isReasoning: true,
-    layers: 36, kvHeads: 8, headDim: 64, attn: 'GQA',
+    id: 'gptoss_120b', name: 'gpt-oss 120B', tier: 'general', variant: 'instruct', spec: 'reasoning', hf: 'openai/gpt-oss-120b',
     bench: { mmluPro: 73, gpqaDiamond: 80.1, aime: 92.5, liveCodeBench: 63 }, alignment: ALIGN_GPTOSS, instructFollow: 86,
-    real: R('OpenAI', 'Apache-2.0', true, '2025-Q3', 131, 'high', 'hf:openai/gpt-oss-120b'),
-    desc: 'Frontier reasoning at 5.1B active. Needs a Pod to hold 117B of weights, then serves astonishingly cheap.',
+    real: R('OpenAI', '2025-Q3', 'high'),
+    desc: 'Frontier reasoning at 5.1B active, shipped in MXFP4: all 117B of weights fit one 80 GB H100, and it serves astonishingly cheap.',
   },
   {
-    id: 'glm45_air', name: 'GLM-4.5-Air', tier: 'general', variant: 'instruct', spec: 'reasoning',
-    paramsTotalB: 106, paramsActiveB: 12, isMoE: true, isReasoning: true,
-    layers: 46, kvHeads: 8, headDim: 128, attn: 'GQA',
+    id: 'glm45_air', name: 'GLM-4.5-Air', tier: 'general', variant: 'instruct', spec: 'reasoning', hf: 'zai-org/GLM-4.5-Air',
     bench: { mmluPro: 81.4, gpqaDiamond: 71.7, sweBench: 57.6 }, alignment: ALIGN_FRONTIER, instructFollow: 83,
-    real: R('Z.ai (Zhipu)', 'MIT', true, '2025-Q3', 128, 'high', 'hf:zai-org/GLM-4.5-Air'),
+    real: R('Z.ai (Zhipu)', '2025-Q3', 'high'),
     desc: 'A lighter frontier MoE: strong across the board at 12B active.',
   },
-  // --- FRONTIER (200B+ → SuperPod/GigaCluster). Top of the quality scale. ---
+  // --- FRONTIER (200B+ → Pod/SuperPod/GigaCluster). Top of the quality scale. ---
   {
-    id: 'qwen3_235b', name: 'Qwen3 235B-A22B Thinking', tier: 'frontier', variant: 'instruct', spec: 'reasoning',
-    paramsTotalB: 235, paramsActiveB: 22, isMoE: true, isReasoning: true,
-    layers: 94, kvHeads: 4, headDim: 128, attn: 'GQA',
+    id: 'qwen3_235b', name: 'Qwen3 235B-A22B Thinking', tier: 'frontier', variant: 'instruct', spec: 'reasoning', hf: 'Qwen/Qwen3-235B-A22B-Thinking-2507',
     bench: { mmluPro: 84.4, gpqaDiamond: 81.1, liveCodeBench: 74.1, aime: 92.3, sweBench: 64 }, alignment: ALIGN_QWEN, instructFollow: 84,
-    real: R('Alibaba', 'Apache-2.0', true, '2025-Q3', 262, 'high', 'hf:Qwen/Qwen3-235B-A22B-Thinking-2507'),
+    real: R('Alibaba', '2025-Q3', 'high'),
     desc: 'Open frontier reasoning at 22B active. Clears everything with margin.',
   },
   {
-    id: 'deepseek_v31', name: 'DeepSeek-V3.1', tier: 'frontier', variant: 'instruct', spec: 'reasoning',
-    paramsTotalB: 671, paramsActiveB: 37, isMoE: true, isReasoning: true,
-    layers: 61, kvHeads: 128, headDim: 128, attn: 'MLA',
+    id: 'deepseek_v31', name: 'DeepSeek-V3.1', tier: 'frontier', variant: 'instruct', spec: 'reasoning', hf: 'deepseek-ai/DeepSeek-V3.1',
     bench: { mmluPro: 84.4, gpqaDiamond: 80.1, liveCodeBench: 74.8, sweBench: 66 }, alignment: ALIGN_FRONTIER, instructFollow: 83,
-    real: R('DeepSeek', 'MIT', true, '2025-Q3', 128, 'high', 'hf:deepseek-ai/DeepSeek-V3.1'),
-    desc: '671B of weights, 37B active. A SuperPod-class checkpoint that answers anything.',
+    real: R('DeepSeek', '2025-Q3', 'high'),
+    desc: '671B of weights in native FP8 (~680 GB), 37B active: a pod-class checkpoint whose MLA latent keeps the KV small.',
   },
   {
-    // Nemotron-3-Super-120B-A12B: a real NVIDIA open model (Mar 2026) trained FROM
-    // SCRATCH (NVIDIA's own base, NOT Llama-derived) — a 120B/12B Latent-MoE (hybrid
-    // Mamba-2 + MoE + attention). Benchmarks are the official model-card figures
-    // (docs/MODEL-CATALOG.md). It is the player's GRPO-agentic base in the §1.5 [H2] lesson.
-    id: 'nemotron_super', name: 'Nemotron-3-Super-120B-A12B', tier: 'frontier', variant: 'instruct', spec: 'reasoning',
-    paramsTotalB: 120, paramsActiveB: 12, isMoE: true, isReasoning: true,
-    layers: 80, kvHeads: 8, headDim: 128, attn: 'GQA',
+    // Nemotron-3-Super-120B-A12B: NVIDIA's own from-scratch base (not Llama-derived) —
+    // a 120B/12B Latent-MoE, hybrid Mamba-2 + MoE + 8 attention layers. It is the
+    // player's GRPO-agentic base in the §1.5 [H2] lesson.
+    id: 'nemotron_super', name: 'Nemotron-3-Super-120B-A12B', tier: 'frontier', variant: 'instruct', spec: 'reasoning', hf: 'nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16',
     bench: { mmluPro: 83.73, gpqaDiamond: 79.23, aime: 90.21, liveCodeBench: 81.19, sweBench: 60.47 }, alignment: ALIGN_NEMOTRON, instructFollow: 84,
-    real: R('NVIDIA', 'NVIDIA Nemotron Open Model', true, '2026-Q1', 256, 'high', 'hf:nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16'),
-    desc: 'NVIDIA\'s from-scratch 120B/12B Latent-MoE reasoner (hybrid Mamba-2 + MoE). Frontier-grade reasoning at 12B active — fits a Pod and serves cheap; the player\'s GRPO-agentic base.',
+    real: R('NVIDIA', '2026-Q1', 'high'),
+    desc: 'NVIDIA\'s from-scratch 120B/12B Latent-MoE reasoner (hybrid Mamba-2 + MoE, only 8 attention layers → tiny KV). Frontier-grade reasoning at 12B active — fits a Pod and serves cheap; the player\'s GRPO-agentic base.',
   },
   {
-    id: 'kimi_k2', name: 'Kimi K2 Thinking', tier: 'frontier', variant: 'instruct', spec: 'reasoning',
-    paramsTotalB: 1000, paramsActiveB: 32, isMoE: true, isReasoning: true,
-    layers: 61, kvHeads: 128, headDim: 128, attn: 'MLA',
+    id: 'kimi_k2', name: 'Kimi K2 Thinking', tier: 'frontier', variant: 'instruct', spec: 'reasoning', hf: 'moonshotai/Kimi-K2-Thinking',
     bench: { mmluPro: 84.6, gpqaDiamond: 84.5, liveCodeBench: 83.1, sweBench: 71.3, aime: 99.1 }, alignment: ALIGN_FRONTIER, instructFollow: 83,
-    real: R('Moonshot AI', 'Modified MIT', true, '2025-Q4', 256, 'high', 'hf:moonshotai/Kimi-K2-Thinking'),
-    desc: 'A trillion params, 32B active. The open coding/reasoning ceiling — only a GigaCluster holds it.',
+    real: R('Moonshot AI', '2025-Q4', 'high'),
+    desc: 'A trillion params, 32B active, trained natively in INT4: ~580 GB of weights fit an 8×H200 pod with no quantization penalty.',
   },
   /* ------------------------------------------------------------------ *
-   *  2026 CATALOG ADDITIONS (small → large). Real open-weight models    *
-   *  pulled from Artificial Analysis + official model cards (see        *
-   *  docs/MODEL-CATALOG.md). Some 2026 frontier MoEs use approximate KV  *
-   *  where the lab did not publish layer/head internals (confidence on   *
-   *  the entry's `real`). qualityBy still auto-calibrates from `bench`.   *
+   *  2025–2026 CATALOG ADDITIONS (small → large). Real open-weight      *
+   *  models pulled from Artificial Analysis + official model cards (see *
+   *  docs/MODEL-CATALOG.md).                                            *
    * ------------------------------------------------------------------ */
   {
-    id: 'llama32_1b', name: 'Llama 3.2 1B Instruct', tier: 'small', variant: 'instruct', spec: 'chat',
-    paramsTotalB: 1.23, paramsActiveB: 1.23, layers: 16, kvHeads: 8, headDim: 64, attn: 'GQA',
+    id: 'llama32_1b', name: 'Llama 3.2 1B Instruct', tier: 'small', variant: 'instruct', spec: 'chat', hf: 'meta-llama/Llama-3.2-1B-Instruct',
     bench: { gpqaDiamond: 27.2 }, alignment: ALIGN_LLAMA,
-    real: R('Meta', 'Llama 3.2 Community', true, '2024-Q3', 128, 'high', 'hf:meta-llama/Llama-3.2-1B-Instruct', 'llama31_8b', 'finetune'),
+    real: R('Meta', '2024-Q3', 'high', 'llama31_8b', 'finetune'),
     desc: 'Meta\'s tiny on-device model, pruned + distilled from Llama 3.1. Runs on almost anything; only good for light rewriting and summarization.',
   },
   {
-    id: 'qwen3_4b_2507', name: 'Qwen3-4B-Instruct-2507', tier: 'small', variant: 'instruct', spec: 'general',
-    paramsTotalB: 4, paramsActiveB: 4, layers: 36, kvHeads: 8, headDim: 128, attn: 'GQA',
+    id: 'qwen3_4b_2507', name: 'Qwen3-4B-Instruct-2507', tier: 'small', variant: 'instruct', spec: 'general', hf: 'Qwen/Qwen3-4B-Instruct-2507',
     bench: { mmluPro: 69.6, gpqaDiamond: 62, aime: 47.4, liveCodeBench: 35.1 }, alignment: ALIGN_QWEN, instructFollow: 84,
-    real: R('Alibaba', 'Apache-2.0', true, '2025-Q3', 262, 'high', 'hf:Qwen/Qwen3-4B-Instruct-2507'),
+    real: R('Alibaba', '2025-Q3', 'high'),
     desc: 'A remarkably strong 4B non-thinking model with a 256K window — punches far above its size on knowledge and code. The modern edge workhorse.',
   },
   {
-    id: 'nemotron_nano_9b', name: 'Nemotron Nano 9B v2', tier: 'small', variant: 'instruct', spec: 'reasoning',
-    paramsTotalB: 9, paramsActiveB: 9, isReasoning: true,
-    layers: 4, kvHeads: 8, headDim: 128, attn: 'GQA',
+    id: 'nemotron_nano_9b', name: 'Nemotron Nano 9B v2', tier: 'small', variant: 'instruct', spec: 'reasoning', hf: 'nvidia/NVIDIA-Nemotron-Nano-9B-v2',
     bench: { gpqaDiamond: 64, aime: 72.1, liveCodeBench: 71.1 }, alignment: ALIGN_NEMOTRON, instructFollow: 84,
-    real: R('NVIDIA', 'NVIDIA Open Model', true, '2025-Q3', 128, 'high', 'hf:nvidia/NVIDIA-Nemotron-Nano-9B-v2'),
+    real: R('NVIDIA', '2025-Q3', 'high'),
     desc: 'A from-scratch hybrid Mamba-2/Transformer reasoner (only four attention layers → tiny KV, up to ~6× the throughput). Strong reasoning for 9B; fits an edge rack.',
   },
   {
-    id: 'gemma3_12b', name: 'Gemma 3 12B', tier: 'small', variant: 'instruct', spec: 'general',
-    paramsTotalB: 12, paramsActiveB: 12, layers: 48, kvHeads: 8, headDim: 256, attn: 'GQA',
+    id: 'gemma3_12b', name: 'Gemma 3 12B', tier: 'small', variant: 'instruct', spec: 'general', hf: 'google/gemma-3-12b-it',
     bench: { mmluPro: 60.6, gpqaDiamond: 40.9, liveCodeBench: 24.6 }, alignment: ALIGN_GEMMA, instructFollow: 88,
-    real: R('Google', 'Gemma', true, '2025-Q1', 128, 'high', 'hf:google/gemma-3-12b-it'),
+    real: R('Google', '2025-Q1', 'high'),
     desc: 'A balanced multimodal generalist with a 128K window and a vision encoder. Solid chat across 140+ languages; not a reasoner or a coder.',
   },
   {
-    id: 'qwen3_coder_30b', name: 'Qwen3-Coder-30B-A3B', tier: 'coding', variant: 'coding', spec: 'agentic',
-    paramsTotalB: 30.5, paramsActiveB: 3.3, isMoE: true,
-    layers: 48, kvHeads: 4, headDim: 128, attn: 'GQA',
+    id: 'qwen3_coder_30b', name: 'Qwen3-Coder-30B-A3B', tier: 'coding', variant: 'coding', spec: 'agentic', hf: 'Qwen/Qwen3-Coder-30B-A3B-Instruct',
     bench: { sweBench: 51.6 }, alignment: ALIGN_QWEN, instructFollow: 84,
-    real: R('Alibaba', 'Apache-2.0', true, '2025-Q3', 262, 'high', 'hf:Qwen/Qwen3-Coder-30B-A3B-Instruct'),
+    real: R('Alibaba', '2025-Q3', 'high'),
     desc: 'Agentic coding at 3.3B active — a local coding-agent MoE that drives shell/editor tool loops on commodity hardware. A 262K window.',
   },
   {
-    id: 'nemotron3_nano_30b', name: 'Nemotron 3 Nano 30B-A3B', tier: 'general', variant: 'instruct', spec: 'reasoning',
-    paramsTotalB: 30, paramsActiveB: 3.5, isMoE: true, isReasoning: true,
-    layers: 6, kvHeads: 8, headDim: 128, attn: 'GQA',
+    id: 'nemotron3_nano_30b', name: 'Nemotron 3 Nano 30B-A3B', tier: 'general', variant: 'instruct', spec: 'reasoning', hf: 'nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16',
     bench: { mmluPro: 78.3, gpqaDiamond: 73, aime: 89.1, liveCodeBench: 68.3, sweBench: 38.8 }, alignment: ALIGN_NEMOTRON, instructFollow: 84,
-    real: R('NVIDIA', 'NVIDIA Nemotron Open Model', true, '2025-Q4', 256, 'high', 'hf:nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16'),
-    desc: 'The efficient member of NVIDIA\'s from-scratch Nemotron 3 line: a hybrid Mamba-2 + MoE reasoner, ~3.5B active, six attention layers (tiny KV). Frontier-grade reasoning, cheap to serve.',
+    real: R('NVIDIA', '2025-Q4', 'high'),
+    desc: 'The efficient member of NVIDIA\'s from-scratch Nemotron 3 line: a hybrid Mamba-2 + MoE reasoner, ~3.2B active, six attention layers (tiny KV). Frontier-grade reasoning, cheap to serve.',
   },
   {
-    id: 'qwen36_27b', name: 'Qwen3.6-27B', tier: 'general', variant: 'instruct', spec: 'coding',
-    paramsTotalB: 27, paramsActiveB: 27, isReasoning: true,
-    layers: 64, kvHeads: 8, headDim: 128, attn: 'GQA',
+    id: 'qwen36_27b', name: 'Qwen3.6-27B', tier: 'general', variant: 'instruct', spec: 'coding', hf: 'Qwen/Qwen3.6-27B',
     bench: { mmluPro: 86.2, gpqaDiamond: 87.8, aime: 94.1, liveCodeBench: 83.9, sweBench: 77.2 }, alignment: ALIGN_QWEN, instructFollow: 86,
-    real: R('Alibaba', 'Apache-2.0', true, '2026-Q2', 262, 'medium', 'hf:Qwen/Qwen3.6-27B'),
-    desc: 'A dense 27B thinking model (hybrid Gated DeltaNet + attention) that matches far larger MoEs on agentic coding (SWE-bench 77). The 2026 open leader under ~150B.',
+    real: R('Alibaba', '2026-Q2', 'medium'),
+    desc: 'A dense 27B thinking model (3 Gated DeltaNet layers per attention layer, so only 16 of 64 layers keep KV) that matches far larger MoEs on agentic coding (SWE-bench 77).',
   },
   {
-    id: 'qwen3_next_80b', name: 'Qwen3-Next-80B-A3B Thinking', tier: 'general', variant: 'instruct', spec: 'reasoning',
-    paramsTotalB: 80, paramsActiveB: 3, isMoE: true, isReasoning: true,
-    layers: 48, kvHeads: 2, headDim: 128, attn: 'GQA',
+    id: 'qwen3_next_80b', name: 'Qwen3-Next-80B-A3B Thinking', tier: 'general', variant: 'instruct', spec: 'reasoning', hf: 'Qwen/Qwen3-Next-80B-A3B-Thinking',
     bench: { mmluPro: 82.7, gpqaDiamond: 77.2, aime: 87.8, liveCodeBench: 68.7 }, alignment: ALIGN_QWEN, instructFollow: 84,
-    real: R('Alibaba', 'Apache-2.0', true, '2025-Q3', 262, 'high', 'hf:Qwen/Qwen3-Next-80B-A3B-Thinking'),
+    real: R('Alibaba', '2025-Q3', 'high'),
     desc: 'Ultra-sparse next-gen MoE: 80B of weights, only ~3B active across 512 experts. Flagship-class reasoning at a tiny active cost; needs the VRAM but serves cheap.',
   },
   {
-    id: 'qwen35_122b', name: 'Qwen3.5-122B-A10B', tier: 'frontier', variant: 'instruct', spec: 'reasoning',
-    paramsTotalB: 122, paramsActiveB: 10, isMoE: true, isReasoning: true,
-    layers: 62, kvHeads: 8, headDim: 128, attn: 'GQA',
+    id: 'qwen35_122b', name: 'Qwen3.5-122B-A10B', tier: 'frontier', variant: 'instruct', spec: 'reasoning', hf: 'Qwen/Qwen3.5-122B-A10B',
     bench: { mmluPro: 86.7, gpqaDiamond: 86.6, aime: 91.3, liveCodeBench: 78.9, sweBench: 72 }, alignment: ALIGN_QWEN, instructFollow: 84,
-    real: R('Alibaba', 'Apache-2.0', true, '2026-Q1', 262, 'high', 'hf:Qwen/Qwen3.5-122B-A10B'),
+    real: R('Alibaba', '2026-Q1', 'high'),
     desc: 'The mid-tier Qwen3.5 MoE: 122B total, 10B active, multimodal thinking. Frontier-level scores that fit a Pod and serve at 10B active.',
   },
   {
-    id: 'glm_5_2', name: 'GLM-5.2', tier: 'frontier', variant: 'instruct', spec: 'agentic',
-    paramsTotalB: 753, paramsActiveB: 40, isMoE: true, isReasoning: true,
-    layers: 92, kvHeads: 128, headDim: 128, attn: 'MLA',
+    id: 'glm_5_2', name: 'GLM-5.2', tier: 'frontier', variant: 'instruct', spec: 'agentic', hf: 'zai-org/GLM-5.2',
     bench: { gpqaDiamond: 91.2, aime: 99.2 }, alignment: ALIGN_FRONTIER, instructFollow: 84,
-    real: R('Z.ai (Zhipu)', 'MIT', true, '2026-Q2', 1000, 'medium', 'hf:zai-org/GLM-5.2'),
-    desc: 'The open-weight leader on the Artificial Analysis index (2026): a 753B/40B sparse-attention MoE with a 1M window, tuned for long-horizon agentic coding. A SuperPod/Giga checkpoint.',
+    real: R('Z.ai (Zhipu)', '2026-Q2', 'medium'),
+    desc: 'A 753B/40B sparse-attention MoE with a 1M window, tuned for long-horizon agentic coding. Its 1.5 TB of BF16 weights need a SuperPod.',
   },
   {
-    id: 'deepseek_v4_pro', name: 'DeepSeek-V4-Pro', tier: 'frontier', variant: 'instruct', spec: 'reasoning',
-    paramsTotalB: 1600, paramsActiveB: 49, isMoE: true, isReasoning: true,
-    layers: 61, kvHeads: 128, headDim: 128, attn: 'MLA',
-    bench: { mmluPro: 87.5, gpqaDiamond: 90.1, aime: 95.2, liveCodeBench: 93.5, sweBench: 80.6 }, alignment: ALIGN_FRONTIER, instructFollow: 84,
-    real: R('DeepSeek', 'MIT', true, '2026-Q2', 1000, 'high', 'hf:deepseek-ai/DeepSeek-V4-Pro'),
-    desc: 'DeepSeek\'s 1.6-trillion-param V4 flagship, 49B active, with a new hybrid compressed-attention architecture and a 1M window. The open ceiling — only an NVL72 holds it.',
+    id: 'deepseek_v4_pro', name: 'DeepSeek-V4-Pro-0813', tier: 'frontier', variant: 'instruct', spec: 'reasoning', hf: 'deepseek-ai/DeepSeek-V4-Pro-0813',
+    bench: {}, alignment: ALIGN_FRONTIER, instructFollow: 84,
+    real: R('DeepSeek', '2026-08-13', 'high'),
+    desc: 'The August 2026 re-post-train of DeepSeek\'s 1.6T/49B V4 flagship. Compressed sparse attention keeps ~10 KB of KV per token, and FP4 experts put the weights (~870 GB) on one 8×H200 pod.',
   },
   {
-    id: 'minimax_m3', name: 'MiniMax-M3', tier: 'frontier', variant: 'instruct', spec: 'agentic',
-    paramsTotalB: 428, paramsActiveB: 23, isMoE: true, isReasoning: true,
-    layers: 62, kvHeads: 8, headDim: 128, attn: 'MLA',
+    id: 'minimax_m3', name: 'MiniMax-M3', tier: 'frontier', variant: 'instruct', spec: 'agentic', hf: 'MiniMaxAI/MiniMax-M3',
     bench: { gpqaDiamond: 92.9 }, alignment: ALIGN_FRONTIER, instructFollow: 84,
-    real: R('MiniMax', 'MiniMax Community', true, '2026-Q2', 1000, 'medium', 'hf:MiniMaxAI/MiniMax-M3'),
+    real: R('MiniMax', '2026-Q2', 'medium'),
     desc: 'An agentic frontier MoE on MiniMax Sparse Attention: 428B/23B with a 1M window and ~10–16× faster long-context serving than M2. Built for tool-using agents.',
   },
   {
-    id: 'qwen35_397b', name: 'Qwen3.5-397B-A17B', tier: 'frontier', variant: 'instruct', spec: 'reasoning',
-    paramsTotalB: 397, paramsActiveB: 17, isMoE: true, isReasoning: true,
-    layers: 80, kvHeads: 8, headDim: 128, attn: 'GQA',
+    id: 'qwen35_397b', name: 'Qwen3.5-397B-A17B', tier: 'frontier', variant: 'instruct', spec: 'reasoning', hf: 'Qwen/Qwen3.5-397B-A17B',
     bench: { mmluPro: 87.8, gpqaDiamond: 88.4, aime: 91.3, liveCodeBench: 83.6, sweBench: 76.4 }, alignment: ALIGN_QWEN, instructFollow: 84,
-    real: R('Alibaba', 'Apache-2.0', true, '2026-Q1', 262, 'high', 'hf:Qwen/Qwen3.5-397B-A17B'),
+    real: R('Alibaba', '2026-Q1', 'high'),
     desc: 'The Qwen3.5 flagship: a 397B/17B multimodal reasoning MoE (512 experts). Clears every lane with margin at only 17B active.',
   },
   {
-    id: 'nemotron3_ultra_550b', name: 'Nemotron 3 Ultra 550B-A55B', tier: 'frontier', variant: 'instruct', spec: 'reasoning',
-    paramsTotalB: 550, paramsActiveB: 55, isMoE: true, isReasoning: true,
-    layers: 8, kvHeads: 8, headDim: 128, attn: 'GQA',
+    id: 'nemotron3_ultra_550b', name: 'Nemotron 3 Ultra 550B-A55B', tier: 'frontier', variant: 'instruct', spec: 'reasoning', hf: 'nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16',
     bench: { mmluPro: 86.8, gpqaDiamond: 87, liveCodeBench: 89, sweBench: 70.7 }, alignment: ALIGN_NEMOTRON, instructFollow: 84,
-    real: R('NVIDIA', 'OpenMDW v1.1', true, '2026-Q2', 262, 'high', 'hf:nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16'),
-    desc: 'NVIDIA\'s from-scratch frontier flagship: a 550B/55B Latent-MoE (hybrid Mamba-2 + MoE + attention) — the strongest US open-weight model on the AA index at launch.',
+    real: R('NVIDIA', '2026-Q2', 'high'),
+    desc: 'NVIDIA\'s from-scratch frontier flagship: a 550B/55B Latent-MoE (hybrid Mamba-2 + MoE, 12 attention layers) — the strongest US open-weight model on the AA index at its launch.',
   },
-  // ---- Part B: ~68 generated open-weight models (Pareto-selected across scales; arch resolved,
-  //      benchmarks from AA). High-confidence hand-authored picks are the 30 above. ----
+  /* ------------------------------------------------------------------ *
+   *  JULY–OCTOBER 2026 OPEN WEIGHTS (docs/MODEL-CATALOG.md). Their      *
+   *  IFBench / TB-Hard cells are bridged from AA's measured cells (AA   *
+   *  stopped publishing both), with the provenance kept on `real`.     *
+   * ------------------------------------------------------------------ */
+  {
+    id: 'minicpm5_2b', name: 'MiniCPM5-2B', tier: 'small', variant: 'instruct', spec: 'reasoning', hf: 'openbmb/MiniCPM5-2B',
+    bench: {}, alignment: ALIGN_INSTRUCT,
+    real: R('OpenBMB', '2026-09-07', 'high'),
+    desc: 'A 2.5B dense thinker with only 2 KV heads (42 KB of KV per token) — the strongest model that fits the smallest edge rack.',
+  },
+  {
+    id: 'k2h_3_7b', name: 'K2-Horizon-3.7B', tier: 'small', variant: 'instruct', spec: 'reasoning', hf: 'IFM/K2-Horizon-3.7B',
+    bench: {}, alignment: ALIGN_INSTRUCT,
+    real: R('MBZUAI IFM', '2026-09-03', 'high'),
+    desc: 'A fully open (weights, data and code) 3.7B reasoner with a 512K window — plain GQA, so long prompts fill its KV fast.',
+  },
+  {
+    id: 'ling30_tiny', name: 'Ling-3.0-tiny', tier: 'small', variant: 'instruct', spec: 'reasoning', hf: 'inclusionAI/Ling-3.0-tiny',
+    bench: {}, alignment: ALIGN_FRONTIER,
+    real: R('InclusionAI (Ant Group)', '2026-08-06', 'high'),
+    desc: 'A 7.9B MoE with 1.3B active and linear attention on 3 of every 4 layers: the fastest decode on an edge rack, with a few KB of KV per token.',
+  },
+  {
+    id: 'k2h_7b', name: 'K2-Horizon-7B', tier: 'small', variant: 'instruct', spec: 'reasoning', hf: 'IFM/K2-Horizon-7B',
+    bench: {}, alignment: ALIGN_INSTRUCT,
+    real: R('MBZUAI IFM', '2026-09-03', 'high'),
+    desc: 'The fully open 7B reasoner (9B with its large vocabulary): frontier reasoning and agentic scores for its size on a 512K window.',
+  },
+  {
+    id: 'qwen38_27b', name: 'Qwen3.8-27B', tier: 'general', variant: 'instruct', spec: 'agentic', hf: 'Qwen/Qwen3.8-27B',
+    bench: {}, alignment: ALIGN_QWEN, instructFollow: 86,
+    real: R('Alibaba', '2026-08-14', 'high'),
+    desc: 'The dense 27B leader of late 2026: Gated DeltaNet hybrid (16 of 64 layers keep KV), Apache-2.0, and agentic scores that rival 300B MoEs on one H100.',
+  },
+  {
+    id: 'k2h_mova_36b', name: 'K2-Horizon-MoVA-36B-A4B', tier: 'general', variant: 'instruct', spec: 'reasoning', hf: 'IFM/K2-Horizon-MoVA-36B-A4B',
+    bench: {}, alignment: ALIGN_INSTRUCT,
+    real: R('MBZUAI IFM', '2026-09-03', 'high'),
+    desc: 'A fully open 36B MoE with 4B active and Mixture-of-Values attention: cheap to serve on a mid rack, but its full GQA cache still grows with every token.',
+  },
+  {
+    id: 'ling30_flash', name: 'Ling-3.0-flash', tier: 'frontier', variant: 'instruct', spec: 'reasoning', hf: 'inclusionAI/Ling-3.0-flash',
+    bench: {}, alignment: ALIGN_FRONTIER,
+    real: R('InclusionAI (Ant Group)', '2026-08-04', 'high'),
+    desc: 'Qwen3.5-122B-class quality at half the active params (5.1B) and a fraction of the KV: Kimi Delta Attention on 5 of every 6 layers.',
+  },
+  {
+    id: 'qwen38_flash_next', name: 'Qwen3.8-Flash-Next', tier: 'frontier', variant: 'instruct', spec: 'agentic', hf: 'Qwen/Qwen3.8-Flash-Next',
+    bench: {}, alignment: ALIGN_QWEN, instructFollow: 86,
+    real: R('Alibaba', '2026-08-26', 'high'),
+    desc: 'The most extreme sparsity in the roster: 180B resident (incl. a 51B n-gram table) but only 6B active — VRAM-hungry, compute-cheap, and frontier-grade.',
+  },
+  {
+    id: 'solar_open2_250b', name: 'Solar Open 2 250B', tier: 'frontier', variant: 'instruct', spec: 'reasoning', hf: 'upstage/Solar-Open2-250B',
+    bench: {}, alignment: ALIGN_INSTRUCT,
+    real: R('Upstage', '2026-07-22', 'high'),
+    desc: 'A 250B/15B NoPE hybrid: only 12 of its 48 layers keep a KV cache, the rest are linear attention.',
+  },
+  {
+    id: 'inkling_small', name: 'Inkling-Small', tier: 'frontier', variant: 'instruct', spec: 'reasoning', hf: 'thinkingmachines/Inkling-Small',
+    bench: {}, alignment: ALIGN_INSTRUCT,
+    real: R('Thinking Machines Lab', '2026-07-27', 'high'),
+    desc: 'A 276B/12B MoE with 5 sliding-window layers per global one: a 1M window on ~28 KB of growing KV per token.',
+  },
+  {
+    id: 'hy3', name: 'Hy3', tier: 'frontier', variant: 'instruct', spec: 'reasoning', hf: 'tencent/Hy3',
+    bench: {}, alignment: ALIGN_FRONTIER,
+    real: R('Tencent', '2026-07-06', 'high'),
+    desc: 'A 295B/21B plain-GQA MoE: 320 KB of KV per token, 14× a same-size sliding-window hybrid — the high-KV foil that shows why the hybrids exist.',
+  },
+  {
+    id: 'mimo_v26_flash', name: 'MiMo-V2.6-Flash', tier: 'frontier', variant: 'instruct', spec: 'reasoning', hf: 'XiaomiMiMo/MiMo-V2.6-Flash-MOPD',
+    bench: {}, alignment: ALIGN_FRONTIER,
+    real: R('Xiaomi', '2026-09-21', 'high'),
+    desc: 'The best ~300B open model of autumn 2026: 128-token sliding windows on 39 of 48 layers keep its KV to ~22 KB per token.',
+  },
+  {
+    id: 'motif3', name: 'Motif 3', tier: 'frontier', variant: 'instruct', spec: 'reasoning', hf: 'Motif-Technologies/Motif-3',
+    bench: {}, alignment: ALIGN_INSTRUCT,
+    real: R('Motif Technologies', '2026-08-07', 'high'),
+    desc: 'A 314B/13B MoE with differential attention on an MLA latent and sliding windows on 3 of every 4 layers: 20× less KV per token than Hy3.',
+  },
+  {
+    id: 'glm_5_3_flash', name: 'GLM-5.3-Flash', tier: 'frontier', variant: 'instruct', spec: 'agentic', hf: 'zai-org/GLM-5.3-Flash',
+    bench: {}, alignment: ALIGN_FRONTIER, instructFollow: 84,
+    real: R('Z.ai (Zhipu)', '2026-08-26', 'high'),
+    desc: 'Above GLM-5.2 on almost every benchmark at less than half the size: 18B active, linear attention on 34 of 45 layers, MIT-licensed.',
+  },
+  {
+    id: 'k2h_375b', name: 'K2-Horizon-375B-A23B', tier: 'frontier', variant: 'instruct', spec: 'reasoning', hf: 'IFM/K2-Horizon-375B-A23B',
+    bench: {}, alignment: ALIGN_INSTRUCT,
+    real: R('MBZUAI IFM', '2026-09-03', 'high'),
+    desc: 'The largest fully open model (weights, data, code): a 375B/23B MoE with plain GQA, so its 244 KB/token cache is the price of transparency.',
+  },
+  {
+    id: 'ling31_flash', name: 'Ling-3.1-flash', tier: 'frontier', variant: 'instruct', spec: 'reasoning', hf: 'inclusionAI/Ling-3.1-flash',
+    bench: {}, alignment: ALIGN_FRONTIER,
+    real: R('InclusionAI (Ant Group)', '2026-10-13', 'high'),
+    desc: 'Linear-attention hybrids at frontier scale: 560B/25B with KDA on 7 of every 8 layers — about 10 KB of KV per token.',
+  },
+  {
+    id: 'step5', name: 'Step 5 Preview', tier: 'frontier', variant: 'instruct', spec: 'reasoning', hf: 'stepfun-ai/Step-5-Preview',
+    bench: {}, alignment: ALIGN_FRONTIER,
+    real: R('StepFun', '2026-09-18', 'high'),
+    desc: 'A 600B/27B frontier MoE in FP8 (fits one 8×H200 pod): 3 sliding-window layers per sparse full-attention layer, and a licence that charges large MaaS operators.',
+  },
+  {
+    id: 'glm_5_3', name: 'GLM-5.3', tier: 'frontier', variant: 'instruct', spec: 'agentic', hf: 'zai-org/GLM-5.3',
+    bench: {}, alignment: ALIGN_FRONTIER, instructFollow: 84,
+    real: R('Z.ai (Zhipu)', '2026-08-28', 'high', 'glm_5_2', 'finetune'),
+    desc: 'GLM-5.2\'s pre-trained base, re-post-trained: every gain is post-training. Released in FP8, so the same 753B fits a pod instead of a SuperPod.',
+  },
+  {
+    id: 'deepseek_v41_flash', name: 'DeepSeek-V4.1-Flash', tier: 'frontier', variant: 'instruct', spec: 'reasoning', hf: 'deepseek-ai/DeepSeek-V4.1-Flash',
+    bench: {}, alignment: ALIGN_FRONTIER, instructFollow: 84,
+    real: R('DeepSeek', '2026-09-10', 'medium'),
+    desc: 'DeepSeek\'s current flagship: a causal encoder–decoder whose decoder reuses the encoder\'s compressed KV — about 3 KB per token, the smallest cache at the frontier.',
+  },
+  {
+    id: 'muse_spark_open', name: 'Muse Spark Open', tier: 'frontier', variant: 'instruct', spec: 'reasoning', hf: 'meta-models/Muse-Spark-Open-816B-A42B',
+    bench: {}, alignment: ALIGN_MUSE_OPEN, instructFollow: 86,
+    real: R('Meta', '2026-10-15', 'medium'),
+    desc: 'The strongest US open-weight model: 816B/42B with full attention on every layer — 248 KB of KV per token, 10–60× the hybrids — plus extra safety post-training.',
+  },
+  {
+    id: 'mimo_v26_pro', name: 'MiMo-V2.6-Pro', tier: 'frontier', variant: 'instruct', spec: 'reasoning', hf: 'XiaomiMiMo/MiMo-V2.6-Pro-MOPD',
+    bench: {}, alignment: ALIGN_FRONTIER,
+    real: R('Xiaomi', '2026-09-21', 'high'),
+    desc: 'The highest-scoring open weights of autumn 2026: a 1T/42B MoE whose 128-token sliding windows hold KV to ~50 KB per token at trillion scale.',
+  },
+  {
+    id: 'kimi_k3', name: 'Kimi K3', tier: 'frontier', variant: 'instruct', spec: 'reasoning', hf: 'moonshotai/Kimi-K3',
+    bench: {}, alignment: ALIGN_FRONTIER, instructFollow: 84,
+    real: R('Moonshot AI', '2026-07-27', 'high'),
+    desc: 'The largest open model: 2.78T/104B with Kimi Delta Attention on 69 of 93 layers. Even in MXFP4 its 1.56 TB of weights need the NVL72.',
+  },
+  // ---- the generated pool (gen-roster: every open checkpoint in data/model-arch.json no hand entry claims) ----
   ...GENERATED_ROSTER,
 ]
 
-/** Per-tier baseline that fills any qualityBy axis a model has no benchmark for.
- *  agentic floors are deliberately low — without a real SWE-bench score a model
- *  is assumed weak at autonomous/agentic work (the un-saturated frontier lane). */
+/** Per-tier baseline that fills any qualityBy axis a model has no benchmark for — a
+ *  defensive fallback only: the bridges give every roster model all six cells. */
 const QUALITY_FLOOR: Record<ModelDef['tier'], Record<ServerSpec, number>> = {
   small: { chat: 30, coding: 25, reasoning: 30, general: 30, agentic: 20 },
   general: { chat: 55, coding: 45, reasoning: 50, general: 55, agentic: 40 },
@@ -726,18 +839,20 @@ const QUALITY_FLOOR: Record<ModelDef['tier'], Record<ServerSpec, number>> = {
   frontier: { chat: 85, coding: 80, reasoning: 85, general: 85, agentic: 70 },
 }
 
-// The ROSTER above (30 hand-authored + ~68 Pareto-selected) is the CANDIDATE POOL.
-// The active roster is the subset that clears the frontier-tolerance gate (§calibrate
-// `withinFrontierTolerance`, 10%): a checkpoint stays only if it is within 10% of the
-// size↔capability Pareto frontier on at least one axis. Models that trail the frontier
-// on EVERY axis (strictly beaten by something no bigger) are dropped — see docs/PARETO.md.
+// The ROSTER above (hand-authored + generated) is the CANDIDATE POOL. The active roster
+// is the subset that clears the frontier-tolerance gate (§calibrate `withinFrontierTolerance`):
+// a checkpoint stays only if it is within ROSTER_FRONTIER_TOLERANCE of the size↔capability
+// Pareto frontier on at least one axis. Models that trail the frontier on EVERY axis
+// (strictly beaten by something no bigger) are dropped — see docs/PARETO.md.
 const _candidates: ModelDef[] = []
 for (const e of ROSTER) {
-  // Merge the live Artificial-Analysis benchmark cells (scripts/aa-sync.mjs) OVER the
-  // hand-authored `bench`: AA is the source of truth where it has a number; the manual
-  // value fills the gaps AA does not publish (e.g. the newest frontier's MMLU-Pro/LCB).
+  const arch = MODEL_ARCH[e.hf]
+  if (!arch) throw new Error(`roster ${e.id}: no MODEL_ARCH entry for '${e.hf}' — add it to data/model-arch.json and run arch-sync build`)
+  // Merge the Artificial-Analysis cells (scripts/aa-sync.mjs) OVER the hand-authored
+  // `bench`: AA is the source of truth where it has a number (measured or bridged).
   const bench: BenchInputs = { ...e.bench, ...AA_BENCH[e.id] }
   const qualityBy = qualityFromBenchmarks(bench, QUALITY_FLOOR[e.tier])
+  const thinking = thinkingOf(AA_META[e.id], arch.thinkingEvidence)
   _candidates.push({
     id: e.id,
     name: e.name,
@@ -745,25 +860,41 @@ for (const e of ROSTER) {
     variant: e.variant,
     spec: e.spec,
     origin: 'base',
-    paramsTotalB: e.paramsTotalB,
-    paramsActiveB: e.paramsActiveB,
-    isMoE: !!e.isMoE,
-    isReasoning: !!e.isReasoning,
+    paramsTotalB: arch.paramsTotalB,
+    paramsActiveB: arch.paramsActiveB,
+    isMoE: arch.isMoE,
+    isReasoning: thinking.isReasoning,
+    thinkTokens: thinking.thinkTokens,
     quality: qualityBy[e.spec],
     qualityBy,
-    layers: e.layers,
-    kvHeads: e.kvHeads,
-    headDim: e.headDim,
-    attn: e.attn,
-    weightBytes: 2,
-    contextWindowK: e.real.contextWindowK,
-    // §3.4/§OQ-G12 hand-filled intrinsic alignment + instruction-following (P3d consumes them).
+    layers: arch.layers,
+    kvLayers: arch.kvLayers,
+    kvHeads: arch.kvHeads,
+    headDim: arch.headDim,
+    attn: arch.attn,
+    kvBytesPerToken: arch.kvBytesPerToken,
+    kvStateMbPerReq: arch.kvStateMbPerReq,
+    nativeWeightBytes: arch.nativeWeightBytes,
+    contextWindowK: arch.contextWindowK,
+    // §3.4/§OQ-G12 hand-filled intrinsic alignment + instruction-following.
     alignment: e.alignment ?? { ...INSTRUCT_ALIGNMENT },
     instructFollow: e.instructFollow ?? INSTRUCT_INSTRUCT_FOLLOW,
     desc: e.desc,
-    real: { ...e.real, benchmarks: bench },
+    real: {
+      ...e.real,
+      license: arch.license,
+      openWeights: true,
+      contextWindowK: arch.contextWindowK,
+      precision: arch.precision,
+      source: `https://huggingface.co/${e.hf}`,
+      benchmarks: bench,
+      benchmarkSource: AA_BENCH_SOURCE[e.id],
+    },
   })
 }
+
+/** The full candidate pool (before the gate) — read by docs/PARETO.md generation and tests. */
+export const MODEL_CANDIDATES: readonly ModelDef[] = _candidates
 
 /** The active roster: candidates that clear the frontier-tolerance gate (docs/PARETO.md). */
 export const MODEL_DEFS: Record<string, ModelDef> = {}
@@ -773,21 +904,20 @@ for (const d of withinFrontierTolerance(_candidates)) MODEL_DEFS[d.id] = d
 export const OPEN_MODEL_IDS = Object.keys(MODEL_DEFS)
 
 /* ------------------------------------------------------------------ *
- *  DERIVED CHECKPOINTS — the closed `ft_agent`/`pt_giga` cards are     *
- *  GONE (P3b). Their role is now PLAYER-CREATED in the Post-Training    *
- *  Studio (§1): a GRPO-agentic run on a frontier base is your agentic   *
- *  specialist; the endless quality ceiling is a deep, iterative         *
- *  finetune-of-a-finetune chain. Derived models live in                *
+ *  DERIVED CHECKPOINTS — player-created in the Post-Training Studio    *
+ *  (§1): a GRPO-agentic run on a frontier base is your agentic         *
+ *  specialist; the endless quality ceiling is a deep, iterative        *
+ *  finetune-of-a-finetune chain. Derived models live in               *
  *  `s.derivedModels`, resolved via `resolveModel(s,id)` (sim/models.ts). *
  * ------------------------------------------------------------------ */
 
 export const MODEL_LIST = Object.values(MODEL_DEFS)
 /** The small dense instruct model every new rack ships with: the smallest active
- *  checkpoint that deploys WITHOUT a method gate (dense, non-reasoning, non-MoE). */
+ *  checkpoint that is dense and non-thinking. */
 export const DEFAULT_MODEL_ID = MODEL_LIST.filter((m) => !m.isMoE && !m.isReasoning).reduce((a, b) =>
   b.paramsTotalB < a.paramsTotalB ? b : a,
 ).id
-/** Bootstrap: every open model is owned (free) from the start; VRAM + method gate use. */
+/** Bootstrap: every open model is owned (free) from the start; rack VRAM gates deployment. */
 export const STARTER_MODELS = OPEN_MODEL_IDS
 
 /* ------------------------------------------------------------------ *
@@ -896,7 +1026,7 @@ const METHOD_RECIPES_RAW: Record<PostTrainMethod, MethodRecipe> = {
     reshapesDeployment: false, /* no requiresTech — the starter method */
     desc: 'Supervised fine-tuning on curated data. The baseline finetune; no research needed to run it.',
   },
-  // QAT — quantization-aware training: compresses deploy (weightBytes→0.5), small
+  // QAT — quantization-aware training: compresses deploy (nativeWeightBytes→0.5), small
   // quality hit; reshapes deploy fields (§2.7). Does not target a quality axis.
   qat: {
     id: 'qat', name: 'Quantization-Aware Training', relation: 'quantized',

@@ -10,8 +10,15 @@ export type Phase = 'menu' | 'build' | 'wave' | 'won' | 'lost'
 export type ServerSpec = 'general' | 'chat' | 'coding' | 'reasoning' | 'agentic'
 /** §6.4/H7/M1: the authoritative name for the capability-match axis (values = ServerSpec). */
 export type CapabilityAxis = ServerSpec
-/** §4.6 attention family; reflected in the real KV formula via kvHeads (MLA gets a latent factor). */
-export type AttnVariant = 'MHA' | 'MQA' | 'GQA' | 'MLA'
+/**
+ * §4.6 attention family (display). The KV accounting itself is per model —
+ * `ModelDef.kvBytesPerToken` / `kvStateMbPerReq`, derived from config.json — so the
+ * label only names the design: dense MHA/MQA/GQA, latent MLA, the 2026 hybrids that
+ * keep a growing KV on only a few layers (`hybrid-linear`: linear/SSM/conv mixers with
+ * a constant state; `hybrid-swa`: sliding-window layers bounded by their window), and
+ * DeepSeek-V4's compressed sparse attention (`csa`).
+ */
+export type AttnVariant = 'MHA' | 'MQA' | 'GQA' | 'MLA' | 'hybrid-linear' | 'hybrid-swa' | 'csa'
 /** §1.3 latency class → real-ms SLO bucket. IN=interactive, NR=near-real-time, TO=throughput/offline. */
 export type LatencyClass = 'IN' | 'NR' | 'TO'
 
@@ -161,6 +168,24 @@ export interface ServerHardwareDef {
 
 export type ModelVariant = 'base' | 'instruct' | 'coding'
 
+/** A public-benchmark cell (Artificial Analysis / model-card) a checkpoint can carry. */
+export type BenchmarkCell =
+  | 'gpqaDiamond'
+  | 'ifBench'
+  | 'lcr'
+  | 'sciCode'
+  | 'terminalBenchHard'
+  | 'hle'
+  | 'terminalBenchV21'
+  | 'terminalBenchV40'
+  | 'tauBanking'
+  | 'mmluPro'
+  | 'mmlu'
+  | 'aime'
+  | 'liveCodeBench'
+  | 'sweBench'
+  | 'humanEval'
+
 /**
  * Real-world provenance for a checkpoint. Display-only — the simulation never
  * reads this; it lives here so Professional (Expert) Mode can show where the
@@ -177,18 +202,19 @@ export interface RealModelMeta {
   released: string
   /** advertised context window in thousands of tokens. */
   contextWindowK: number
-  /** the public benchmark %s the qualityBy vector was calibrated from. */
-  benchmarks: {
-    mmluPro?: number
-    gpqaDiamond?: number
-    liveCodeBench?: number
-    sweBench?: number
-    aime?: number
-    humanEval?: number
-    longContext?: number
-  }
+  /** the public benchmark %s the qualityBy vector was calibrated from (reference scale). */
+  benchmarks: Partial<Record<BenchmarkCell, number>>
+  /**
+   * provenance of each benchmark cell that is NOT a reference-snapshot measurement:
+   * 'latest' (a frozen eval read from the latest snapshot), 'eq' (re-scored, equated
+   * back to the reference scale) or 'bridge:<predictors> sd=<x>' (estimated from the
+   * measured cells — show it as ≈). Absent = measured on the reference snapshot.
+   */
+  benchmarkSource?: Partial<Record<BenchmarkCell, string>>
+  /** native release precision of the open weights ('BF16', 'FP8', 'MXFP4', 'INT4', 'FP4'). */
+  precision?: string
   confidence: 'high' | 'medium' | 'low'
-  /** primary source — arXiv id or model-card URL. */
+  /** primary source — the Hugging Face model-card URL of the open weights. */
   source: string
   /**
    * §6.5/[fix H6] the roster base this checkpoint genuinely DERIVES from (the
@@ -204,12 +230,10 @@ export interface RealModelMeta {
  * Static model profile.
  *
  * Open-weight checkpoints are GLOBAL, FREE assets: the weights are a download,
- * so deploying one costs nothing. What gates them is (a) rack VRAM — a model
- * must fit `paramsTotalB` of memory — and (b) METHOD unlocks: a sparse-expert
- * (`isMoE`) checkpoint needs the MoE research, a thinking (`isReasoning`)
- * checkpoint needs the Reasoning research, before it can be deployed.
- * Custom checkpoints you finetune/pretrain in the Model Lab are added the same
- * way. Models decide answer quality and serving demand.
+ * so deploying one costs nothing. What gates them is rack VRAM — the weights
+ * (`paramsTotalB` × the resident bytes/param) must fit. Checkpoints you post-train
+ * in the Studio are added the same way. Models decide answer quality and serving
+ * demand.
  */
 export interface ModelDef {
   id: string
@@ -230,30 +254,55 @@ export interface ModelDef {
    * models; far smaller for MoE (e.g. DeepSeek-V3.1: 671 total / 37 active).
    */
   paramsActiveB: number
-  /** sparse mixture-of-experts: all experts resident (VRAM), only active params serve. Deploy-gated by the MoE method. */
+  /** sparse mixture-of-experts: all experts resident (VRAM), only active params serve. */
   isMoE: boolean
-  /** test-time "thinking" model: its `qualityBy` already reflects the gain, and it emits far more output tokens. Deploy-gated by the Reasoning method. */
+  /**
+   * test-time "thinking" model: its `qualityBy` was measured in thinking mode. Evidence,
+   * in order: AA's time-to-first-ANSWER-token exceeding time-to-first-token by > 1 s on
+   * the pinned variant, then the model card, then the variant name (calibrate.ts).
+   */
   isReasoning: boolean
+  /**
+   * hidden reasoning tokens a thinking model emits per answer before the first answer
+   * token: clamp((ttfat − ttft) × tok/s, 300, 4000) from AA's telemetry, 1500 when a
+   * thinking model has none measured, 0 for instruct models (calibrate.ts).
+   */
+  thinkTokens: number
   /** Peak correctness score (the model's best axis) — display & sorting. */
   quality: number
   /**
-   * Correctness per traffic axis, checked against Request complexity by
-   * affinity. For real checkpoints this is calibrated from public benchmarks
-   * (MMLU-Pro→chat/general, LiveCodeBench→coding, GPQA-Diamond→reasoning);
-   * see `sim/calibrate.ts`.
+   * Correctness per traffic axis, checked against a request's difficulty on its
+   * primary axis. For real checkpoints this is calibrated from six public benchmark
+   * cells (IFBench→chat, GPQA-Diamond→general, SciCode→coding, HLE→reasoning,
+   * Terminal-Bench Hard→agentic, each blended with two secondaries); see `sim/calibrate.ts`.
    */
   qualityBy: Record<CapabilityAxis, number>
-  // --- real architecture (feeds the §5.6 KV / §6.2 roofline formulas) ---
-  /** transformer layers. */
+  // --- real architecture (from config.json, data/model-arch.json; feeds §5.6 KV / §6.2 roofline) ---
+  /** transformer layers (all of them, whatever their mixer). */
   layers: number
-  /** KV (grouped/MQA/MLA) heads — low values reflect GQA/MQA naturally. */
+  /** layers that keep a GROWING per-token KV cache (hybrids keep it on only a few). Display. */
+  kvLayers: number
+  /** KV heads of the full-attention layers (1 for MLA/CSA, whose cache is one latent). Display. */
   kvHeads: number
-  /** per-head dimension. */
+  /** per-head dimension of that cache (latent + rope for MLA). Display. */
   headDim: number
-  /** attention family (§4.6). MLA gets a latent KV factor. */
+  /** attention family (§4.6, display) — the KV accounting is the two fields below. */
   attn: AttnVariant
-  /** bytes per weight param at deploy default: 2=FP16, 1=FP8, 0.5=INT4 (§5.6). */
-  weightBytes: 2 | 1 | 0.5
+  /**
+   * BF16 KV-cache bytes per token over the KV-bearing layers only: full attention
+   * 2·kvHeads·headDim per layer, MLA latent+rope (one tensor), CSA/HCA compressed,
+   * sparse-attention indexer keys; sliding-window and linear/SSM layers excluded (§5.6).
+   */
+  kvBytesPerToken: number
+  /** constant per-request cache (MB, BF16 windows / native state dtype) that does not grow with context: sliding windows + linear/SSM recurrent state. */
+  kvStateMbPerReq: number
+  /**
+   * native release precision in bytes/param — the precision its benchmarks were
+   * measured at: BF16 2, FP8 ≈1, MXFP4 / INT4-QAT / FP4 ≈0.55 (block scales included).
+   * Serving-layer PTQ can lower the resident bytes further; only quantizing BELOW this
+   * precision costs quality (effects.ts).
+   */
+  nativeWeightBytes: number
   /** real context window in thousands of tokens (the hard window gate, §1.2). */
   contextWindowK: number
   // --- intrinsic state (§3, R3): post-training methods MODIFY these; P3d consumes them ---
