@@ -1202,7 +1202,7 @@ export const RESEARCH_LIST = Object.values(RESEARCH_DEFS)
 /* ------------------------------------------------------------------ *
  *  TOWERS & BUILDINGS — you build neutral GPU racks; what a rack is   *
  *  good at comes from the model you deploy on it (inspect panel).     *
- *  Every new rack ships with the free Llama-3.1-8B starter preloaded. *
+ *  Every new rack ships with a small free starter model preloaded.   *
  * ------------------------------------------------------------------ */
 
 export const TOWER_DEFS: Record<string, TowerDef> = {
@@ -1216,8 +1216,8 @@ export const TOWER_DEFS: Record<string, TowerDef> = {
     accent: HARDWARE_DEFS.hw_edge.accent,
     hardwareId: 'hw_edge',
     defaultModelId: DEFAULT_MODEL_ID,
-    tagline: 'Small rack · Llama-3.1-8B included',
-    desc: 'A low-power starter rack, Llama-3.1-8B preloaded. Upgrade the rack in place and deploy any bigger open model your VRAM (and unlocked methods) allow.',
+    tagline: 'Small rack · starter model included',
+    desc: 'A low-power starter rack with a small starter model preloaded. Upgrade the rack in place and deploy any bigger open model your VRAM (and unlocked methods) allow.',
   },
   srv_frontier: {
     id: 'srv_frontier',
@@ -1230,7 +1230,7 @@ export const TOWER_DEFS: Record<string, TowerDef> = {
     hardwareId: 'hw_frontier',
     defaultModelId: DEFAULT_MODEL_ID,
     tagline: 'Big rack · 70B-ready',
-    desc: 'A large accelerator rack that fits a 70B model unquantized. Ships with Llama-3.1-8B; deploy something worthy of it.',
+    desc: 'A large accelerator rack that fits a 70B model unquantized. Ships with the small starter model; deploy something worthy of it.',
   },
   router: {
     id: 'router',
