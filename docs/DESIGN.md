@@ -101,7 +101,7 @@ Racks are real accelerators (`HW_SPECS` in `content.ts`). Each entry carries per
 | `hw_perf` | Performance GPU Rack (H100-class) | 1 | 989 / 1979 / — | 80 GB | 3.35 TB/s | 700 W | air | $48k | 3.0 | 3.0 |
 | `hw_frontier` | Frontier GPU Rack (H200-class) | 1 | 989 / 1979 / — | 141 GB | 4.8 TB/s | 700 W | air | $60k | 3.2 | 3.3 |
 | `hw_pod` | DGX H200 (8× H200) | 8 | 989 / 1979 / — | 141 GB | 4.8 TB/s | 700 W | air | $320k | 3.2 | 3.4 |
-| `hw_superpod` | DGX B200 (8× B200) | 8 | 2250 / 4500 / 9000 | 192 GB | 8.0 TB/s | 1000 W | air | $500k | 5.0 | 3.5 |
+| `hw_superpod` | DGX B200 (8× B200) | 8 | 2250 / 4500 / 9000 | 180 GB | 8.0 TB/s | 1000 W | air | $500k | 5.0 | 3.5 |
 | `hw_giga` | GB200 NVL72 (72× B200) | 72 | 2250 / 4500 / 9000 | 192 GB | 8.0 TB/s | 1200 W | **liquid** | $3M | 5.0 | 3.6 |
 
 Key physics the ladder teaches:
@@ -433,7 +433,7 @@ Audio is **outcome feedback first**. The same outcome table that drives the FX d
 
 ### Demo
 
-The title screen's **Demo** is a fixed-seed Expert spectator run at 12× driven by the production autoplayer (`src/sim/demo.ts`). It plays only with the actions and read-only forecasts a player has — the next-wave preview and the shared load forecast — never a privileged view of the dice: it keeps a reserve for the projected bill, builds and upgrades racks, researches the stack in dependency order, post-trains a safe-completion workhorse and agentic / reasoning specialists, and deploys per rack tier what the forecast says serves the wave best. Like a real run it gets deep (the gate seeds reach waves 69–84) and is eventually eliminated. Demo viewers can inspect everything; state-changing actions stay under the autoplayer's control, and a run-changing button says so instead of acting. An agent-bridge run (docs/AGENT-BRIDGE.md) follows the same ownership rule, with the agent's narration in the Codex bubble.
+The title screen's **Demo** is a fixed-seed Expert spectator run at 12× driven by the production autoplayer (`src/sim/demo.ts`). It plays only with the actions and read-only forecasts a player has — the next-wave preview and the shared load forecast — never a privileged view of the dice: it keeps a reserve for the projected bill, builds and upgrades racks, researches the stack in dependency order, post-trains a safe-completion workhorse and agentic / reasoning specialists, and deploys per rack tier what the forecast says serves the wave best. Like a real run it gets deep (the gate seeds reach waves 55–91) and is eventually eliminated. Demo viewers can inspect everything; state-changing actions stay under the autoplayer's control, and a run-changing button says so instead of acting. An agent-bridge run (docs/AGENT-BRIDGE.md) follows the same ownership rule, with the agent's narration in the Codex bubble.
 
 ---
 
@@ -457,4 +457,4 @@ The lessons the numbers are tuned to teach:
 4. **Memory is concurrency.** The hybrid-attention models of 2026 hold a fraction of the KV per token of their full-attention peers; on long-context traffic that is the difference between a rack serving a handful of users and hundreds.
 5. **Safety has a price on both sides.** Guards add latency and false refusals; alignment adds a capability tax and its own refusals; Constitutional AI and safe-completion move the Pareto frontier. Novel attacks punish relying on one classifier.
 
-Balance is guarded by the autoplay gate (`tests/playthrough.test.ts`): the production demo must reach at least wave 45 on every gate seed (it reaches waves 64–91) and must still be eliminated before wave 100; a naive build (cheap racks, the starter model, nothing else) must fall in waves 6–14 (it falls at waves 8–10, by the first boss); and a fleet strong enough for wave 100 must clear the first endless surges at high Goodput. The recipe gain/cost table is autoplay-calibratable and validated by `calibrateRecipes` against the band-displacement ordering, so a hand-edit cannot silently break balance.
+Balance is guarded by the autoplay gate (`tests/playthrough.test.ts`): the production demo must reach at least wave 45 on every gate seed (it reaches waves 55–91) and must still be eliminated before wave 100; a naive build (cheap racks, the starter model, nothing else) must fall in waves 6–14 (it falls at waves 8–10, by the first boss); and a fleet strong enough for wave 100 must clear the first endless surges at high Goodput. The recipe gain/cost table is autoplay-calibratable and validated by `calibrateRecipes` against the band-displacement ordering, so a hand-edit cannot silently break balance.

@@ -267,7 +267,7 @@ Every SLA penalty is multiplied by `s.modifiers.slaDamage`. `served` and `bad` a
 | `hw_perf` (H100) | 1 | 989 / 1979 / — | 80 GB | 3.35 | 700 | air | $48K → 48 | 3.0 | 3.0 |
 | `hw_frontier` (H200) | 1 | 989 / 1979 / — | 141 GB | 4.8 | 700 | air | $60K → 60 | 3.2 | 3.3 |
 | `hw_pod` (DGX H200) | 8 | 989 / 1979 / — | 141 GB | 4.8 | 700 | air | $320K → 320 | 25.6 | 3.4 |
-| `hw_superpod` (DGX B200) | 8 | 2250 / 4500 / 9000 | 192 GB | 8.0 | 1000 | air | $500K → 500 | 40 | 3.5 |
+| `hw_superpod` (DGX B200) | 8 | 2250 / 4500 / 9000 | 180 GB | 8.0 | 1000 | air | $500K → 500 | 40 | 3.5 |
 | `hw_giga` (GB200 NVL72) | 72 | 2250 / 4500 / 9000 | 192 GB | 8.0 | 1200 | liquid | $3M → 3000 | 360 | 3.6 |
 
 Support buildings: Router 24 credits, range 3.6, 0.2 kW · Cache 20, range 3.0, 0.2 kW · Prompt Guard 14 · Llama Guard 40 · Moderation 18 · Power Plant 18 (+8 kW) · Cooling Tower 18 (+8 kW air) · Liquid Cooling Loop 90 (+75 kW liquid) · Training Lab 36. Selling refunds 60% of the current hardware's cost.

@@ -204,7 +204,7 @@ The build bar sells two racks — **Edge** (the cheap starter) and **Frontier** 
 | Performance GPU Rack | H100-class | 1 | 80 GB | 3.35 TB/s | 700 W | air | $48 | 3.0 |
 | Frontier GPU Rack (buildable) | H200-class | 1 | 141 GB | 4.8 TB/s | 700 W | air | $60 | 3.3 |
 | DGX H200 | 8× H200 | 8 | 1.1 TB | 4.8 TB/s | 700 W | air | $320 | 3.4 |
-| DGX B200 | 8× B200 | 8 | 1.5 TB | 8 TB/s | 1000 W | air | $500 | 3.5 |
+| DGX B200 | 8× B200 | 8 | 1.44 TB | 8 TB/s | 1000 W | air | $500 | 3.5 |
 | GB200 NVL72 | 72× B200 | 72 | 13.8 TB | 8 TB/s | 1200 W | **liquid** | $3000 | 3.6 |
 
 Prices are real capex divided by 1000. Three facts from real serving shape every choice:

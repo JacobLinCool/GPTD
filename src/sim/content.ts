@@ -392,14 +392,14 @@ const HW_SPECS: Record<string, HwSpec> = {
   },
   hw_superpod: {
     id: 'hw_superpod', name: 'DGX B200', gpuModel: 'DGX B200 (8× B200)', gpus: 8,
-    bf16TflopsPerGpu: 2250, fp8TflopsPerGpu: 4500, fp4TflopsPerGpu: 9000, hbmGbPerGpu: 192, hbmTbsPerGpu: 8.0,
+    bf16TflopsPerGpu: 2250, fp8TflopsPerGpu: 4500, fp4TflopsPerGpu: 9000, hbmGbPerGpu: 180, hbmTbsPerGpu: 8.0,
     tdpWattsPerGpu: 1000, cooling: 'air', capexUsd: 500000, gpuHrUsdPerGpu: 5.0,
     powerDraw: 16, heat: 16, range: 3.5, color: 0xff7ab6, accent: 0xffc4de,
-    desc: 'Eight Blackwell B200s: 1.5 TB of HBM at 8 TB/s per GPU, plus FP4 Tensor Cores (NVFP4). 700B-class checkpoints live here under Tensor Parallelism.',
+    desc: 'Eight Blackwell B200s: 1.44 TB of HBM at 8 TB/s per GPU, plus FP4 Tensor Cores (NVFP4). 700B-class checkpoints live here under Tensor Parallelism.',
   },
   hw_giga: {
     id: 'hw_giga', name: 'GB200 NVL72', gpuModel: 'GB200 NVL72 (72× B200)', gpus: 72,
-    bf16TflopsPerGpu: 2250, fp8TflopsPerGpu: 4500, fp4TflopsPerGpu: 9000, hbmGbPerGpu: 192, hbmTbsPerGpu: 8.0,
+    bf16TflopsPerGpu: 2250, fp8TflopsPerGpu: 4500, fp4TflopsPerGpu: 9000, hbmGbPerGpu: 180, hbmTbsPerGpu: 8.0,
     tdpWattsPerGpu: 1200, cooling: 'liquid', capexUsd: 3000000, gpuHrUsdPerGpu: 5.0,
     powerDraw: 26, heat: 26, range: 3.6, color: 0xf5e663, accent: 0xfdf6b8,
     desc: 'A 72-GPU NVLink rack: 13.8 TB of HBM. A trillion-parameter model spans a pipeline of 8-GPU tensor-parallel stages; smaller models run as many replicas. Per-user speed is still one 8-GPU group\'s.',
@@ -711,7 +711,7 @@ const ROSTER: RosterEntry[] = [
     id: 'glm_5_2', name: 'GLM-5.2', tier: 'frontier', variant: 'instruct', spec: 'agentic', hf: 'zai-org/GLM-5.2',
     bench: { gpqaDiamond: 91.2, aime: 99.2 }, alignment: ALIGN_FRONTIER, instructFollow: 84,
     real: R('Z.ai (Zhipu)', '2026-Q2', 'medium'),
-    desc: 'A 753B/40B sparse-attention MoE with a 1M window, tuned for long-horizon agentic coding. Its 1.5 TB of BF16 weights need a SuperPod.',
+    desc: 'A 753B/40B sparse-attention MoE with a 1M window, tuned for long-horizon agentic coding. Its 1.5 TB of BF16 weights overflow even a DGX B200: serve it in FP8 (about 750 GB) or on the NVL72.',
   },
   {
     id: 'deepseek_v4_pro', name: 'DeepSeek-V4-Pro-0813', tier: 'frontier', variant: 'instruct', spec: 'reasoning', hf: 'deepseek-ai/DeepSeek-V4-Pro-0813',

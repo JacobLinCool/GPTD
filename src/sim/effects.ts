@@ -273,7 +273,11 @@ export function availableFormats(
 
 /** Resident bytes per weight param in a format: the release precision is never inflated. */
 function residentBytes(model: ModelDef, fmt: WeightFormat): number {
-  return Math.min(model.nativeWeightBytes, FORMAT_BYTES[fmt])
+  // Only a LOWER precision class shrinks the weights: re-quantizing a native 4-bit release
+  // (MXFP4, INT4-QAT, FP4 experts) to another 4-bit format saves nothing, and no format
+  // up-converts a release past the precision it shipped in.
+  const target = FORMAT_BYTES[fmt]
+  return precisionBits(target) < precisionBits(model.nativeWeightBytes) ? target : model.nativeWeightBytes
 }
 
 /** Does serving this model in this format quantize it BELOW its release precision (post-training quantization)? */
