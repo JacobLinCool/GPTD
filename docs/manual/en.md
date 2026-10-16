@@ -43,15 +43,15 @@ On the title screen you pick a display mode. Both run **exactly the same game** 
 | HUD | Trust, SLA, Cash with runway, Data, Power and Heat in kW, the next-wave title and the live outcome tally | the same, plus MODELS and METRICS buttons |
 | Next-wave card | plain lines ("instant reply · needs Coding 58") | technical lines (latency class, judged axis and threshold, token counts) |
 | Rack inspect | Overview in plain words ("Fast enough for", "Smart enough for", refusal and self-handle rates), Deploy picker | Overview cards (HARDWARE, DEPLOYED MODEL), Deploy picker, and a Telemetry tab (ROOFLINE, ESTIMATE, live batch and KV) |
-| Request inspector | plain diagnosis ("smart enough? ✓") | the full diagnosis: tokens, TTFT so far, TPOT, judged axis, margin, guards passed, hazards |
-| Wave report | a compact summary: outcome bar, "Too slow · Wrong · Unsafe · Refused" counts, net cash and FIX NEXT | the full report: Goodput, outcome bar, Trust and SLA lost per outcome, which bound late answers missed, who refused, TTFT / E2E / TPOT, unit cost, a per-archetype table and WHY lines |
+| Request inspector | plain diagnosis ("smart enough? ✓"); "waiting for a rack" until a rack takes the request on | the full diagnosis: tokens, TTFT so far, TPOT, judged axis, margin, guards passed, hazards; the same "waiting for a rack" status until a rack takes it on |
+| Wave report | a compact summary: outcome bar, "Too slow · Wrong · Unsafe · Refused" counts, net cash and FIX NEXT | the full report: Goodput, outcome bar, Trust and SLA lost per outcome, which bound late answers missed, who refused, TTFT / E2E / TPOT, unit cost, income and the SLA contract, the operating bill split into GPU-hours and energy, a per-archetype table and WHY lines |
 | Board | everything below | adds a KV gauge on each rack, tags on racks that differ from the rest of the fleet, and a "?" badge on requests that are being answered wrongly |
 | Model Overview + Lineage Graph | — | every checkpoint you own, filterable and sortable, with the family tree of your derived models (K) |
 | Fleet Telemetry | — | six live charts: Goodput, requests/s, p95 latency, $/Mtoken, KV utilization, fleet utilization (` or Tab) |
 
 The Training Lab, the Post-Training Studio, the Codex and the notifications work the same in both modes.
 
-The small **Demo** button on the title panel starts a fixed-seed Expert run at 12× and lets the built-in autoplayer play it: it upgrades racks up to 8-GPU systems, picks models with the deploy picker's own forecast, researches the serving stack, places routers, caches and guardrails, and trains Constitutional-AI and GRPO specialist checkpoints in the Studio. It survives deep into the campaign and is eventually eliminated, like any run. During the demo you can still click racks, requests, Models and the Training Lab to read them; the autoplayer keeps control of every action. The **Agent** button hands the run to a terminal agent over a local bridge instead (see [AGENT-BRIDGE.md](../AGENT-BRIDGE.md)).
+The small **Demo** button on the title panel starts a fixed-seed Expert run at 12× and lets the built-in autoplayer play it: it upgrades racks up to 8-GPU systems, picks models with the deploy picker's own forecast, researches the serving stack, places routers, caches and guardrails, and trains Constitutional-AI and GRPO specialist checkpoints in the Studio. It survives deep into the campaign and is eventually eliminated, like any run. During the demo you can still click racks, requests, Models and the Training Lab to read them; the autoplayer keeps control of every action, and a button that would change the run says so and does nothing. The **Agent** button hands the run to a terminal agent over a local bridge instead (see [AGENT-BRIDGE.md](../AGENT-BRIDGE.md)): the agent narrates each move in the Codex bubble, which stays visible over the wave report, and your clicks only inspect, as in the demo.
 
 If you are new, start in Normal Mode and switch to Expert when you want to know *why* a lane is slow — the roofline card and the wave report usually answer it.
 
@@ -105,9 +105,9 @@ Every hotkey binds to the physical key position, so the layout is the same on an
 | F | toggle between 1× and your last fast speed |
 | M | mute / unmute |
 | L | open or close the Training Lab (between waves, with a Lab built) |
-| K | open the Model Overview (Expert) |
+| K | open or close the Model Overview (Expert) |
 | ` or Tab | toggle the Fleet Telemetry panel (Expert) |
-| H or ? | the hotkey sheet |
+| H or ? | the hotkey sheet (a running wave holds still while it is open) |
 | Enter | Codex: next |
 
 **Inside panels and menus**
@@ -118,7 +118,7 @@ Every hotkey binds to the physical key position, so the layout is the same on an
 | Settings | [ ] or ← → to switch tabs |
 | How to Play, Codex, About, Achievements | ↑ ↓ and PgUp / PgDn scroll; [ ] switch the Codex tabs |
 | Training Lab | [ ] switch Infra / Studio; arrows and Enter move and pick; PgUp / PgDn page |
-| Model Overview | ↑ ↓ select, PgUp / PgDn page, Home / End jump, [ ] cycle the filter; typing letters filters by name (Esc clears the filter, then closes) |
+| Model Overview | ↑ ↓ select, PgUp / PgDn page, Home / End jump, [ ] cycle the filter; typing letters filters by name (Esc clears the filter, then closes; K closes it while no filter is typed) |
 
 You build during the build phase, and you can still emergency-build or sell mid-wave if you have the cash. Model swaps, rack upgrades, weight formats and rack roles change only between waves, because loading new weights takes a rack offline; the one exception is a Multi-LoRA adapter swap (see Research). Research and Studio runs start between waves and make progress while waves run.
 
@@ -153,7 +153,7 @@ Between waves the **NEXT WAVE** card on the right shows what START will launch: 
 | **FITS** | some covering rack's context window and KV memory hold the whole prompt plus the answer |
 | **SAFE** | every hazard it carries is caught by a guardrail covering its lanes, or refused by every covering model at least 90% of the time |
 
-Hover a check for the numbers behind it (best margin, latency against each bound, window against the tokens needed, and per hazard whether a guard covers it, is locked until Red-Team Eval, or how often the models self-handle it). The forecast reads the same load model the deploy picker uses; treat it as an estimate, since it does not model racks competing with each other for the same requests. The card's footer gives the request count, the wave's projected operating bill and the most the SLA contract can pay. The card collapses with its button and turns into a click-through ghost while you hold a build tool.
+Hover a check for the numbers behind it (best margin, latency against each bound, window against the tokens needed, and per hazard whether a guard covers it, is locked until Red-Team Eval, or how often the models self-handle it). The forecast reads the same load model the deploy picker uses, queueing at each rack included; treat it as an estimate, since it does not model racks sharing the same requests. The card's footer gives the request count, the wave's projected operating bill and the most the SLA contract can pay. The card collapses with its button and turns into a click-through ghost while you hold a build tool.
 
 If your cash is below the projected bill, START warns you first and turns into START ANYWAY; press it again to go. The runway chip turns amber under two waves of runway and red under one.
 
@@ -263,7 +263,7 @@ Attacks must be **handled**, or a harmful answer reaches the user. Adversarial p
 
 **Layer 1 — the model's own alignment.** Safety is baked into the weights. When a model writes its first token, it either self-handles the attack (refuses it, or answers it safely) or does not. Self-handling costs no latency, but it is a property of the model, and it comes with two costs: an **alignment tax** (aligned models lose a little skill) and **over-refusal** (they turn some harmless users away). The gpt-oss family shows the better trade: safe-completion alignment with high safety, a low refusal rate and a smaller tax for its safety than hard-refusal models. Injection is the hardest hazard for a model to resist on its own.
 
-**Layer 2 — guardrail buildings.** A guardrail is a stage on the request path, not a turret. It screens **every request on the lanes its range touches, wherever it sits on the lane** — so a guard beside the core, where the four lanes meet, can cover all of them. Each request is screened once, at its first contact with a rack. An input-side check runs before any compute (so a blocked attack costs no prefill) and its latency is added to TTFT; an output-side check reads the finished answer before delivery and adds to the end-to-end time.
+**Layer 2 — guardrail buildings.** A guardrail is a stage on the request path, not a turret. It screens **every request on the lanes its range touches, wherever it sits on the lane** — so a guard beside the core, where the four lanes meet, can cover all of them. Each request is screened once, at its first contact with a rack. An input-side check runs before any compute (so a blocked attack costs no prefill) and its latency is added to TTFT; an output-side check reads the finished answer before delivery and adds to the end-to-end time. A guard's inspect panel lists the lanes it screens, and warns when it covers none.
 
 | Guardrail | Family | Check time | Catches | Side | Cost on your fleet |
 | --------- | ------ | ---------- | ------- | ---- | ------------------ |
@@ -356,7 +356,7 @@ A single-GPU H100 or H200 rack draws about half a kilowatt, an 8-GPU DGX several
 ## The Economy — real dollars per token
 
 - **Income is token-priced.** Each archetype has an input and an output price (the archetype table). A served request pays for the tokens actually processed — the prompt it read, cached prefix included, plus the answer it got; a late one pays half; every other outcome pays nothing, and a wrong answer is refunded. Hidden thinking tokens are never billed, so a rack card's $/Mtoken is quoted per billed answer token: a model that thinks on the coming traffic shows a higher cost. Agent and reasoning answers sell at a premium; embeddings and chat sell cheap.
-- **The SLA contract pays every wave.** When a wave clears, your committed customers pay its contract times the wave's **Goodput** — the share of all its requests served cleanly. It is most of your early income and grows with the era; boss waves pay a premium. As prompts lengthen, token income overtakes it. The wave report and the clear banner list this payment as the *clear bonus*.
+- **The SLA contract pays every wave.** When a wave clears, your committed customers pay its contract times the wave's **Goodput** — the share of all its requests served cleanly. It is most of your early income and grows with the era; boss waves pay a premium. As prompts lengthen, token income overtakes it. The wave report and the clear banner list this payment as the *SLA contract*.
 
   | Wave tier | Contract at 100% Goodput | A boss wave of that tier |
   | --------- | -----------------------: | -----------------------: |
@@ -480,9 +480,9 @@ Open the system menu with the gear button or Esc, then **Settings**. Changes app
 | Audio | Outcome Sounds | tap each of the seven outcome glyphs to hear it |
 | Display | Language | EN (English) · 中 (Traditional Chinese) |
 | Display | Display Mode | Normal / Expert (switchable mid-run once the tutorial is finished or skipped) |
-| Accessibility | Reduced Motion | on / off (follows your system setting): holds animations steady and removes particle bursts |
-| Accessibility | Screen Shake | on / off (on): with it off, a core hit flashes the border instead |
-| Accessibility | Reduce Flashing | on / off (off): limits full-screen flashes and rapid blinking |
+| Accessibility | Reduced Motion | on / off (follows your system setting): holds animations steady and removes particle bursts (token streams become dotted lines) |
+| Accessibility | Screen Shake | on / off (on): with it off, a core hit flashes the border instead (within the flash limit) |
+| Accessibility | Reduce Flashing | on / off (off): removes full-screen flashes and rapid blinking, the core-hit border flash included (otherwise at most three flashes a second) |
 | Accessibility | Colorblind-Safe Colors | on / off (off): a color-vision-safe outcome palette; every outcome keeps its glyph |
 | Accessibility | Effects | Full / Reduced / Minimal (Full): particle and popup density; Minimal keeps only the meaningful glyphs, beams and dotted token streams |
 | Gameplay | Default Speed | 1× · 2× · 3× · 6× · 12× (1×) |

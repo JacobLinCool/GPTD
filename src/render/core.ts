@@ -89,9 +89,11 @@ export class CoreView {
       0.42,
       severe ? 3 : 2,
     )
-    if (this.limiter.allow(this.clock)) this.flashT = 0.15
+    // one limiter decision covers both flashes: at most 3/s together, none under Reduce Flashing
+    const flash = this.limiter.allow(this.clock)
+    if (flash) this.flashT = 0.15
     if (shakeEnabled()) this.shake = Math.min(4, this.shake + (severe ? 1.5 + dmg * 0.6 : 1))
-    else this.edgeFlash = 0.12 // no shake: the board border flashes instead
+    else if (flash) this.edgeFlash = 0.12 // no shake: the board border flashes instead (same budget)
   }
 
   /** Celebration sparkle (wave clear / win). */

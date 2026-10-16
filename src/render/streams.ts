@@ -1,7 +1,7 @@
 import type { GameState, Request } from '../core/types'
 import { HARDWARE_DEFS } from '../sim/content'
 import { loadoutOf, serverPerUserDecodeTokS } from '../sim/effects'
-import { fxDensity, fxLevel } from './anim'
+import { fxDensity, fxLevel, reducedMotion } from './anim'
 import type { FxManager } from './fx'
 
 /** Flight time of one token particle along a link (s). */
@@ -59,8 +59,8 @@ export class StreamLayer {
       }
       const hwColor = (t.hwId && HARDWARE_DEFS[t.hwId]?.color) || t.def.color
       const stalled = act.prefillId != null && act.decodeIds.length > 0 && !s.infra.scheduling.chunked
-      if (level === 'minimal') {
-        // minimal FX: each link is a faint dotted line, refreshed at 4 Hz
+      if (level === 'minimal' || reducedMotion()) {
+        // minimal FX / reduced motion: each link is a faint dotted line, refreshed at 4 Hz
         st.dotted -= dt
         if (st.dotted > 0) continue
         st.dotted = 0.25

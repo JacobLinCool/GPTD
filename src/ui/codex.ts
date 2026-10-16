@@ -42,6 +42,7 @@ export class Codex {
   readonly highlight = new Graphics()
   private targetRect: Rect | null = null
   private t = 0
+  private bubbleTop = AVATAR_Y
 
   constructor(factory: TextureFactory, cb: { onNext: () => void; onSkip: () => void }) {
     this.highlight.eventMode = 'none'
@@ -101,6 +102,7 @@ export class Codex {
     const btnRow = hideControls ? 0 : 34
     const bubbleH = Math.max(hideControls ? 48 : 64, textH + 24 + btnRow)
     const by = AVATAR_Y - 24 - bubbleH
+    this.bubbleTop = by
 
     this.bubble.clear()
     drawPanel(this.bubble, BUBBLE_X, by, BUBBLE_W, bubbleH, { edge: COLORS.sla, alpha: 0.97 })
@@ -134,6 +136,11 @@ export class Codex {
   hide(): void {
     this.view.visible = false
     this.targetRect = null
+  }
+
+  /** The bubble's top edge in design px while it shows (a panel above it can stop there). */
+  get top(): number | null {
+    return this.view.visible ? this.bubbleTop : null
   }
 
   /** The bubble is waiting on its Next button (Enter can press it). */

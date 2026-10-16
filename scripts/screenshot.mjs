@@ -447,6 +447,11 @@ await scenario('en-expert', { lang: 'en', mode: 'expert' }, async (h) => {
   await h.peek(() => (window.__game.models.showLineage = false))
   await h.press('Escape', 150) // letters type a filter query in the table, so Esc closes it
   assert(!(await h.peek(() => window.__game.modelsOpen)), 'Esc closes the Model Overview')
+  // K toggles it closed again while no filter query is being typed
+  await h.press('KeyK', 300)
+  assert(await h.peek(() => window.__game.modelsOpen), 'K reopens the Model Overview')
+  await h.press('KeyK', 300)
+  assert(!(await h.peek(() => window.__game.modelsOpen)), 'K closes the Model Overview (no query typed)')
 
   await h.settingsTour()
   await h.endScreen()

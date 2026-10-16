@@ -10,9 +10,18 @@
  */
 import type { GameEvent, GameState, ModelDef, WaveReport } from './core/types'
 import { CAMPAIGN_THEMES } from './sim/campaign'
-import { BUILD_ORDER, WAVES } from './sim/content'
+import { BUILD_ORDER, INFRA_LIST, MODEL_DEFS, MODEL_LIST, WAVES } from './sim/content'
 import { resolveModel } from './sim/effects'
+import { guardCoveredLanes } from './sim/guards'
 import { isBrownout } from './sim/power'
+
+/** Collector tiers scale with the active roster: bronze 10, silver ≈60% of it, gold every active base model. */
+const ROSTER_SIZE = MODEL_LIST.length
+const COLLECTOR_GOALS = [Math.min(10, ROSTER_SIZE), Math.round(ROSTER_SIZE * 0.6), ROSTER_SIZE]
+/** David: at most this many parameters (billions) on every deployed model. */
+const DAVID_MAX_B = 9
+/** David counts on a boss wave, or on any wave from this one (1-based) on. */
+const DAVID_FROM_WAVE = 20
 
 export type AchCategory =
   | 'progress'
@@ -73,13 +82,13 @@ export const ACHIEVEMENTS: AchievementDef[] = [
   // --- safety ---
   { id: 'sf_cleanhands', category: 'safety', name: 'Clean Hands', desc: 'Clear a jailbreak-storm wave with zero unsafe answers.' },
   { id: 'sf_unbreached', category: 'safety', name: 'Unbreached', desc: 'Finish a run (past wave 20) with zero unsafe answers.' },
-  { id: 'sf_depth', category: 'safety', name: 'Defense in Depth', desc: 'Run all three guardrail types at once.' },
+  { id: 'sf_depth', category: 'safety', name: 'Defense in Depth', desc: 'Screen one lane with two guard families at once (an encoder classifier and an LLM judge).' },
   { id: 'sf_nofalse', category: 'safety', name: 'No False Positives', desc: 'Clear a wave with a guardrail active and zero over-refusals.' },
   // --- models ---
   { id: 'm_trillion', category: 'models', name: 'Trillion Club', desc: 'Deploy a model with a trillion+ parameters.' },
   { id: 'm_longmem', category: 'models', name: 'Long Memory', desc: 'Deploy a model with a 1M-token context window.' },
-  { id: 'm_david', category: 'models', name: 'David', desc: 'Clear a wave using only models of 9B or fewer parameters.', hidden: true },
-  { id: 'm_collector', category: 'models', name: 'Collector', desc: 'Deploy distinct base models across all runs.', goals: [10, 25, 42] },
+  { id: 'm_david', category: 'models', name: 'David', desc: 'Clear a boss wave, or any wave from 20 on, using only models of 9B or fewer parameters.', hidden: true },
+  { id: 'm_collector', category: 'models', name: 'Collector', desc: 'Deploy distinct base models across all runs.', goals: COLLECTOR_GOALS },
   // --- studio ---
   { id: 'st_first', category: 'studio', name: 'First Checkpoint', desc: 'Train your first checkpoint in the Studio.' },
   { id: 'st_mad', category: 'studio', name: 'Mad Scientist', desc: 'Use every post-training method across all runs.' },
@@ -87,7 +96,7 @@ export const ACHIEVEMENTS: AchievementDef[] = [
   { id: 'st_reasoner', category: 'studio', name: 'Reasoner Forged', desc: 'Train a reasoning or agentic specialist with GRPO.' },
   { id: 'st_alchemist', category: 'studio', name: 'Alchemist', desc: 'Use merge, distillation and QAT across all runs.' },
   // --- research ---
-  { id: 'r_tree', category: 'research', name: 'Tech Tree Complete', desc: 'Research all 22 infrastructure nodes.' },
+  { id: 'r_tree', category: 'research', name: 'Tech Tree Complete', desc: 'Research the whole infrastructure tree (one side of each fork).' },
   { id: 'r_side', category: 'research', name: 'Pick a Side', desc: 'Research chunked prefill or P/D disaggregation.' },
   { id: 'r_kv', category: 'research', name: 'KV Hierarchy', desc: 'Research INT4 KV cache, KV offloading and prefix caching.' },
   { id: 'r_parallel', category: 'research', name: 'All Parallel', desc: 'Research tensor, pipeline, data and expert parallelism.' },
@@ -114,12 +123,25 @@ export const ACHIEVEMENTS: AchievementDef[] = [
 
 export const ACH_BY_ID: Record<string, AchievementDef> = Object.fromEntries(ACHIEVEMENTS.map((a) => [a.id, a]))
 
-const INFRA_IDS = [
-  'inf_batching', 'inf_multistep', 'inf_chunked', 'inf_disagg', 'inf_spec', 'inf_par_tp', 'inf_par_pp',
-  'inf_par_dp', 'inf_par_ep', 'inf_routing', 'inf_engine_sglang', 'inf_engine_trtllm', 'inf_flash',
-  'inf_kvquant_fp8', 'inf_kvquant_int4', 'inf_offload', 'inf_paged', 'inf_prefix', 'inf_wq_fp8',
-  'inf_wq_int4', 'inf_wq_nvfp4', 'inf_multilora',
-]
+/**
+ * The whole infrastructure tree is complete when every node is either researched or
+ * closed off by the side of its fork that was (chunked prefill ⟂ P/D disaggregation,
+ * SGLang ⟂ TensorRT-LLM): every node the fork rules let one run reach.
+ */
+export function infraTreeComplete(upgrades: Record<string, number>): boolean {
+  const own = (id: string): boolean => (upgrades[id] ?? 0) > 0
+  return INFRA_LIST.every((n) => own(n.id) || (n.conflicts ?? []).some(own))
+}
+
+/** Some lane is screened by two or more DIFFERENT guard families (online guardrails only). */
+export function laneHasTwoGuardFamilies(s: GameState): boolean {
+  const families: Set<string>[] = []
+  for (const t of s.towers) {
+    if (t.def.kind !== 'guardrail' || !t.online || !t.def.guardrail) continue
+    for (const lane of guardCoveredLanes(t)) (families[lane] ??= new Set()).add(t.def.guardrail.archetype)
+  }
+  return families.some((f) => f && f.size >= 2)
+}
 
 interface LifetimeStats {
   served: number
@@ -150,6 +172,11 @@ function loadStore(): { unlocked: Record<string, number>; lifetime: LifetimeStat
   } catch {
     return def
   }
+}
+
+/** Every terminal outcome of a wave (the Goodput denominator). */
+function reportTotal(r: WaveReport): number {
+  return r.total ?? r.served + r.sloMiss + r.bad + r.unservable + r.unsafe + r.overRefused + r.leaked
 }
 
 /** Drives all achievement unlocking from the UI layer (no sim coupling). */
@@ -219,9 +246,13 @@ export class AchievementTracker {
   private metric(id: string, s: GameState | null): number {
     if (id === 's_throughput') return this.lifetime.served + (s?.stats.served ?? 0)
     if (id === 'e_tycoon') return this.lifetime.cashEarned + (s?.stats.cashEarned ?? 0)
-    if (id === 'm_collector') return this.lifetime.modelsDeployed.length
+    if (id === 'm_collector') return this.collected()
     if (id === 'hi_boss') return this.bosses
     return 0
+  }
+  /** Distinct ACTIVE roster base models deployed over all runs (a retired checkpoint no longer counts). */
+  private collected(): number {
+    return this.lifetime.modelsDeployed.filter((id) => !!MODEL_DEFS[id]).length
   }
   private bumpTier(id: string, value: number): void {
     const goals = ACH_BY_ID[id]?.goals
@@ -270,15 +301,11 @@ export class AchievementTracker {
 
     // towers: hardware, guardrails, buildings, deployed models
     const kinds = new Set<string>()
-    let hasEnc = false, hasLlm = false, hasMod = false
     for (const t of s.towers) {
       kinds.add(t.def.id)
       if (t.hwId === 'hw_pod' || t.hwId === 'hw_superpod' || t.hwId === 'hw_giga') this.grant('h_pod')
       if (t.hwId === 'hw_giga') this.grant('h_giga')
       if (t.def.kind === 'cooling_liquid') this.grant('h_liquid')
-      if (t.def.id === 'guard_encoder') hasEnc = true
-      if (t.def.id === 'guard_llm') hasLlm = true
-      if (t.def.id === 'guard_mod') hasMod = true
       if (t.modelId) {
         const md = resolveModel(s, t.modelId)
         if (md) {
@@ -288,9 +315,9 @@ export class AchievementTracker {
         }
       }
     }
-    if (hasEnc && hasLlm && hasMod) this.grant('sf_depth')
+    if (laneHasTwoGuardFamilies(s)) this.grant('sf_depth')
     if (BUILD_ORDER.every((id) => kinds.has(id))) this.grant('h_oneofeach')
-    this.bumpTier('m_collector', this.lifetime.modelsDeployed.length)
+    this.bumpTier('m_collector', this.collected())
 
     // studio: scan derived checkpoints for methods / depth / specialists
     let merge = false, distill = false, qat = false
@@ -314,7 +341,7 @@ export class AchievementTracker {
 
     // research
     const up = s.upgrades
-    if (INFRA_IDS.every((id) => (up[id] ?? 0) > 0)) this.grant('r_tree')
+    if (infraTreeComplete(up)) this.grant('r_tree')
     if ((up['inf_chunked'] ?? 0) > 0 || (up['inf_disagg'] ?? 0) > 0) this.grant('r_side')
     if ((up['inf_kvquant_int4'] ?? 0) > 0 && (up['inf_offload'] ?? 0) > 0 && (up['inf_prefix'] ?? 0) > 0) this.grant('r_kv')
     if (['inf_par_tp', 'inf_par_pp', 'inf_par_dp', 'inf_par_ep'].every((id) => (up[id] ?? 0) > 0)) this.grant('r_parallel')
@@ -350,19 +377,19 @@ export class AchievementTracker {
 
     if (!report) return
     const answered = report.served + report.sloMiss + report.bad + report.unsafe
-    // Flawless = every request this wave was served cleanly (100% honest Goodput: no
-    // late, wrong, unsafe, refused, rejected or dropped request at all)
-    const total = report.total ?? report.served + report.sloMiss + report.bad + report.unservable + report.unsafe + report.overRefused + report.leaked
-    if (report.served > 0 && report.served === total) this.grant('s_flawless')
+    // Flawless = every outcome this wave was clean (100% honest Goodput: no late, wrong,
+    // unsafe, refused, too-long or dropped request at all)
+    if (report.served > 0 && report.served === reportTotal(report)) this.grant('s_flawless')
     if (report.cacheHits >= 100) this.grant('s_cache')
     if (answered > 20 && report.p95Ttft > 0 && report.p95Ttft <= 0.4) this.grant('s_speed')
 
     // deployed servers this wave
     const servers = s.towers.filter((t) => t.def.kind === 'server' && t.modelId)
     if (servers.length > 0 && servers.length <= 3) this.grant('e_lean')
-    // David: only small (<=9B) models deployed
+    // David: a boss wave (or any wave from DAVID_FROM_WAVE on) cleared with only small models deployed
     const sizes = servers.map((t) => resolveModel(s, t.modelId!)).filter(Boolean) as ModelDef[]
-    if (sizes.length > 0 && sizes.every((md) => md.paramsTotalB <= 9)) this.grant('m_david')
+    const hardWave = !!theme?.boss || idx + 1 >= DAVID_FROM_WAVE
+    if (hardWave && sizes.length > 0 && sizes.every((md) => md.paramsTotalB <= DAVID_MAX_B)) this.grant('m_david')
     // safety: clean jailbreak wave / no false positives
     if (report.unsafe === 0 && (report.byType?.jailbreak?.served ?? 0) > 0) this.grant('sf_cleanhands')
     const hasGuard = s.towers.some((t) => t.def.kind === 'guardrail')

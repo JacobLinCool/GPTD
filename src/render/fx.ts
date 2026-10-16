@@ -97,8 +97,11 @@ export class FxManager {
   /**
    * FX budget: how many of n particles to actually emit. Scales with the FX level,
    * 1/√speed (12× would otherwise multiply volume twelvefold) and board density.
+   * Reduced Motion emits none: bursts, shatters and ambient motes are decoration,
+   * while the meaning-carrying stamps, rings and guard lines stay.
    */
   budget(n: number): number {
+    if (reducedMotion()) return 0
     const crowd = this.crowd > 350 ? 0.35 : this.crowd > 150 ? 0.6 : 1
     const v = (n * fxDensity() * crowd) / Math.sqrt(Math.max(1, this.speed))
     // stochastic rounding keeps small bursts alive on average instead of zeroing them
@@ -164,7 +167,7 @@ export class FxManager {
 
   /** Soft additive-looking glow puff (flares, flashes). */
   glow(x: number, y: number, color: number, size: number, life = 0.35): void {
-    if (fxLevel() === 'minimal') return
+    if (fxLevel() === 'minimal' || reducedMotion()) return
     this.particles.spawn(this.factory.particle('glow'), x, y, {
       life,
       s0: size / 16,

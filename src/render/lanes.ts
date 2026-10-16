@@ -191,14 +191,18 @@ export class LaneLayer {
   /** A wave cleared: a bright sweep runs down every lane into the core. */
   waveClear(): void {
     this.preview = null
-    if (fxLevel() === 'minimal') return
+    if (fxLevel() === 'minimal' || reducedMotion()) return
     this.sweeps = LANE_PATHS.map((l) => ({ lane: l.id, t: 0 }))
   }
 
   reset(): void {
     this.sweeps.length = 0
     this.preview = null
+    // a new run starts with no funnel: drop the last run's dim/highlight strokes and SURGE tag
     this.surgeKey = ''
+    this.surgeLanes = []
+    this.surgeG.clear()
+    for (const tag of this.surgeTags) tag.visible = false
     this.eraFrom = this.eraTo = eraColor(0)
     this.eraT = 0
     for (const p of this.portals) p.flash = p.live = 0

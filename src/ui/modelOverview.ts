@@ -38,6 +38,7 @@ import {
 } from './metrics'
 import { QualitySparks, qualityScale } from './charts'
 import { getLang, modelName, t } from '../i18n'
+import { KEY } from './help'
 import { drawPanel, label, UIButton } from './theme'
 import { DragScroll, fitLabel, setButton, setUiPref, uiPref } from './panelKit'
 import { instantSourceLine, thinkingLine } from './thinkingCopy'
@@ -526,6 +527,8 @@ export class ModelOverview {
     const tgt = e.target as HTMLElement | null
     if (tgt && (tgt.tagName === 'INPUT' || tgt.tagName === 'TEXTAREA' || tgt.isContentEditable)) return
     if (e.metaKey || e.ctrlKey || e.altKey) return
+    // the panel's own toggle key closes it (Game.onKey) unless a query is being typed
+    if (!this.query && e.code === KEY.models) return
     const consume = (): void => {
       e.preventDefault()
       e.stopImmediatePropagation()

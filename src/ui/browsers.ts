@@ -221,16 +221,8 @@ export abstract class ContentPanel {
 
 // ------------------------------------------------------------------ Help -------
 
-const HELP_LOOP =
-  'Waves of AI user requests stream from four ingress lanes toward your central Trust Core. Build a serving platform — GPU racks, models, caches, routers, guardrails, power and cooling — to answer each request correctly, safely, and within its latency SLO before it reaches the core. A request that times out at the core hurts SLA and Trust.'
-
-const HELP_METERS: [string, string][] = [
-  ['help.meter.trust', 'Trust — your reputation. Unsafe answers and timeouts drain it. Hits zero → game over.'],
-  ['help.meter.sla', 'SLA — service level. Late answers, wrongful refusals and timeouts erode it.'],
-  ['help.meter.cash', 'Cash — token revenue funds racks; idle / over-provisioned racks still bleed the operating bill.'],
-  ['help.meter.power', 'Power (kW) — racks draw real power; over capacity browns out GPUs. Build Power Plants.'],
-  ['help.meter.cooling', 'Cooling (kW) — racks emit heat; over capacity thermal-throttles them. Build Cooling Towers.'],
-]
+/** The meter lines of How to Play (both locales hold the copy: src/i18n). */
+const HELP_METERS = ['help.meter.trust', 'help.meter.sla', 'help.meter.cash', 'help.meter.power', 'help.meter.cooling']
 
 export class HelpPanel extends ContentPanel {
   constructor(
@@ -245,17 +237,17 @@ export class HelpPanel extends ContentPanel {
     this.clearBody()
     let y = 0
 
-    y = this.sectionHeader(t('help.loop.h', undefined, 'The Loop'), y)
-    y = this.para(t('help.loop.body', undefined, HELP_LOOP), 13, COLORS.text, 0, y, this.bodyW) + 16
+    y = this.sectionHeader(t('help.loop.h'), y)
+    y = this.para(t('help.loop.body'), 13, COLORS.text, 0, y, this.bodyW) + 16
 
-    y = this.sectionHeader(t('help.meters.h', undefined, 'Meters'), y)
-    for (const [key, fb] of HELP_METERS) {
+    y = this.sectionHeader(t('help.meters.h'), y)
+    for (const key of HELP_METERS) {
       this.addText('•', 13, COLORS.sla, 0, y)
-      y = this.para(t(key, undefined, fb), 13, COLORS.text, 18, y, this.bodyW - 18) + 8
+      y = this.para(t(key), 13, COLORS.text, 18, y, this.bodyW - 18) + 8
     }
     y += 8
 
-    y = this.sectionHeader(t('help.requests.h', undefined, 'Requests'), y)
+    y = this.sectionHeader(t('help.requests.h'), y)
     for (const d of REQUEST_LIST) {
       this.addIcon(this.factory.request(d), 0, y - 2, 26)
       this.addText(reqName(d), 13, COLORS.textBright, 38, y, true)
@@ -265,7 +257,7 @@ export class HelpPanel extends ContentPanel {
     }
     y += 8
 
-    y = this.sectionHeader(t('help.towers.h', undefined, 'Buildings'), y)
+    y = this.sectionHeader(t('help.towers.h'), y)
     for (const id of BUILD_ORDER) {
       const d = TOWER_DEFS[id]
       if (!d) continue
@@ -276,7 +268,7 @@ export class HelpPanel extends ContentPanel {
     y += 8
 
     // the same table that binds the keys (ui/help.ts), so the list cannot drift
-    y = this.sectionHeader(t('help.keys.h', undefined, 'Hotkeys'), y)
+    y = this.sectionHeader(t('help.keys.h'), y)
     for (const row of hotkeyRows()) {
       this.addText(row.caps, 13, COLORS.cash, 0, y, true)
       y = Math.max(y + 24, this.para(row.desc, 13, COLORS.text, 190, y, this.bodyW - 190) + 8)
@@ -523,7 +515,8 @@ export class CodexBrowser extends ContentPanel {
       const col = kindColor[d.kind] ?? COLORS.textDim
       this.addText(t(`research.${d.id}.name`, undefined, d.name), 14, COLORS.textBright, 16, top, true)
       this.addText(t('codex.row.research', { kind: t('codex.kind.' + d.kind), data: d.dataCost }), 12, col, this.bodyW - 160, top)
-      const explain = t('codex.tech.' + d.id, undefined, CODEX_TECH[d.id] ?? d.desc)
+      // infra nodes carry a Codex blurb; method-unlock and eval nodes reuse their localized research text
+      const explain = t('codex.tech.' + d.id, undefined, CODEX_TECH[d.id] ?? t(`research.${d.id}.desc`, undefined, d.desc))
       const bottom = this.para(explain, 12, COLORS.text, 16, top + 22, this.bodyW - 16)
       // left bar spans the whole row (name → end of the wrapped description) so
       // rows of different line counts read evenly.
@@ -537,9 +530,6 @@ export class CodexBrowser extends ContentPanel {
 // ------------------------------------------------------------------ About ------
 
 const GAME_VERSION = '0.1.0'
-
-const ABOUT_DATA =
-  'GPTD is a tower-defense game built on real-world simulation — every number is grounded in real data. The roster is drawn from real open-weight models; each model’s capability vector is calibrated from public Artificial Analysis benchmark scores, and the serving math — rooflines, KV cache, power/cooling in real kW, token-priced revenue — is grounded in real hardware and pricing.'
 
 const ABOUT_LINKS: { key: string; fallback: string; url: string }[] = [
   { key: 'about.link.aa', fallback: 'Artificial Analysis — the benchmark source', url: 'https://artificialanalysis.ai' },
@@ -558,10 +548,10 @@ export class AboutPanel extends ContentPanel {
     let y = 0
     this.addText('GIGAPROMPT TOWER DEFENSE', 22, COLORS.textBright, 0, y, true)
     y += 34
-    y = this.para(t('about.slogan', undefined, '“The board is the metaphor, the numbers are real.”'), 14, COLORS.sla, 0, y, this.bodyW) + 18
+    y = this.para(t('about.slogan'), 14, COLORS.sla, 0, y, this.bodyW) + 18
 
-    y = this.sectionHeader(t('about.data.h', undefined, 'Where the numbers come from'), y)
-    y = this.para(t('about.data.body', undefined, ABOUT_DATA), 13, COLORS.text, 0, y, this.bodyW) + 16
+    y = this.sectionHeader(t('about.data.h'), y)
+    y = this.para(t('about.data.body'), 13, COLORS.text, 0, y, this.bodyW) + 16
     this.addText(t('about.benchmarks', undefined, 'Artificial Analysis benchmarks:'), 12, COLORS.textBright, 0, y, true)
     y += 22
     y = this.para('MMLU-Pro · GPQA-Diamond · LiveCodeBench · SciCode · TerminalBench-Hard · IFBench · HLE · LCR', 12, COLORS.textDim, 0, y, this.bodyW) + 18
@@ -571,13 +561,7 @@ export class AboutPanel extends ContentPanel {
       y = this.link(t(l.key, undefined, l.fallback), l.url, 0, y) + 8
     }
     y += 8
-    this.addText(
-      t('about.build', { v: GAME_VERSION }, `Build ${GAME_VERSION} · Vite + TypeScript + PixiJS v8 + Web Audio`),
-      11,
-      COLORS.textDim,
-      0,
-      y,
-    )
+    this.addText(t('about.build', { v: GAME_VERSION }), 11, COLORS.textDim, 0, y)
     this.setContentHeight(y + 30)
   }
 }

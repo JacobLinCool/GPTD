@@ -380,7 +380,7 @@ const HW_SPECS: Record<string, HwSpec> = {
     bf16TflopsPerGpu: 989, fp8TflopsPerGpu: 1979, fp4TflopsPerGpu: 0, hbmGbPerGpu: 141, hbmTbsPerGpu: 4.8,
     tdpWattsPerGpu: 700, cooling: 'air', capexUsd: 60000, gpuHrUsdPerGpu: 3.2,
     powerDraw: 6, heat: 6, range: 3.3, color: 0xc792ea, accent: 0xf0d9ff,
-    desc: 'An H200-class GPU: same compute as H100 but 141 GB and 4.8 TB/s — fits a 70B unquantized.',
+    desc: 'An H200-class GPU: same compute as H100 but 141 GB and 4.8 TB/s — fits a 70B in FP8 (about 65B unquantized).',
   },
   // --- giant-model clusters (upgrade-only): the only homes for 100B+ checkpoints ---
   hw_pod: {
@@ -1129,7 +1129,7 @@ const METHOD_RECIPES_RAW: Record<PostTrainMethod, MethodRecipe> = {
     taxScale: 0 /* autoplay-calibratable (P5) */,
     forgetScale: 0 /* autoplay-calibratable (P5) */,
     reshapesDeployment: true, requiresTech: 'pt_qat',
-    desc: 'Train for INT4 inference: half the weight memory and faster decode, at −2 quality. A per-model quant distinct from serving-layer PTQ.',
+    desc: 'Train for INT4 inference: about a quarter of the BF16 weight memory and faster decode, at −2 quality. A per-model quant distinct from serving-layer PTQ.',
   },
   // DoRA — weight-decomposed LoRA: slightly above LoRA (§2.3).
   dora: {
@@ -1404,7 +1404,7 @@ tech(
 )
 tech(
   'r_pt_qat', 'Quantization-Aware Training', 'pt_qat', 10, 1200, ['inf_batching'],
-  'Train a model for INT4 inference. Unlocks QAT in the Studio — per-model compression to half the weight memory.',
+  'Train a model for INT4 inference. Unlocks QAT in the Studio — per-model compression to about a quarter of the BF16 weight memory.',
 )
 
 /* ------------------------------------------------------------------ *
@@ -1467,8 +1467,8 @@ export const TOWER_DEFS: Record<string, TowerDef> = {
     accent: HARDWARE_DEFS.hw_frontier.accent,
     hardwareId: 'hw_frontier',
     defaultModelId: DEFAULT_MODEL_ID,
-    tagline: 'Big rack · 70B-ready',
-    desc: 'A large accelerator rack that fits a 70B model unquantized. Ships with the free starter model; deploy something worthy of it.',
+    tagline: 'Big rack · 70B in FP8',
+    desc: 'A large accelerator rack that fits a 70B model in FP8 (about 65B unquantized). Ships with the free starter model; deploy something worthy of it.',
   },
   router: {
     id: 'router',

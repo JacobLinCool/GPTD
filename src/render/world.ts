@@ -386,7 +386,7 @@ export class WorldRenderer {
         this.fx.ring(x, y, 8, 46, col, 0.45, 2)
         this.fx.popup(label, col, x, y - 22, 'unsafe', undefined, true)
         this.fx.burst(x, y, col, 10, 110, 'shard', 0.6)
-        if (!atCore) {
+        if (!atCore && !reducedMotion()) {
           // a red shard streaks from the delivering rack into the Trust Core
           const dx = CORE_POS.x - x
           const dy = CORE_POS.y - y
