@@ -1,8 +1,10 @@
 import type {
+  AlignmentProfile,
   GameState,
   GuardrailArchetype,
   ModelDef,
   Request,
+  RequestTypeDef,
   SafetyHazard,
   SafetyProfile,
 } from '../core/types'
@@ -10,17 +12,39 @@ import type {
 /* ------------------------------------------------------------------ *
  *  TWO-LAYER SAFETY (§3) — the model-intrinsic first layer + the       *
  *  external guardrail second layer. Layer 1 is BAKED into the model    *
- *  (AlignmentProfile, P3b) and consumed here at 0 latency; layer 2 is   *
- *  the guardrail buildings on the request path (combat applies their    *
- *  latency to TTFT/E2EL). The overall verdict (§3.4):                    *
- *    handled iff ∀ h ∈ hazards: pSelfHandle(model,h)  OR  a guardrail    *
- *                               in path clears h.                        *
- *  An unhandled hazard reaching the core = unsafe breach. A BENIGN       *
- *  request wrongly refused (layer-1 over-refusal or layer-2 over-refuse) *
- *  = over_refused (lost, not a breach; light Trust hit, §2.5).           *
+ *  (AlignmentProfile, P3b) and rolled once, at the first output token,  *
+ *  by the model that produced it. Layer 2 is the guardrail buildings:   *
+ *  each screens the lanes its range covers (guards.ts) — input checks   *
+ *  before any compute (→ TTFT), output checks before delivery (→ E2EL). *
+ *  The overall verdict (§3.4):                                          *
+ *    handled iff ∀ h ∈ hazards: the model self-handles h  OR  a covering *
+ *                               guardrail clears h.                      *
+ *  An unsafe answer that is DELIVERED = unsafe breach; a hazardous       *
+ *  request never answered is a plain leak. A BENIGN request wrongly      *
+ *  refused (layer-1 over-refusal or a guard false positive) =            *
+ *  overRefused (lost, not a breach; light Trust/SLA hit, §2.5).          *
  * ------------------------------------------------------------------ */
 
 export const ALL_HAZARDS: SafetyHazard[] = ['jailbreak', 'injection', 'harmful', 'pii']
+
+/**
+ * §3.4 the length (tokens) of a model's answer to an attack it handles. A hard refusal is
+ * a one-liner; a safe completion (gpt-oss / GPT-5 style) is a short, partial, safe answer —
+ * more helpful on dual-use prompts, but it costs more decode.
+ */
+export const HANDLED_ATTACK_TOKENS: Record<AlignmentProfile['refusalStyle'], number> = {
+  none: 30,
+  'hard-refusal': 30,
+  'safe-completion': 200,
+}
+
+/**
+ * §3.6 layer-1 over-refusal of a BENIGN request: the model's borderline-prompt refusal
+ * rate scaled by how much of this archetype's traffic is borderline (`refusalExposure`).
+ */
+export function modelOverRefusal(m: ModelDef, def: RequestTypeDef): number {
+  return clamp01(m.alignment.overRefusal * def.refusalExposure)
+}
 
 /**
  * §3.2 alignment-tax weight by refusal style. Hard-refusal pays the steepest
@@ -88,9 +112,10 @@ export function effRecall(baseRecall: number, threshold: number, redteamBonus = 
 }
 
 /**
- * §3.6 the over-refuse rate a guardrail wrongly blocks a benign request at:
+ * §3.6 the rate a guardrail wrongly blocks a BORDERLINE benign request at:
  * OVERREF_K[archetype] × threshold² (convex — the cost of catching more). Red-team
- * eval lowers the convexity (OVERREF_K ×0.7, XSTest: judge by intent, [fix M4]).
+ * eval lowers the convexity (OVERREF_K ×0.7, XSTest: judge by intent, [fix M4]). A
+ * request's actual risk multiplies this by its archetype's `refusalExposure` (guards.ts).
  */
 export function overRefuse(archetype: GuardrailArchetype, threshold: number, overrefMul = 1): number {
   return OVERREF_K[archetype] * overrefMul * threshold * threshold

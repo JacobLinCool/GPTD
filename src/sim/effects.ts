@@ -389,19 +389,58 @@ export function serverTargets(s: GameState, lo: Loadout): number {
   return lo.hw.targets + s.infra.scheduling.multiStep
 }
 
-/** Router boost (§4.10): KV-aware routing (Dynamo) roughly doubles matched-server effectiveness. */
+/**
+ * A router's routing weight (§4.10). The sim reads it only as the "routing is active"
+ * signal `s.routingPower`; what a router DOES is capability-aware dispatch (combat.ts)
+ * plus, with KV-aware routing, a higher prefix-cache hit chance (`prefixHitChance`).
+ * It never speeds decode: per-token speed is set by HBM bytes per token, not topic.
+ */
 export function routeBonus(s: GameState, def: TowerDef): number {
   return (def.routeBonus ?? 0) * (1 + (s.infra.routing.kvAware ? 0.8 : 0))
 }
 
 /**
- * Cache hit chance (§4.2): prefix-cache research lifts the per-server hit rate.
- * Capped at 0.7 (was 0.95) — even a fully-researched cache misses a real share of
- * traffic, since unique prompts don't share a cached prefix. A hit only skips prefill
- * now (combat.ts), so this is a TTFT-acceleration rate, not a free-serve rate.
+ * One cache's hit chance (§4.2): prefix-cache research lifts it. Capped at
+ * CACHE_HIT_CAP — even a fully-researched cache misses a real share of traffic, since
+ * unique prompts don't share a cached prefix. A hit skips only the shared-prefix share
+ * of the prefill (combat.ts), so this is a TTFT-acceleration rate, not a free-serve rate.
  */
 export function cacheChance(s: GameState, def: TowerDef): number {
-  return Math.min(0.7, (def.cacheChance ?? 0) + 0.2 * prefixLevel(s))
+  return Math.min(CACHE_HIT_CAP, (def.cacheChance ?? 0) + 0.2 * prefixLevel(s))
+}
+
+/**
+ * §4.2 the workload's prefix-reuse ceiling. A request's prefix is either resident in a
+ * cache or it is not, so overlapping caches combine as the BEST one, never as independent
+ * rolls, and no number of caches lifts the hit chance past this cap.
+ */
+export const CACHE_HIT_CAP = 0.7
+
+/**
+ * §4.10 KV-aware routing (NVIDIA Dynamo) steers a ROUTED request to the replica that
+ * already holds its prefix: it recovers this share of the would-be misses, up to the
+ * researched prefix-hit ceiling (`s.infra.kv.prefixHitCeil`, the dossier's 60–85% band).
+ */
+export const KV_ROUTE_MISS_RECOVERY = 0.5
+
+/**
+ * The prefix-cache hit chance of one request at a rack whose best covering cache offers
+ * `bestChance` (§4.2/§4.10). Rolled ONCE per request (combat.ts).
+ */
+export function prefixHitChance(s: GameState, bestChance: number, routed: boolean): number {
+  const base = Math.min(CACHE_HIT_CAP, Math.max(0, bestChance))
+  if (!routed || !s.infra.routing.kvAware || base <= 0) return base
+  const ceil = Math.max(CACHE_HIT_CAP, s.infra.kv.prefixHitCeil)
+  return Math.min(ceil, base + (1 - base) * KV_ROUTE_MISS_RECOVERY)
+}
+
+/**
+ * A placed tower's coverage radius in tiles. A server reaches as far as its CURRENT
+ * hardware tier (an in-place upgrade extends it); every other building uses its build entry.
+ */
+export function towerRangeTiles(t: Tower): number {
+  if (t.def.kind === 'server' && t.hwId) return HARDWARE_DEFS[t.hwId]?.range ?? t.def.range
+  return t.def.range
 }
 
 /* ------------------------------------------------------------------ *

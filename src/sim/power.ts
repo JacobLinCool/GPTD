@@ -27,9 +27,10 @@ function liquidGated(s: GameState, t: Tower): boolean {
 /**
  * Recompute REAL power & cooling capacity (kW), brown out GPUs that exceed the
  * power budget, enforce the liquid-cooling hard gate, and apply a global thermal-
- * throttle factor. Cheap; runs every step. All quantities are real kW.
+ * throttle factor. Cheap; runs every step. All quantities are real kW. Returns whether
+ * any server rack is dark (browned out or liquid-gated) afterwards.
  */
-export function updatePower(s: GameState): void {
+export function updatePower(s: GameState): boolean {
   let powerCap = START.basePower
   let coolCap = START.baseCooling
   for (const t of s.towers) {
@@ -76,14 +77,34 @@ export function updatePower(s: GameState): void {
   }
 
   const throttle = heat <= coolCap ? 1 : Math.max(THROTTLE_FLOOR, coolCap / heat)
+  let dark = false
   for (const t of s.towers) {
-    if (t.def.kind === 'server') t.throttle = t.online ? throttle : 0
-    else t.throttle = 1
+    if (t.def.kind === 'server') {
+      t.throttle = t.online ? throttle : 0
+      if (!t.online) dark = true
+    } else t.throttle = 1
   }
 
   s.power = { used: Math.round(used * 100) / 100, cap: Math.round(powerCap * 100) / 100 }
   s.cooling = { used: Math.round(heat * 100) / 100, cap: Math.round(coolCap * 100) / 100 }
+  return dark
 }
+
+/**
+ * Recompute power & cooling (updatePower) and emit a `brownout` event when the
+ * dark-rack state flips (on = a rack just went dark, false = every rack is lit again).
+ * Called on every wave step AND after every build-phase action, so the HUD, the bridge
+ * snapshot and headless consumers always read the live kW budget.
+ */
+export function refreshPower(s: GameState): void {
+  const before = lastBrownout.get(s) ?? isBrownout(s)
+  const after = updatePower(s)
+  lastBrownout.set(s, after)
+  if (after !== before) s.events.push({ type: 'brownout', on: after })
+}
+
+/** The dark-rack state each run last signalled (spares a second fleet scan per step). */
+const lastBrownout = new WeakMap<GameState, boolean>()
 
 /** Is any server currently browned out or liquid-gated? (for HUD/audio warnings) */
 export function isBrownout(s: GameState): boolean {

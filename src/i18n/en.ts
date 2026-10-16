@@ -336,7 +336,7 @@ export const en: Record<string, string> = {
   'research.inf_par_ep.name': 'Expert Parallelism (MoE)',
   'research.inf_par_ep.desc': 'Shard MoE experts across GPUs: serves big sparse models more efficiently.',
   'research.inf_routing.name': 'KV-Aware Routing (Dynamo)',
-  'research.inf_routing.desc': 'Route by KV cache locality and load: ~2× faster matched serving.',
+  'research.inf_routing.desc': 'Route by KV-cache locality: routed cacheable requests land on the replica already holding their prefix — more prefix-cache hits, less recomputed prefill.',
   'research.inf_multilora.name': 'Multi-LoRA Serving (S-LoRA)',
   'research.inf_multilora.desc': 'Serve thousands of LoRA adapters from one base copy.',
   'research.inf_engine_sglang.name': 'SGLang Engine',
@@ -612,6 +612,34 @@ export const en: Record<string, string> = {
   'boot.loading': 'BOOTING GIGAPROMPT…',
 
   // ===== [ws:sim] sim rules: outcome causes, ledgers, guard/safety copy, agent diagnostics =====
+  // the latency bound an SLO-miss violated first (SloCause)
+  'slo.cause.ttft': 'TTFT',
+  'slo.cause.tpot': 'TPOT',
+  'slo.cause.e2el': 'E2EL',
+  'slo.cause.ttfat': 'Time to first answer',
+  'slo.cause.ttft.desc': 'The first token came too late: queue wait, prefill or input guards.',
+  'slo.cause.tpot.desc': 'Tokens streamed too slowly: decode bandwidth, batch, thermal throttling or prefill stalls.',
+  'slo.cause.e2el.desc': 'The whole answer came too late: a long output or output guards.',
+  'slo.cause.ttfat.desc': 'The model thought too long before its answer started.',
+  // who wrongly refused a benign request (RefusedBy)
+  'refusedBy.model': 'the model',
+  'refusedBy.guard': 'a guardrail',
+  'refusedBy.model.desc': 'The serving model’s own alignment refused a benign request.',
+  'refusedBy.guard.desc': 'A guardrail flagged a benign request (a false positive).',
+  // the four hazard categories and the three guard families
+  'hazard.jailbreak': 'Jailbreak',
+  'hazard.injection': 'Prompt injection',
+  'hazard.harmful': 'Harmful content',
+  'hazard.pii': 'PII leak',
+  'guard.family.encoder': 'Encoder guard',
+  'guard.family.generative': 'Generative guard',
+  'guard.family.moderation': 'Moderation',
+  'guard.locked': '{hazard} (locked: needs {eval})',
+  'guard.lanes': 'Screens every request on lanes {lanes}',
+  'guard.lanes.none': 'Covers no lane: move it beside a lane',
+  // the request inspector's account of a handled attack
+  'attack.blocked': 'Attack blocked by a guardrail before any compute',
+  'attack.refused': 'Attack refused by the model',
   // ===== [/ws:sim] =====
 
   // ===== [ws:models] model roster: new models, provenance labels =====

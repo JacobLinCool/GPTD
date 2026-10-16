@@ -465,8 +465,28 @@ export interface RequestTypeDef {
    * old scalar `complexity` ([fix M2]) — runtime scalar = difficulty[primaryAxis].
    */
   difficulty: Partial<Record<CapabilityAxis, number>>
-  /** §1.2#10 fraction of the prompt that is a reusable prefix (prefix-cache friendliness). */
+  /**
+   * §1.2#10 fraction of the prompt that is a reusable prefix (prefix-cache friendliness).
+   * A prefix-cache hit skips exactly this share of the prefill; the unique suffix still prefills.
+   */
   prefixShare: number
+  /**
+   * §3.6 the share of this archetype's BENIGN traffic that is borderline enough for an
+   * aligned model or a guardrail to wrongly refuse. Over-refusal benchmarks (XSTest,
+   * OR-Bench) measure refusal on deliberately borderline prompts, not on everyday
+   * traffic, so this multiplies both the model's `alignment.overRefusal` (layer 1) and
+   * a guardrail's false-positive rate (layer 2). 0 = never refused (an embedding
+   * generates no text to refuse).
+   */
+  refusalExposure: number
+  /**
+   * §3.4 adversarial INTENT: the whole request is an attack (a jailbreak), so the correct
+   * answer is to block or refuse it. A handled attack resolves `served` without a quality
+   * judgement, and an attack that is never answered costs availability (SLA) only. A hazard
+   * carrier without this flag (an agent whose tool output carries an injection) is a real
+   * user task: once its hazard is cleared it is served and judged like any other request.
+   */
+  adversarial?: boolean
   /** §1.4 AGNT: an agentic loop that drives tools across multiple steps. */
   toolUse?: boolean
   /** abstract 0..100 context demand; long-context work penalizes weak memory/model stacks */
@@ -556,18 +576,36 @@ export interface Request {
   contextLen: number
   /** sim time when prefill finished — the request's TTFT moment (undefined until then) */
   prefillDoneAt?: number
-  /** real seconds spent in range but un-admitted (drives ttftReal queue wait, §0.4). */
+  /**
+   * real seconds spent waiting in range of a rack that could prefill it (§0.4 queue wait:
+   * slot / KV contention at an eligible replica). Lane transit, decode-pinned racks and
+   * racks whose window or KV can never hold it do not count.
+   */
   queueSec: number
-  /** real seconds to first token (queue + prefill), latched at prefill done (§0.4). */
+  /** real seconds of input-side guardrail checks, added to TTFT at the first-token latch (§0.4). */
+  guardInSec: number
+  /** real seconds of output-side guardrail checks, added to E2EL when the answer is delivered (§0.4). */
+  guardOutSec: number
+  /**
+   * real seconds to first token = queue wait + the prefill (including the fractional
+   * completing tick) + input guards, latched when the first token exists (§0.4).
+   */
   ttftReal: number
-  /** real seconds for the full answer (ttft + decode), accumulated as decode runs (§0.4). */
+  /** real seconds for the full answer (ttft + decode + output guards), accumulated as decode runs (§0.4). */
   e2elReal: number
-  /** latched true once this request's TTFT or per-token rate misses its class SLO. */
+  /**
+   * real decode seconds after the first token, at the rack's effective per-token time
+   * (throttle, P/D role, prefill time-share and stalls). TPOT is judged once, at delivery:
+   * decodeSec / (tokensOut − 1).
+   */
+  decodeSec: number
+  /** latched true once this request misses a latency bound of its class SLO (cause in `sloCause`). */
   sloViolated: boolean
   /**
-   * latched true when an in-range online server REJECTED this request on the hard
-   * context-window gate (contextLen > window). If it then leaks without ever being
-   * served, the outcome is `unservable` (a distinct bucket), not a plain leak (§2.5).
+   * latched true when an in-range online server REJECTED this request on a hard capacity
+   * gate: its context exceeds the model window, or its KV exceeds the rack's whole KV
+   * budget. If it then leaks without ever being served, the outcome is `unservable`
+   * (a distinct bucket), not a plain leak (§2.5).
    */
   windowBlocked: boolean
   speed: number
@@ -587,25 +625,52 @@ export interface Request {
   trustPenalty: number
   slaPenalty: number
   data: number
-  /** best (model quality - complexity) margin seen from any server that hit it */
+  /**
+   * the answer's quality margin (effQ − difficulty on the judged axis): the TOKEN-WEIGHTED
+   * mean over the racks that generated its tokens, so a strong rack that produced a
+   * sliver of the answer cannot bless tokens a weak rack wrote. −999 until scored;
+   * ≥ 0 = a correct answer, < 0 = a wrong one.
+   */
   bestQuality: number
+  /** token-weighted quality accumulator: Σ generated × margin, and Σ generated (bestQuality = sum / weight). */
+  qualTokSum: number
+  qualTokW: number
   /** sim time when this request entered the lane (drives latency telemetry) */
   bornAt: number
   /** §3.4 true once every hazard has been cleared (layer 1 self-handle OR a guardrail). */
   safetyCleared: boolean
   /**
    * §3.6/§2.5 latched when a BENIGN request was wrongly refused — by layer 1
-   * (model over-refusal) or layer 2 (a guardrail's threshold over-refuse). Resolves
-   * to the `over_refused` outcome (revenue 0, light Trust hit), excluded from served.
+   * (model over-refusal) or layer 2 (a guardrail false positive); `refusedBy` says which.
+   * Resolves to the `overRefused` outcome (revenue 0, light Trust/SLA hit).
    */
   overRefused: boolean
-  /** §3.4 layer-1 self-handle (0-latency) is rolled once, the first time a server hits it. */
+  /**
+   * §3.4 layer 1 has been rolled. It is rolled ONCE, at the first output token, with the
+   * alignment of the model on the rack that produced that token (prefill completion or a
+   * full prefix-cache hit) — never by a rack that only had the request in range.
+   */
   selfHandled: boolean
-  /** §3.3 guardrail tower ids that have already processed this request (each checks once). */
+  /**
+   * §3.3 true once the guardrails covering this request's lane have screened it. A guard
+   * screens by LANE COVERAGE: each request is screened exactly once, at its first contact
+   * with a rack that could prefill it, wherever on the lane the guard sits.
+   */
+  screened: boolean
+  /** §3.3 the guardrail tower ids that screened this request (one per archetype on its lane). */
   guardsSeen: Set<number>
+  /** §3.4 an ADVERSARIAL request correctly handled: blocked by a guard, or refused / safely completed by the model. */
+  attackHandled: boolean
+  /** inside an online Router's range this tick (capability-aware dispatch applies, §4.10). */
   routed: boolean
-  /** seconds until another cache lookup may be attempted (0 = may roll now) */
-  cacheCd: number
+  /** the rack a Router reserved this request for this tick (null = any rack in range may take it). */
+  routedTo: number | null
+  /** the request's single prefix-cache lookup has been rolled (hit or miss, it is never re-rolled). */
+  cacheLooked: boolean
+  /** prompt tokens served from a prefix-cache hit (0 = no hit). */
+  cachedTokens: number
+  /** output tokens generated per rack id — `answeredBy` is the largest contributor. */
+  tokBy: Record<number, number>
   x: number
   y: number
   hitFlash: number
@@ -620,6 +685,8 @@ export interface Request {
   thinkTokens?: number
   /** the tower that generated most of the answer so far. */
   answeredBy?: number
+  /** the model deployed on `answeredBy` when it generated those tokens (survives a later sell/swap). */
+  answeredModelId?: string
 }
 
 /** Runtime tower instance. */
@@ -831,10 +898,10 @@ export type GameEvent =
 
 export interface GameStats {
   served: number
-  /** completed-but-late: missed its class SLO → zero cash, excluded from Goodput (§2.5). */
+  /** completed-but-late: missed its class SLO → half pay (an SLA credit), excluded from Goodput (§2.5). */
   sloMiss: number
   bad: number
-  /** rejected by the hard context-window gate and never served (§2.5). */
+  /** rejected by a hard capacity gate (the context window or a whole KV budget) and never served (§2.5). */
   unservable: number
   unsafe: number
   /** benign request wrongly refused by over-aligned model or guardrail (§3.6/§2.5). */
@@ -870,7 +937,7 @@ export interface WaveStats {
   /** completed-but-late requests (§2.5). */
   sloMiss: number
   bad: number
-  /** context-window-rejected requests (§2.5). */
+  /** capacity-rejected requests: too long for the window or the KV budget (§2.5). */
   unservable: number
   unsafe: number
   /** benign request wrongly refused (§3.6/§2.5). */
@@ -885,10 +952,25 @@ export interface WaveStats {
   latencies: number[]
   /** first-hardware-contact→first-token latencies (TTFT, seconds) of every prefilled request */
   ttfts: number[]
-  /** answered (served+bad) request count — the Goodput denominator. */
+  /** every terminal outcome this wave — the honest Goodput denominator (§5.5). */
+  total: number
+  /** requests that received a computed answer (served with a first token, sloMiss, bad, unsafe). */
   answered: number
-  /** answered requests that met their class SLO (effLatency within TTFT∧TPOT) — the Goodput numerator. */
+  /** answered requests that met every latency bound of their class SLO (the SLO-attainment numerator). */
+  answeredInSlo: number
+  /** clean `served` outcomes (correct, safe, within SLO) — the Goodput numerator. */
   goodput: number
+  /** Trust / SLA lost this wave per outcome (positive magnitudes). */
+  trustLostBy: Partial<Record<Outcome, number>>
+  slaLostBy: Partial<Record<Outcome, number>>
+  /** sloMiss count by the first latency bound violated. */
+  sloCauses: Partial<Record<SloCause, number>>
+  /** overRefused count by who refused (model vs guardrail). */
+  overRefusedBy: Partial<Record<RefusedBy, number>>
+  /** hazards cleared by a guardrail (layer 2) this wave. */
+  guardCaught: number
+  /** hazards self-handled by the serving model's alignment (layer 1) this wave. */
+  selfHandled: number
   /** sim times of recent answers, pruned to a short window (drives req/s) */
   recentServes: number[]
   byType: Record<string, WaveTypeStat>
@@ -901,7 +983,7 @@ export interface WaveReport {
   /** completed-but-late requests (§2.5). */
   sloMiss: number
   bad: number
-  /** context-window-rejected requests (§2.5). */
+  /** capacity-rejected requests: too long for the window or the KV budget (§2.5). */
   unservable: number
   unsafe: number
   /** benign request wrongly refused (§3.6/§2.5). */
@@ -916,10 +998,18 @@ export interface WaveReport {
   /** time-to-first-token stats, measured from first hardware contact */
   avgTtft: number
   p95Ttft: number
-  /** % of answered requests that met their class SLO (Goodput, §1.3/§6.4). */
+  /**
+   * Goodput (§5.5): % of ALL this wave's requests served correctly, safely and within
+   * their SLO — timeouts, refusals, breaches and context rejects count as misses.
+   */
   goodputPct: number
   duration: number
   byType: Record<string, WaveTypeStat>
+  /** secondary latency view: % of ANSWERED requests that met every latency bound of their SLO. */
+  sloAttainPct?: number
+  /** hazards cleared by a guardrail (layer 2) / self-handled by the model (layer 1) this wave. */
+  guardCaught?: number
+  selfHandled?: number
   /** every terminal outcome this wave (the honest Goodput denominator). */
   total?: number
   /** Trust / SLA lost this wave per outcome (the "why did my meter drop" ledger). */

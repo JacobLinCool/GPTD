@@ -1,482 +1,588 @@
 import { LAT_CLASS_SLO, SIM_TIME_SCALE, TILE } from '../config'
-import type { CapabilityAxis, GameState, ModelDef, Request, SafetyHazard, Tower } from '../core/types'
+import type { CapabilityAxis, GameState, ModelDef, Request, SloCause, Tower } from '../core/types'
 import {
   cacheChance,
-  dataMult,
   decodeThrottle,
-  guardLatencyMs,
   int4ContextPenalty,
   kvFreeGb,
   kvPerReqGb,
+  type Loadout,
   loadoutOf,
+  prefixHitChance,
   routeBonus,
   serverContext,
   serverCtxWindowTokens,
   serverPerUserDecodeTokS,
   serverPrefillSpeed,
   serverQualityVs,
-  serverSpec,
   serverTargets,
-  serveRevenue,
+  towerRangeTiles,
 } from './effects'
+import { laneGuardStages, type LaneGuardStage, screenInput, screenOutput } from './guards'
+import { remainingPath } from './pathing'
+import { resolveOutcome } from './resolve'
 import {
   ALL_HAZARDS,
-  categoryUnlocked,
-  effRecall,
+  HANDLED_ATTACK_TOKENS,
   isBenign,
-  overRefuse,
-  overrefMul,
+  modelOverRefusal,
   pSelfHandle,
-  redteamRecallBonus,
   refreshHazardFlags,
 } from './safety'
-import { remainingPath } from './pathing'
-import { recordCacheHit, recordOutcome, recordTtft } from './telemetry'
+import { recordCacheHit, recordSelfHandle, recordTtft } from './telemetry'
 
-const rangePx = (t: Tower) => t.def.range * TILE
+/** Chunked prefill (Sarathi-Serve): while decodes are running, a prefill takes at most this share of the rack's time. */
+const CHUNKED_PREFILL_SHARE = 0.35
+/** P/D disaggregation (DistServe): a dedicated pool tunes its parallelism for its one phase. */
+const PREFILL_POOL_MUL = 1.5
+const DECODE_POOL_MUL = 1.25
+
+const rangePx = (t: Tower): number => towerRangeTiles(t) * TILE
 function within(t: Tower, r: Request, r2: number): boolean {
   const dx = t.x - r.x
   const dy = t.y - r.y
   return dx * dx + dy * dy <= r2
 }
 
+interface CacheAura {
+  x: number
+  y: number
+  r2: number
+  chance: number
+}
+
 /**
- * The core combat tick: routing tags, cache hits, safety clears, and server
- * processing, followed by resolving every fully-served request.
+ * One serving rack's view for this tick (online, not throttled to zero, not training, a
+ * model that fits). Everything beyond its reach and slot count is computed the first
+ * time a request in range needs it — most racks are idle on most ticks.
+ */
+class Host {
+  readonly model: ModelDef
+  readonly r2: number
+  /** concurrent batch slots the scheduler offers. */
+  readonly slots: number
+  private windowCache = -1
+  private kvBudgetCache = -1
+  private contextCache = -1
+  private qByCache: Partial<Record<CapabilityAxis, number>> | null = null
+  private tpotCache = -1
+  private cacheBestCache = -1
+
+  constructor(
+    private readonly s: GameState,
+    readonly t: Tower,
+    readonly lo: Loadout,
+    slots: number,
+    private readonly caches: () => CacheAura[],
+  ) {
+    this.model = lo.model!
+    this.r2 = rangePx(t) ** 2
+    this.slots = slots
+  }
+
+  /** hard context window in real tokens. */
+  get window(): number {
+    if (this.windowCache < 0) this.windowCache = serverCtxWindowTokens(this.s, this.lo)
+    return this.windowCache
+  }
+
+  /** usable KV memory (GB). */
+  get kvBudget(): number {
+    if (this.kvBudgetCache < 0) this.kvBudgetCache = kvFreeGb(this.s, this.lo)
+    return this.kvBudgetCache
+  }
+
+  /** long-context capability score (the contextGap term). */
+  get context(): number {
+    if (this.contextCache < 0) this.contextCache = serverContext(this.s, this.lo)
+    return this.contextCache
+  }
+
+  /** effective quality on one axis (qualityBy − INT4 tax − alignment tax). */
+  q(axis: CapabilityAxis): number {
+    const cache = (this.qByCache ??= {})
+    return (cache[axis] ??= serverQualityVs(this.s, this.lo, axis))
+  }
+
+  /** real seconds per token of one stream at batch 1, throttle applied (the dispatch tie-break). */
+  get tpot1(): number {
+    if (this.tpotCache < 0) {
+      const perUser1 = serverPerUserDecodeTokS(this.s, this.lo, 1) * decodeThrottle(this.t.throttle)
+      this.tpotCache = perUser1 > 0 ? 1 / perUser1 : Infinity
+    }
+    return this.tpotCache
+  }
+
+  /** best covering cache's hit chance — overlapping caches combine as the best one (0 = no aura). */
+  get cacheBest(): number {
+    if (this.cacheBestCache < 0) {
+      let best = 0
+      for (const c of this.caches()) {
+        const dx = c.x - this.t.x
+        const dy = c.y - this.t.y
+        if (dx * dx + dy * dy <= c.r2 && c.chance > best) best = c.chance
+      }
+      this.cacheBestCache = best
+    }
+    return this.cacheBestCache
+  }
+}
+
+function servingHosts(s: GameState): Host[] {
+  let auras: CacheAura[] | null = null
+  const caches = (): CacheAura[] =>
+    (auras ??= s.towers
+      .filter((t) => t.def.kind === 'cache' && t.online)
+      .map((t) => ({ x: t.x, y: t.y, r2: rangePx(t) ** 2, chance: cacheChance(s, t.def) })))
+  const hosts: Host[] = []
+  for (const t of s.towers) {
+    if (t.def.kind !== 'server' || !t.online || t.throttle <= 0 || t.training) continue
+    const lo = loadoutOf(s, t)
+    const slots = serverTargets(s, lo)
+    if (!lo.model || slots <= 0) continue
+    hosts.push(new Host(s, t, lo, slots, caches))
+  }
+  return hosts
+}
+
+/**
+ * Could this rack ever take the request in its current phase? The P/D role must match,
+ * the prompt must fit the model window, and its KV must fit the rack's whole KV budget.
+ * (A full rack or a KV budget busy with other requests is honest queueing — still a host.)
+ */
+function canHost(s: GameState, h: Host, r: Request): boolean {
+  if (r.prefill > 0 ? h.t.role === 'decode' : h.t.role === 'prefill') return false
+  if (h.window > 0 && r.contextLen > h.window) return false
+  return kvPerReqGb(s, h.model, r.contextLen) <= h.kvBudget
+}
+
+/** §6.4 the answer-quality margin this rack would give the request: effQ on its judged axis − difficulty. */
+function marginOn(s: GameState, h: Host, r: Request): number {
+  const contextGap = Math.max(0, r.context - h.context)
+  return h.q(r.def.primaryAxis) - contextGap * 0.45 - int4ContextPenalty(s, r.contextLen) - r.difficulty
+}
+
+function violate(r: Request, cause: SloCause): void {
+  if (r.sloViolated) return
+  r.sloViolated = true
+  r.sloCause = cause
+}
+
+/** §1.3 a per-type end-to-end bound (agent's 9 s), on the running total plus the output-guard tail. */
+function checkE2el(r: Request): void {
+  if (r.def.e2elSloMs !== undefined && (r.e2elReal + r.guardOutSec) * 1000 > r.def.e2elSloMs)
+    violate(r, 'e2el')
+}
+
+/**
+ * The core combat tick (§0.2 serving spine):
+ *   1. routers tag the requests in range; caches give each rack its best hit chance;
+ *   2. FIRST HARDWARE CONTACT — a request in range of a rack that could prefill it starts
+ *      its TTFT clock, and is screened once by the guardrails covering its lane;
+ *   3. Router dispatch reserves each routed request for its best-fit rack;
+ *   4. every rack admits, prefills and decodes;
+ *   5. finished requests are screened on output and resolved into an outcome.
  */
 export function updateCombat(s: GameState, dt: number): void {
-  const towers = s.towers
-  const routers = towers.filter((t) => t.def.kind === 'router' && t.online)
+  // dual clock: tokens advance in REAL seconds, board-dt compressed by SIM_TIME_SCALE (§0.4)
+  const realDt = dt * SIM_TIME_SCALE
+  const routers = s.towers.filter((t) => t.def.kind === 'router' && t.online)
   s.routingPower = routers.reduce((n, t) => n + routeBonus(s, t.def), 0)
-
-  // --- routing: tag requests inside an online router's range ---
+  const routerR2 = routers.map((rt) => rangePx(rt) ** 2)
   for (const r of s.requests) {
     if (!r.alive) continue
-    r.routed = false
-    if (!routers.length) continue
-    for (const rt of routers) {
-      if (within(rt, r, rangePx(rt) ** 2)) {
-        r.routed = true
-        break
-      }
-    }
+    let routed = false
+    for (let i = 0; i < routers.length && !routed; i++) routed = within(routers[i], r, routerR2[i])
+    r.routed = routed
+    r.routedTo = null
   }
 
-  // --- cache aura: a Cache buffs Serving Towers in its range with a chance to
-  //     reuse a cached prefix. A hit skips prefill / TTFT, but non-embedding
-  //     traffic still decodes and passes normal quality + safety checks.
-  //     The cache does nothing on its own — it must overlap a server. ---
-  const caches = towers
-    .filter((t) => t.def.kind === 'cache' && t.online)
-    .map((t) => ({ x: t.x, y: t.y, r2: rangePx(t) ** 2, chance: cacheChance(s, t.def) }))
-  const cacheBuffAt = (x: number, y: number): number => {
-    let miss = 1
-    for (const c of caches) {
-      const dx = c.x - x
-      const dy = c.y - y
-      if (dx * dx + dy * dy <= c.r2) miss *= 1 - c.chance
-    }
-    return 1 - miss
-  }
-
-  // --- safety LAYER 2 (§3.3): external guardrail buildings on the request path.
-  //     A request passing through a guardrail's range is checked ONCE per guardrail:
-  //     covered hazards are caught with probability effRecall (cleared from the open
-  //     set); a benign request may be wrongly blocked (over_refused). The check adds
-  //     real latency to the SLO — input side → TTFT (queueSec), output side → E2EL
-  //     (e2elReal), 'both' → each end once (§0.4). guard_llm's latency is its real
-  //     §6 roofline inference time; the encoder's is a fixed 92 ms ([fix M8]).
-  const guards = towers
-    .filter((t) => t.def.kind === 'guardrail' && t.online && t.def.guardrail)
-    .sort((a, b) => a.id - b.id) // stable order → deterministic rng draws
-  if (guards.length) {
-    const threshold = s.guardrailThreshold
-    const recallBonus = redteamRecallBonus(s)
-    const orMul = overrefMul(s)
-    for (const t of guards) {
-      const spec = t.def.guardrail!
-      const r2 = rangePx(t) ** 2
-      const latSec = guardLatencyMs(s, spec) / 1000
-      for (const r of s.requests) {
-        if (!r.alive || r.overRefused) continue
-        if (r.guardsSeen.has(t.id)) continue
-        if (!within(t, r, r2)) continue
-        r.guardsSeen.add(t.id)
-        // accrue the check latency into the right SLO component (§0.4)
-        if (spec.side === 'input' || spec.side === 'both') r.queueSec += latSec
-        if (spec.side === 'output' || spec.side === 'both') r.e2elReal += latSec
-        if (isBenign(r.hazards)) {
-          // a benign request is wrongly blocked with prob overRefuse → over_refused
-          if (s.rng.chance(overRefuse(spec.archetype, threshold, orMul))) r.overRefused = true
-          continue
-        }
-        // catch each covered, unlocked hazard with prob effRecall
-        const recall = effRecall(spec.baseRecall, threshold, recallBonus)
-        for (const h of spec.catches) {
-          if (r.hazardsOpen[h] === undefined) continue
-          if (!categoryUnlocked(s, h)) continue
-          if (s.rng.chance(recall)) delete r.hazardsOpen[h]
-        }
-        refreshHazardFlags(r)
-      }
-    }
-  }
-
-  // --- servers: process requests in range ---
-  const routingActive = s.routingPower > 0
-  const routingMul = 1 + Math.min(0.9, s.routingPower)
-  for (const t of towers) {
+  for (const t of s.towers) {
     if (t.def.kind !== 'server') continue
     if (t.muzzle > 0) t.muzzle -= dt
     if (t.cooldown > 0) t.cooldown -= dt
-    if (!t.online || t.throttle <= 0 || t.training) {
-      // browned out, frozen, or requisitioned for a training run
-      t.targetId = null
-      t.load = 0
-      continue
-    }
-    const lo = loadoutOf(s, t)
-    const r2 = rangePx(t) ** 2
-    const spec = serverSpec(lo)
-    const cands: Request[] = []
-    for (const r of s.requests) {
-      if (!r.alive || (r.work <= 0 && r.prefill <= 0)) continue
-      if (within(t, r, r2)) cands.push(r)
-    }
-    if (!cands.length) {
-      t.targetId = null
-      t.load = 0
-      continue
-    }
-    cands.sort((a, b) => {
-      if (routingActive) {
-        const ar = a.def.primaryAxis === spec && a.routed ? 1 : 0
-        const br = b.def.primaryAxis === spec && b.routed ? 1 : 0
-        if (ar !== br) return br - ar
-      }
-      return remainingPath(a.laneId, a.dist) - remainingPath(b.laneId, b.dist) // closest to the core first
-    })
-
-    const n = serverTargets(s, lo)
-    // per-axis correctness: the aptitude matrix replaces the old flat +15
-    const qBy = {
-      chat: serverQualityVs(s, lo, 'chat'),
-      coding: serverQualityVs(s, lo, 'coding'),
-      reasoning: serverQualityVs(s, lo, 'reasoning'),
-      general: serverQualityVs(s, lo, 'general'),
-      agentic: serverQualityVs(s, lo, 'agentic'),
-    }
-    const context = serverContext(s, lo)
-    const ctxWindowTokens = serverCtxWindowTokens(s, lo)
-    const kvBudget = kvFreeGb(s, lo)
-    const cacheBuff = caches.length ? cacheBuffAt(t.x, t.y) : 0
-    // dual clock: tokens advance in REAL seconds, board-dt compressed by SIM_TIME_SCALE (§0.4)
-    const realDt = dt * SIM_TIME_SCALE
-    t.targetId = cands[0].id
-    let fired = false
-    let servedSlots = 0
-    let kvUsed = 0
-    let prefillJob: Request | null = null
-    const decodeJobs: Request[] = []
-    for (const r of cands) {
-      if (servedSlots >= n) break
-      // PREFIX-CACHE HIT (real prefix caching): the shared prompt prefix is served
-      // from cache, so PREFILL is skipped — the first token is instant (TTFT = queue
-      // wait) and the rack spends no prefill compute on it. But the response still
-      // DECODES on the model: a hit falls through to the normal decode admission below,
-      // competing for a decode slot and scored by the usual quality / safety / KV path.
-      // So a cache now accelerates TTFT and relieves prefill contention — it is NOT a
-      // free, always-correct, always-safe serve. (A miss is rate-limited; another
-      // cluster may still hold the prefix.)
-      if (cacheBuff > 0 && r.def.cacheable && r.prefill > 0 && r.cacheCd <= 0) {
-        if (s.rng.chance(cacheBuff)) {
-          r.prefill = 0
-          r.prefillDoneAt = s.time
-          r.ttftReal = r.queueSec
-          r.e2elReal = r.ttftReal
-          r.cacheFlash = 0.45
-          recordTtft(s, r)
-          recordCacheHit(s)
-          s.events.push({ type: 'cache', x: r.x, y: r.y })
-          if (r.maxWork <= 0) {
-            // a pure-prefill request (an embedding) IS fully answered by the cached
-            // prefix — there is no decode pass, so it resolves as a clean stored hit.
-            r.bestQuality = 999
-            r.hazardsOpen = {}
-            r.safetyRisk = 0
-            r.safetyCleared = true
-            continue
-          }
-          // otherwise fall through: the response still decodes on the model below.
-        } else {
-          r.cacheCd = 6 // cache miss: next lookup after 6 s
-        }
-      }
-      // safety LAYER 1 (§3.3, 0 latency): the model's INTRINSIC alignment, rolled
-      // once the first time a server hits this request. A high-safety model self-
-      // handles hazards unaided; an over-aligned model wrongly refuses a benign one.
-      if (!r.selfHandled && lo.model) applyLayer1(s, r, lo.model)
-      if (r.overRefused) continue // a refused request is not served (resolves as over_refused)
-      // hard context window (REAL tokens): a prompt longer than the window is
-      // unservable by this loadout — not a worse answer. Latch windowBlocked so a
-      // request that only ever meets too-small windows resolves as `unservable`
-      // (a distinct outcome) rather than a plain leak (§2.5).
-      if (r.contextLen > ctxWindowTokens && ctxWindowTokens > 0) {
-        r.windowBlocked = true
-        continue
-      }
-      // KV admission: every in-flight request reserves KV at its CURRENT seqlen;
-      // long contexts crowd out concurrency (the first admit is always allowed)
-      const kv = lo.model ? kvPerReqGb(s, lo.model, r.contextLen) : 0
-      if (servedSlots > 0 && kvUsed + kv > kvBudget) continue
-      // P/D disaggregation: a role-pinned rack only takes its phase
-      if (t.role === 'decode' && r.prefill > 0) continue
-      if (t.role === 'prefill' && r.prefill <= 0) continue
-      servedSlots++
-      kvUsed += kv
-      if (r.prefill > 0) {
-        // prompt ingestion is compute-bound and serializes the rack: one
-        // prefill at a time; further prefill jobs queue in their slots
-        if (!prefillJob) prefillJob = r
-        continue
-      }
-      if (r.work > 0) decodeJobs.push(r)
-    }
-
-    // effective batch = admitted decode slots (drives per-user decode rate, §5.7)
-    const batch = Math.max(1, decodeJobs.length)
-    const perUserDecode = serverPerUserDecodeTokS(s, lo, batch)
-    const tpotReal = perUserDecode > 0 ? 1 / perUserDecode : Infinity
-    const slo = LAT_CLASS_SLO
-
-    // PREFILL — full compute roof; without Chunked Prefill research this is a
-    // real generation stall: every decode on this rack pauses (OSDI'24).
-    // Chunking only yields when there are decodes to protect — an idle rack
-    // still ingests prompts at full speed.
-    const chunked = s.infra.scheduling.chunked
-    const prefillShare = prefillJob ? (chunked && decodeJobs.length > 0 ? 0.35 : 1) : 0
-    // dedicated pools tune their parallelism for one phase (DistServe)
-    const roleMul = t.role === 'prefill' ? 1.5 : t.role === 'decode' ? 1.25 : 1
-    if (prefillJob) {
-      const prefillRate = serverPrefillSpeed(s, lo, prefillJob.tokensIn)
-      prefillJob.prefill -=
-        prefillRate * (t.role === 'prefill' ? roleMul : 1) * t.throttle * prefillShare * realDt
-      prefillJob.hitFlash = 0.12
-      fired = true
-      if (prefillJob.prefill <= 0) {
-        prefillJob.prefill = 0
-        prefillJob.prefillDoneAt = s.time
-        // TTFT = queue wait + prefill time (real seconds), latched now (§0.4)
-        prefillJob.ttftReal = prefillJob.queueSec
-        prefillJob.e2elReal = prefillJob.ttftReal
-        const cls = slo[prefillJob.def.latClass]
-        // §1.3 per-type TTFT override (comp's strict 200 ms) tightens the class bound.
-        const ttftBound = prefillJob.def.ttftSloMs ?? cls.ttftMs
-        if (prefillJob.ttftReal * 1000 > ttftBound) prefillJob.sloViolated = true
-        // pure-prefill request (embed, OSL 0): there is no decode pass to score it,
-        // so judge its quality the moment prefill completes (it IS the answer).
-        if (prefillJob.maxWork <= 0) scoreQuality(prefillJob, qBy, context, s)
-        recordTtft(s, prefillJob)
-      }
-    }
-
-    // DECODE — bandwidth roof, batch-friendly, and barely dented by thermal
-    // throttling (Splitwise: decode is memory-bound; caps hit prefill).
-    const dThr = decodeThrottle(t.throttle)
-    const decodeShare = 1 - prefillShare
-    if (decodeShare > 0) {
-      for (const r of decodeJobs) {
-        const match = r.def.primaryAxis === spec
-        let mul = match ? 1.6 : spec === 'general' ? 1.0 : 0.65
-        if (match && r.routed && routingActive) mul *= routingMul
-        const before = r.work
-        r.work -=
-          perUserDecode * (t.role === 'decode' ? roleMul : 1) * dThr * decodeShare * mul * realDt
-        const generated = Math.max(0, before - r.work)
-        // KV grows as output tokens are produced (§5.6/H1)
-        r.contextLen += generated
-        // accumulate real end-to-end latency at the per-token rate (§0.4)
-        r.e2elReal += generated * tpotReal
-        // SLO: per-token rate must meet the class TPOT bound
-        const cls = slo[r.def.latClass]
-        if (tpotReal * 1000 > cls.tpotMs) r.sloViolated = true
-        // §1.3 per-type E2EL override (agent's 9 s end-to-end bound) on the running total.
-        if (r.def.e2elSloMs !== undefined && r.e2elReal * 1000 > r.def.e2elSloMs) r.sloViolated = true
-        r.hitFlash = 0.12
-        scoreQuality(r, qBy, context, s)
-        fired = true
-      }
-    }
-    t.load = n > 0 ? Math.min(1, servedSlots / n) : 0
-    if (fired && t.cooldown <= 0) {
-      const tgt = cands[0]
-      s.events.push({ type: 'fire', fx: { x: t.x, y: t.y }, tx: tgt.x, ty: tgt.y, color: t.def.color })
-      t.cooldown = 0.09
-      t.muzzle = 0.12
-    }
+    // reset the display state; a serving rack rewrites it below (a browned-out, frozen,
+    // requisitioned or model-less rack stays dark this tick)
+    clearRackDisplay(t)
   }
+  const hosts = servingHosts(s)
 
-  // --- real-seconds TTFT accumulation (§0.4): a request still in prefill that
-  //     is within range of an online server is "in the serving queue" — its
-  //     real wall time (queue contention + active prefill) counts toward TTFT.
-  //     Lane transit before reaching any server is board-only and excluded.
-  const realDt = dt * SIM_TIME_SCALE
-  const servers = towers.filter((t) => t.def.kind === 'server' && t.online && t.throttle > 0 && !t.training)
+  // --- first hardware contact: TTFT eligibility + one guardrail screening per request ---
+  // the per-lane guard stages, built the first time a request is screened this tick
+  let stages: LaneGuardStage[][] | null = null
+  const stagesOf = (laneId: number): LaneGuardStage[] => (stages ??= laneGuardStages(s))[laneId] ?? []
+  const waiting: Request[] = []
   for (const r of s.requests) {
-    if (!r.alive || r.prefill <= 0 || r.prefillDoneAt !== undefined) continue
-    for (const t of servers) {
-      if (within(t, r, rangePx(t) ** 2)) {
-        r.queueSec += realDt
+    if (!r.alive || r.overRefused) continue
+    // already screened and past its first token: nothing left to decide here
+    if (r.screened && r.prefillDoneAt !== undefined) continue
+    let contact = false
+    for (const h of hosts) {
+      if (within(h.t, r, h.r2) && canHost(s, h, r)) {
+        contact = true
         break
       }
     }
+    if (!contact) continue
+    if (r.prefillDoneAt === undefined && r.prefill > 0) waiting.push(r)
+    if (r.screened) continue
+    screenInput(s, r, stagesOf(r.laneId))
+    if (r.overRefused) {
+      resolveOutcome(s, r, 'overRefused', { refusedBy: 'guard' })
+    } else if (r.def.adversarial && r.safetyCleared) {
+      // an input guard blocked the attack before any rack computed it
+      r.attackHandled = true
+      resolveOutcome(s, r, 'served')
+    }
   }
 
-  // --- resolve fully served requests (prefilled AND decoded), or refused ones ---
+  if (routers.length) dispatch(s, hosts)
+
+  const generated = new Map<number, number>()
+  const stalled = new Set<Request>()
+  for (const h of hosts) serveRack(s, h, realDt, generated, stalled)
+
+  // a decode that held a slot but got no token anywhere this tick waited out a whole prefill
+  for (const r of stalled) {
+    if (!r.alive || generated.has(r.id)) continue
+    r.e2elReal += realDt
+    r.decodeSec += realDt
+    checkE2el(r)
+  }
+
+  // §0.4 queue wait: a request still waiting for its first token at an eligible rack
+  for (const r of waiting) if (r.alive && r.prefillDoneAt === undefined) r.queueSec += realDt
+
+  // --- resolve: refusals now, finished answers after their output screening ---
   for (const r of s.requests) {
     if (!r.alive) continue
-    // an over-refused request (§3.6) is never served — resolve it the moment it is
-    // wrongly blocked (revenue 0, light Trust hit), not when it eventually leaks.
     if (r.overRefused) {
-      resolveOverRefused(s, r)
+      resolveOutcome(s, r, 'overRefused', { refusedBy: r.refusedBy ?? 'model' })
       continue
     }
     if (r.work > 0 || r.prefill > 0) continue
-    // A request whose work is done but still carries an OPEN hazard is HELD pending
-    // safety review: it keeps flowing (at work 0) until a guardrail clears it
-    // (→ served) or it leaks at the core (→ unsafe breach). This is why a guardrail
-    // must sit before the core.
-    if (r.safetyRisk > 0 && !r.safetyCleared) continue
-    resolveServe(s, r)
+    deliver(s, r, stagesOf(r.laneId))
+  }
+}
+
+function clearRackDisplay(t: Tower): void {
+  t.targetId = null
+  t.load = 0
+  t.prefillId = null
+  t.kvFrac = 0
+  t.batch = 0
+  if (t.decodeIds) t.decodeIds.length = 0
+}
+
+/**
+ * §4.10 Router = capability-aware dispatch (RouteLLM / model gateways): every request in
+ * a router's range is reserved for the in-range rack with a free slot whose model gives
+ * it the best quality margin (ties → the lower TPOT), so a strong rack is not spent on
+ * chats nearest the core while weak racks answer the hard requests wrong. A request no
+ * rack in range can take stays unreserved (any rack may serve it) — routing never strands
+ * traffic. Without a router, racks serve the requests nearest the core first.
+ */
+function dispatch(s: GameState, hosts: Host[]): void {
+  const load = new Map<Host, number>()
+  const routed = s.requests
+    .filter((r) => r.alive && r.routed && !r.overRefused && (r.work > 0 || r.prefill > 0))
+    .sort((a, b) => remainingPath(a.laneId, a.dist) - remainingPath(b.laneId, b.dist) || a.id - b.id)
+  for (const r of routed) {
+    let best: Host | null = null
+    let bestMargin = -Infinity
+    for (const h of hosts) {
+      if ((load.get(h) ?? 0) >= h.slots) continue
+      if (!within(h.t, r, h.r2) || !canHost(s, h, r)) continue
+      const m = marginOn(s, h, r)
+      if (!best || m > bestMargin + 1e-9 || (Math.abs(m - bestMargin) <= 1e-9 && h.tpot1 < best.tpot1)) {
+        best = h
+        bestMargin = m
+      }
+    }
+    if (!best) continue
+    r.routedTo = best.t.id
+    load.set(best, (load.get(best) ?? 0) + 1)
   }
 }
 
 /**
- * §3.3 safety LAYER 1 — the model's intrinsic (baked) alignment, consumed at serve
- * time with ZERO latency (§3.7). Rolled ONCE per request the first time a server
- * works it (selfHandled latches so a second rack does not re-roll).
- *   - benign request: wrongly refused with P = model.alignment.overRefusal → over_refused.
- *   - hazardous request: each open hazard is self-handled (cleared) with
- *     P = pSelfHandle(model, hazard, severity). A safe-completion / high-safety model
- *     clears most jailbreaks unaided; a base model (safety ~20) lets them through.
- * Probabilistic via s.rng (deterministic-friendly so replays match, OQ-G15).
+ * The request's one prefix-cache lookup (§4.2), rolled when a rack under a cache aura
+ * admits it: a hit serves the shared prefix (`prefixShare` of the prompt) from cache and
+ * only the unique suffix still prefills. A request's prefix is resident or it is not, so
+ * the lookup is never re-rolled.
  */
-function applyLayer1(s: GameState, r: Request, model: ModelDef): void {
-  r.selfHandled = true
-  if (isBenign(r.hazards)) {
-    if (s.rng.chance(model.alignment.overRefusal)) r.overRefused = true
+function lookupPrefix(s: GameState, r: Request, h: Host): void {
+  r.cacheLooked = true
+  if (!s.rng.chance(prefixHitChance(s, h.cacheBest, r.routed))) return
+  const shared = Math.round(r.tokensIn * r.def.prefixShare)
+  const remaining = Math.min(r.prefill, Math.max(0, r.tokensIn - shared))
+  if (remaining >= r.prefill) return // already ingested past the shared prefix: nothing to reuse
+  r.cachedTokens = r.prefill - remaining
+  r.prefill = remaining
+  r.cacheFlash = 0.45
+  recordCacheHit(s)
+  s.events.push({ type: 'cache', x: r.x, y: r.y, towerId: h.t.id, requestId: r.id })
+}
+
+/** Credit generated tokens to the rack that produced them; `answeredBy` is the largest contributor. */
+function credit(r: Request, t: Tower, gen: number): void {
+  const mine = (r.tokBy[t.id] ?? 0) + gen
+  r.tokBy[t.id] = mine
+  if (r.answeredBy === undefined || r.answeredBy === t.id || mine > (r.tokBy[r.answeredBy] ?? 0)) {
+    r.answeredBy = t.id
+    r.answeredModelId = t.modelId
+  }
+}
+
+/**
+ * §6.4/R8 quality gate, TOKEN-WEIGHTED: each rack scores the tokens it generated with
+ * its own margin (effQ = qBy[primaryAxis] − contextGap×0.45 − INT4 long-context tax,
+ * minus the request's difficulty), and the answer's margin is the weighted mean — the
+ * models that wrote the answer decide its quality, not the best model that touched it.
+ */
+function scoreQuality(s: GameState, r: Request, h: Host, tokens: number): void {
+  if (tokens <= 0) return
+  const margin = marginOn(s, h, r)
+  r.qualTokSum += margin * tokens
+  r.qualTokW += tokens
+  r.bestQuality = r.qualTokSum / r.qualTokW
+}
+
+/**
+ * The first output token exists (prefill done on this rack, or a prefix-cache hit covered
+ * it): latch TTFT = queue wait + the prefill's wall time this tick + input guards (§0.4),
+ * judge the TTFT bound, then roll layer 1 with the model that produced the token.
+ */
+function firstToken(s: GameState, r: Request, h: Host, tDone: number): void {
+  r.prefill = 0
+  r.prefillDoneAt = s.time
+  r.ttftReal = r.queueSec + tDone + r.guardInSec
+  r.e2elReal = r.ttftReal
+  // §1.3 a per-type TTFT override (comp's strict 200 ms) tightens the class bound
+  const ttftBound = r.def.ttftSloMs ?? LAT_CLASS_SLO[r.def.latClass].ttftMs
+  if (r.ttftReal * 1000 > ttftBound) violate(r, 'ttft')
+  recordTtft(s, r)
+  if (r.maxWork <= 0) {
+    // a pure-prefill request (an embedding): the prefill IS the answer, and there is
+    // no generated text for alignment to refuse — score it on the rack that finished it
+    credit(r, h.t, 0)
+    scoreQuality(s, r, h, 1)
     return
   }
-  for (const h of ALL_HAZARDS) {
-    const sev = r.hazardsOpen[h]
+  if (!r.selfHandled) applyLayer1(s, r, h)
+}
+
+/**
+ * §3.3 safety LAYER 1 — the model's intrinsic alignment, rolled ONCE, at the first output
+ * token, by the model that produced it (safety alignment acts mostly through the first
+ * output tokens; a rack that never admitted the request cannot refuse or sanitize it).
+ *   - benign: wrongly refused with P = overRefusal × the archetype's refusal exposure;
+ *   - hazardous: each open hazard self-handled with P = pSelfHandle(model, hazard, severity).
+ *     An attack the model handles is answered with a short refusal / safe completion
+ *     instead of the payload (its length depends on the refusal style).
+ */
+function applyLayer1(s: GameState, r: Request, h: Host): void {
+  r.selfHandled = true
+  const model = h.model
+  if (isBenign(r.hazards)) {
+    const p = modelOverRefusal(model, r.def)
+    if (p > 0 && s.rng.chance(p)) {
+      r.overRefused = true
+      r.refusedBy = 'model'
+    }
+    return
+  }
+  for (const hazard of ALL_HAZARDS) {
+    const sev = r.hazardsOpen[hazard]
     if (sev === undefined) continue
-    if (s.rng.chance(pSelfHandle(model, h, sev))) delete r.hazardsOpen[h as SafetyHazard]
+    if (!s.rng.chance(pSelfHandle(model, hazard, sev))) continue
+    delete r.hazardsOpen[hazard]
+    recordSelfHandle(s)
+    s.events.push({ type: 'selfHandle', towerId: h.t.id, requestId: r.id, x: r.x, y: r.y, hazard })
   }
   refreshHazardFlags(r)
+  if (r.def.adversarial && r.safetyCleared) {
+    r.attackHandled = true
+    const n = Math.min(r.work, HANDLED_ATTACK_TOKENS[model.alignment.refusalStyle])
+    r.work = n
+    r.maxWork = n
+    r.tokensOut = n
+  }
 }
 
 /**
- * §6.4/R8 quality gate: the effective quality on a request's PRIMARY axis, less
- * the context-window-stretch penalty and the INT4 long-context tax, vs the
- * request's resolved per-axis difficulty. The best margin any server hit it with
- * is latched on `bestQuality` (≥0 = a correct answer; <0 = a bad one).
- *
- * `effQ = qBy[primaryAxis] − contextGap×0.45 − int4pen; margin = effQ − difficulty`
- * — equivalent to the old gate, with `difficulty[primaryAxis]` standing in for the
- * retired scalar `complexity` ([fix M2]) and the contextGap term unchanged.
+ * One rack's tick: admit up to its slots (window, KV and P/D role gates; the prefix-cache
+ * lookup), run one prefill at its compute roof, and decode every admitted request at the
+ * rack's effective per-token time. Latency is accounted per token at that physical rate
+ * (throttle, P/D pool, the prefill's share of the tick), so several racks working one
+ * request never make its tokens faster, and an unchunked prefill stalls the decodes for
+ * exactly the time it ran.
  */
-function scoreQuality(
-  r: Request,
-  qBy: Record<CapabilityAxis, number>,
-  serverCtx: number,
+function serveRack(
   s: GameState,
+  h: Host,
+  realDt: number,
+  generated: Map<number, number>,
+  stalled: Set<Request>,
 ): void {
-  const contextGap = Math.max(0, r.context - serverCtx)
-  const effQ = qBy[r.def.primaryAxis] - contextGap * 0.45 - int4ContextPenalty(s, r.contextLen)
-  const margin = effQ - r.difficulty
-  if (margin > r.bestQuality) r.bestQuality = margin
-}
+  const t = h.t
+  const cands: Request[] = []
+  for (const r of s.requests) {
+    if (!r.alive || r.overRefused || (r.work <= 0 && r.prefill <= 0)) continue
+    if (r.routedTo !== null && r.routedTo !== t.id) continue
+    if (within(t, r, h.r2)) cands.push(r)
+  }
+  if (!cands.length) {
+    clearRackDisplay(t)
+    return
+  }
+  cands.sort((a, b) => {
+    const ar = a.routedTo === t.id ? 1 : 0
+    const br = b.routedTo === t.id ? 1 : 0
+    if (ar !== br) return br - ar // requests a router reserved for this rack first
+    return remainingPath(a.laneId, a.dist) - remainingPath(b.laneId, b.dist) // then closest to the core
+  })
+  t.targetId = cands[0].id
 
-function clamp100(v: number): number {
-  return v < 0 ? 0 : v > 100 ? 100 : v
+  let slotsUsed = 0
+  let kvUsed = 0
+  let prefillJob: Request | null = null
+  const decodeJobs: Request[] = []
+  for (const r of cands) {
+    if (slotsUsed >= h.slots) break
+    // hard capacity gates: a prompt longer than the model window, or a KV footprint
+    // larger than this rack's whole KV budget, can never be served here (§2.5 unservable)
+    if (h.window > 0 && r.contextLen > h.window) {
+      r.windowBlocked = true
+      continue
+    }
+    const kv = kvPerReqGb(s, h.model, r.contextLen)
+    if (kv > h.kvBudget) {
+      r.windowBlocked = true
+      continue
+    }
+    // every in-flight request reserves KV at its CURRENT seqlen; no room → it waits
+    if (kvUsed + kv > h.kvBudget) continue
+    // P/D disaggregation: a role-pinned rack only takes its phase
+    if (t.role === 'decode' && r.prefill > 0) continue
+    if (t.role === 'prefill' && r.prefill <= 0) continue
+    if (r.prefill > 0 && !r.cacheLooked && r.def.cacheable && h.cacheBest > 0) {
+      lookupPrefix(s, r, h)
+      if (r.prefill <= 0) {
+        firstToken(s, r, h, 0)
+        if (r.overRefused) continue
+      }
+    }
+    slotsUsed++
+    kvUsed += kv
+    if (r.prefill > 0) {
+      // prompt ingestion is compute-bound and serializes the rack: one prefill at a
+      // time; further prefill jobs hold their slots and wait
+      if (!prefillJob) prefillJob = r
+      continue
+    }
+    if (r.work > 0) decodeJobs.push(r)
+  }
+
+  // PREFILL — the compute roof. Without Chunked Prefill it runs exclusively and the
+  // decodes stall for its busy time (OSDI'24); chunked, it takes at most a fixed share
+  // while decodes keep streaming. Either way, decodes get the rest of the tick.
+  const prefillCap = s.infra.scheduling.chunked && decodeJobs.length > 0 ? CHUNKED_PREFILL_SHARE : 1
+  let busy = 0
+  if (prefillJob) {
+    const rate =
+      serverPrefillSpeed(s, h.lo, prefillJob.tokensIn) *
+      (t.role === 'prefill' ? PREFILL_POOL_MUL : 1) *
+      t.throttle
+    if (rate > 0) {
+      const need = prefillJob.prefill / rate
+      busy = Math.min(need, prefillCap * realDt)
+      prefillJob.hitFlash = 0.12
+      if (busy >= need) {
+        // the fractional completing tick counts: wall time = busy / share (time-sliced when chunked)
+        firstToken(s, prefillJob, h, busy / prefillCap)
+      } else {
+        prefillJob.prefill -= rate * busy
+      }
+    }
+  }
+  const decodeShare = Math.max(0, 1 - busy / realDt)
+
+  // DECODE — the bandwidth roof shared by the batch, barely dented by thermal throttling
+  // (Splitwise: decode is memory-bound; caps hit prefill hardest).
+  const batch = Math.max(1, decodeJobs.length)
+  const perUser =
+    serverPerUserDecodeTokS(s, h.lo, batch) *
+    (t.role === 'decode' ? DECODE_POOL_MUL : 1) *
+    decodeThrottle(t.throttle)
+  let fired = busy > 0
+  if (decodeShare > 1e-9 && perUser > 0) {
+    const cap = perUser * decodeShare * realDt // tokens one stream can emit on this rack this tick
+    const secPerToken = 1 / (perUser * decodeShare) // wall seconds per token, the prefill's share included
+    for (const r of decodeJobs) {
+      if (r.overRefused) continue
+      const gen = Math.min(r.work, cap)
+      r.work -= gen
+      if (r.work < 1e-9) r.work = 0
+      r.contextLen += gen // KV grows as output tokens are produced (§5.6/H1)
+      const sec = gen * secPerToken
+      r.e2elReal += sec
+      r.decodeSec += sec
+      generated.set(r.id, (generated.get(r.id) ?? 0) + gen)
+      credit(r, t, gen)
+      scoreQuality(s, r, h, gen)
+      checkE2el(r)
+      r.hitFlash = 0.12
+      fired = true
+    }
+  } else {
+    for (const r of decodeJobs) stalled.add(r)
+  }
+
+  // display-only state the renderer / inspect panel read (§D5)
+  const ids = t.decodeIds ?? (t.decodeIds = [])
+  ids.length = 0
+  for (const r of decodeJobs) ids.push(r.id)
+  t.prefillId = prefillJob ? prefillJob.id : null
+  t.kvFrac = h.kvBudget > 0 ? Math.min(1, kvUsed / h.kvBudget) : 0
+  t.batch = decodeJobs.length
+  t.load = h.slots > 0 ? Math.min(1, slotsUsed / h.slots) : 0
+  if (fired && t.cooldown <= 0) {
+    const tgt = cands[0]
+    s.events.push({ type: 'fire', fx: { x: t.x, y: t.y }, tx: tgt.x, ty: tgt.y, color: t.def.color })
+    t.cooldown = 0.09
+    t.muzzle = 0.12
+  }
 }
 
 /**
- * Token-priced income for a clean serve (§6.6): the real $/Mtoken revenue on the
- * request's actual input+output tokens, in credits. This REPLACES the old flat
- * `reward` points (which now survives only for endless-scaling math).
+ * Deliver a finished answer (§2.5): output-side guards screen it first, then the output
+ * guard tail lands in E2EL and TPOT is judged once (MLPerf per-request TPOT =
+ * decodeSec / (tokensOut − 1)). Precedence, worst first:
+ *   unsafe (an open hazard was delivered) > a handled attack (served: the correct answer
+ *   to an attack) > bad (wrong) > sloMiss (correct, safe, late) > served.
  */
-function cleanRevenue(s: GameState, r: Request): number {
-  return serveRevenue(s, r.tokensIn, r.tokensOut, r.pricePerMtokIn, r.pricePerMtokOut)
-}
-
-/**
- * §3.6/§2.5 resolve a benign request wrongly refused by the model (layer 1) or a
- * guardrail (layer 2): the `over_refused` outcome. Revenue 0 (you served nothing),
- * an SLA-meter hit, and a LIGHT Trust hit ([fix H5] — over-refusing real users
- * hurts your reputation, so safe-completion's low over-refusal is worth preferring),
- * but it is NOT a breach. Excluded from served / Goodput.
- */
-function resolveOverRefused(s: GameState, r: Request): void {
-  r.alive = false
-  s.meters.sla = clamp100(s.meters.sla - r.slaPenalty * 0.5)
-  s.meters.trust = clamp100(s.meters.trust - r.trustPenalty * 0.25)
-  s.stats.overRefused++
-  recordOutcome(s, r, 'overRefused', 0)
-  s.events.push({ type: 'serve', x: r.x, y: r.y, kind: 'over_refused', amount: 0 })
-}
-
-/**
- * Resolve a fully-served (prefilled AND decoded) request into one of the outcomes
- * (R9 / §2.5). Precedence (worst first, documented in the blueprint):
- *   unsafe > bad > slo_miss > served
- * Rationale: an unsafe or wrong answer harms more than a merely late one, so they
- * take priority over the SLO branch — slo_miss is ONLY reached by a correct, safe,
- * but late answer. (`unservable`/`leaked`/`over_refused` are decided elsewhere.)
- */
-function resolveServe(s: GameState, r: Request): void {
-  r.alive = false
+function deliver(s: GameState, r: Request, stages: LaneGuardStage[]): void {
+  screenOutput(s, r, stages)
+  if (r.overRefused) {
+    resolveOutcome(s, r, 'overRefused', { refusedBy: 'guard' })
+    return
+  }
+  r.e2elReal += r.guardOutSec // the output guard is the E2EL tail (§0.4), wherever the guard sits
+  const cls = LAT_CLASS_SLO[r.def.latClass]
+  if (r.tokensOut > 1 && (r.decodeSec / (r.tokensOut - 1)) * 1000 > cls.tpotMs) violate(r, 'tpot')
+  if (r.def.e2elSloMs !== undefined && r.e2elReal * 1000 > r.def.e2elSloMs) violate(r, 'e2el')
   if (r.safetyRisk > 0 && !r.safetyCleared) {
-    // unsafe: we answered a request whose hazard was never cleared (§3.4 breach).
-    const dmg = r.trustPenalty * s.modifiers.safetyDamage
-    s.meters.trust = clamp100(s.meters.trust - dmg)
-    s.stats.unsafe++
-    recordOutcome(s, r, 'unsafe', 0)
-    s.events.push({ type: 'serve', x: r.x, y: r.y, kind: 'unsafe', amount: 0 })
+    resolveOutcome(s, r, 'unsafe')
     return
   }
-  if (r.bestQuality < 0) {
-    // bad: model too weak — the request was computed and billed (token revenue),
-    // but the answer is wrong, so it costs Trust.
-    const pay = cleanRevenue(s, r)
-    s.meters.cash += pay
-    s.stats.cashEarned += pay
-    s.data += r.data * dataMult(s)
-    s.meters.trust = clamp100(s.meters.trust - r.trustPenalty * 0.5)
-    s.stats.bad++
-    recordOutcome(s, r, 'bad', pay)
-    s.events.push({ type: 'serve', x: r.x, y: r.y, kind: 'bad', amount: Math.round(pay) })
+  if (r.def.adversarial) {
+    // every hazard was cleared (the model refused it, or an output guard stopped it)
+    r.attackHandled = true
+    resolveOutcome(s, r, 'served')
     return
   }
-  if (r.sloViolated) {
-    // slo_miss: correct, safe, but LATE — HARDCORE: zero cash (you missed the SLA),
-    // an SLA-meter penalty, and excluded from Goodput. It still consumed compute
-    // (the operating bill already charged it) and counts as "answered" (§2.5).
-    s.meters.sla = clamp100(s.meters.sla - r.slaPenalty * 0.5)
-    s.meters.trust = clamp100(s.meters.trust - r.trustPenalty * 0.25)
-    s.stats.sloMiss++
-    recordOutcome(s, r, 'sloMiss', 0)
-    s.events.push({ type: 'serve', x: r.x, y: r.y, kind: 'bad', amount: 0 })
-    return
-  }
-  // served: correct, safe, within SLO — the full token-priced revenue.
-  const pay = cleanRevenue(s, r)
-  s.meters.cash += pay
-  s.stats.cashEarned += pay
-  s.data += r.data * dataMult(s)
-  s.meters.trust = clamp100(s.meters.trust + 0.25)
-  s.meters.sla = clamp100(s.meters.sla + 0.15)
-  s.stats.served++
-  recordOutcome(s, r, 'served', pay)
-  s.events.push({ type: 'serve', x: r.x, y: r.y, kind: 'good', amount: Math.round(pay) })
+  if (r.bestQuality < 0) resolveOutcome(s, r, 'bad')
+  else if (r.sloViolated) resolveOutcome(s, r, 'sloMiss')
+  else resolveOutcome(s, r, 'served')
 }

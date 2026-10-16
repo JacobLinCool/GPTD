@@ -3,9 +3,10 @@
 // the RNG class instance, Sets, and shared `def` object references), so we build
 // a flat, self-sufficient decision context here from the same helpers the UI uses
 // — an agent with NO repo source should be able to play from this alone.
-import { GRID_COLS, GRID_ROWS, START } from '../config'
-import type { GameState } from '../core/types'
+import { GRID_COLS, GRID_ROWS } from '../config'
+import type { GameState, Outcome, SafetyHazard, TowerDef, WaveReport } from '../core/types'
 import { buildCost, hardwareUpgradeCost, isLastWave, nextHardware, towerValue } from '../sim/actions'
+import { CAMPAIGN_THEMES } from '../sim/campaign'
 import {
   BUILD_ORDER,
   HARDWARE_DEFS,
@@ -17,10 +18,13 @@ import {
   UPGRADES,
   WAVES,
 } from '../sim/content'
-import { hasLab, hasLiquidLoop, hwNeedsLiquid, loadout, serverFitsMemory } from '../sim/effects'
+import { guardLatencyMs, hasLab, hasLiquidLoop, hwNeedsLiquid, loadout, serverFitsMemory, towerRangeTiles } from '../sim/effects'
+import { guardCoveredLanes } from '../sim/guards'
 import { EFFORT_NOTCHES, postTrainDataCost, resolveModel } from '../sim/models'
 import { CORE_TILE, isBuildable, isPathTile } from '../sim/pathing'
 import { methodUnlocked, researchUnlocked } from '../sim/research'
+import { alignmentTax, categoryUnlocked, effRecall, overRefuse, overrefMul, redteamRecallBonus } from '../sim/safety'
+import { surgeLaneOf } from '../sim/spawn'
 
 export interface AgentTowerView {
   id: number
@@ -31,6 +35,10 @@ export interface AgentTowerView {
   row: number
   level: number
   online: boolean
+  /** coverage radius in tiles (a server's grows with its hardware tier). */
+  range: number
+  /** guardrails only: the ingress lanes it screens (every request on them, wherever it sits). */
+  coversLanes?: number[]
   hwId?: string
   modelId?: string
   role?: string
@@ -43,6 +51,20 @@ export interface AgentTowerView {
   deployableModelIds: string[]
 }
 
+/** A guardrail building's screening behaviour at the current threshold and red-team level. */
+export interface AgentGuardrailSpec {
+  archetype: string
+  /** input → adds to TTFT (and can block before any compute); output → adds to E2EL; both → each end once. */
+  side: string
+  /** real ms one check adds. */
+  latencyMs: number
+  /** catch probability for each hazard it covers (replicas of one archetype add lane coverage, not recall). */
+  recall: number
+  /** wrongly-blocked rate on a BORDERLINE benign request (× each archetype's refusal exposure). */
+  falsePositiveRate: number
+  catches: Array<{ hazard: string; locked: boolean; unlockedBy?: string }>
+}
+
 export interface AgentCatalogEntry {
   defId: string
   name: string
@@ -51,6 +73,7 @@ export interface AgentCatalogEntry {
   range: number
   affordable: boolean
   blockedReason?: string
+  guardrail?: AgentGuardrailSpec
 }
 
 export interface AgentModelView {
@@ -58,11 +81,21 @@ export interface AgentModelView {
   name: string
   tier: string
   quality: number
+  /** answer quality per capability axis (before the alignment tax); a request is judged on ONE axis. */
+  qualityBy: Record<string, number>
+  contextWindowK: number
   paramsTotalB: number
   paramsActiveB: number
   isMoE: boolean
   isReasoning: boolean
+  /** layer-1 alignment: intrinsic safety 0..100, refusal style, borderline over-refusal rate. */
+  alignment: { safety: number; refusalStyle: string; overRefusal: number }
+  /** quality points the alignment costs on every axis at serve time. */
+  alignmentTax: number
 }
+
+/** A wave report with its Trust/SLA ledgers, ready for JSON (values rounded). */
+export type AgentWaveReport = Omit<WaveReport, 'waveIndex'> & { wave: number }
 
 export interface AgentHardwareView {
   id: string
@@ -127,8 +160,22 @@ export interface AgentSnapshot {
   }
   incident: { id: string; name: string; desc: string; good: boolean } | null
   nextWave:
-    | { wave: number; name: string; brief: string; clearBonus: number; totalRequests: number; mix: Array<{ typeId: string; count: number }> }
+    | {
+        wave: number
+        name: string
+        brief: string
+        clearBonus: number
+        totalRequests: number
+        mix: Array<{ typeId: string; count: number }>
+        boss: boolean
+        /** the one ingress lane the whole wave funnels into (authored surge or incident), null = spread. */
+        surgeLane: number | null
+        /** the incident telegraphed for this wave (details in `incident`), null = none. */
+        incidentId: string | null
+      }
     | null
+  /** the settled report of the last cleared wave, incl. per-outcome Trust/SLA ledgers. */
+  lastReport: AgentWaveReport | null
   board: { cols: number; rows: number; core: { col: number; row: number }; freeTiles: Array<{ col: number; row: number; nearLane: boolean }> }
   towers: AgentTowerView[]
   catalog: AgentCatalogEntry[]
@@ -160,21 +207,85 @@ export interface AgentSnapshot {
     cashEarned: number
     peakConcurrent: number
     lastReportWave: number | null
+    /** cumulative Trust / SLA lost per outcome over the run (what is draining the meters). */
+    trustLostBy: Partial<Record<Outcome, number>>
+    slaLostBy: Partial<Record<Outcome, number>>
   }
+}
+
+const round2 = (v: number): number => Math.round(v * 100) / 100
+
+function roundLedger<K extends string>(l: Partial<Record<K, number>> | undefined): Partial<Record<K, number>> {
+  const out: Partial<Record<K, number>> = {}
+  for (const [k, v] of Object.entries(l ?? {}) as [K, number][]) out[k] = round2(v)
+  return out
 }
 
 function modelView(s: GameState, id: string): AgentModelView | null {
   const m = resolveModel(s, id)
   if (!m) return null
+  const qualityBy: Record<string, number> = {}
+  for (const [axis, q] of Object.entries(m.qualityBy)) qualityBy[axis] = Math.round(q * 10) / 10
   return {
     id: m.id,
     name: m.name,
     tier: m.tier,
     quality: Math.round(m.quality),
+    qualityBy,
+    contextWindowK: m.contextWindowK,
     paramsTotalB: m.paramsTotalB,
     paramsActiveB: m.paramsActiveB,
     isMoE: m.isMoE,
     isReasoning: m.isReasoning,
+    alignment: {
+      safety: Math.round(m.alignment.safety),
+      refusalStyle: m.alignment.refusalStyle,
+      overRefusal: Math.round(m.alignment.overRefusal * 1000) / 1000,
+    },
+    alignmentTax: round2(alignmentTax(m)),
+  }
+}
+
+/** The red-team eval that unlocks a guardrail's detection of a hazard category (§3.6). */
+const UNLOCKED_BY: Partial<Record<SafetyHazard, string>> = {
+  injection: 'r_eval_redteam_v1',
+  pii: 'r_eval_redteam_v2',
+}
+
+function guardrailView(s: GameState, def: TowerDef): AgentGuardrailSpec | undefined {
+  const g = def.guardrail
+  if (!g) return undefined
+  return {
+    archetype: g.archetype,
+    side: g.side,
+    latencyMs: Math.round(guardLatencyMs(s, g)),
+    recall: Math.round(effRecall(g.baseRecall, s.guardrailThreshold, redteamRecallBonus(s)) * 1000) / 1000,
+    falsePositiveRate: Math.round(overRefuse(g.archetype, s.guardrailThreshold, overrefMul(s)) * 10000) / 10000,
+    catches: g.catches.map((h) => {
+      const locked = !categoryUnlocked(s, h)
+      return locked ? { hazard: h, locked, unlockedBy: UNLOCKED_BY[h] } : { hazard: h, locked }
+    }),
+  }
+}
+
+function reportView(r: WaveReport | null): AgentWaveReport | null {
+  if (!r) return null
+  const { waveIndex, ...rest } = r
+  return {
+    ...rest,
+    wave: waveIndex + 1,
+    cashIn: round2(r.cashIn),
+    powerCost: round2(r.powerCost),
+    avgLatency: Math.round(r.avgLatency * 1000) / 1000,
+    p95Latency: Math.round(r.p95Latency * 1000) / 1000,
+    avgTtft: Math.round(r.avgTtft * 1000) / 1000,
+    p95Ttft: Math.round(r.p95Ttft * 1000) / 1000,
+    goodputPct: Math.round(r.goodputPct * 10) / 10,
+    sloAttainPct: r.sloAttainPct === undefined ? undefined : Math.round(r.sloAttainPct * 10) / 10,
+    duration: round2(r.duration),
+    trustLostBy: roundLedger(r.trustLostBy),
+    slaLostBy: roundLedger(r.slaLostBy),
+    byType: Object.fromEntries(Object.entries(r.byType).map(([k, v]) => [k, { ...v, cash: round2(v.cash) }])),
   }
 }
 
@@ -202,16 +313,6 @@ export function serializeState(s: GameState): AgentSnapshot {
     }
   }
 
-  // Power/cooling capacity computed fresh (read-only) so the snapshot is never
-  // stale in the build phase — the sim only recomputes these during wave steps.
-  let powerCap = START.basePower
-  let coolBase = START.baseCooling
-  for (const t of s.towers) {
-    powerCap += t.def.power ?? 0
-    coolBase += t.def.cooling ?? 0
-  }
-  const coolCap = coolBase * s.modifiers.coolingCap
-
   const liquidReady = hasLiquidLoop(s)
   const catalog: AgentCatalogEntry[] = BUILD_ORDER.map((id) => {
     const def = TOWER_DEFS[id]
@@ -229,6 +330,7 @@ export function serializeState(s: GameState): AgentSnapshot {
       range: def.range,
       affordable: s.meters.cash >= cost,
       blockedReason,
+      guardrail: guardrailView(s, def),
     }
   })
 
@@ -256,6 +358,8 @@ export function serializeState(s: GameState): AgentSnapshot {
       row: t.row,
       level: t.level,
       online: t.online,
+      range: towerRangeTiles(t),
+      coversLanes: t.def.kind === 'guardrail' ? guardCoveredLanes(t) : undefined,
       hwId: t.hwId,
       modelId: t.modelId,
       role: t.role,
@@ -344,6 +448,9 @@ export function serializeState(s: GameState): AgentSnapshot {
       mix: Object.entries(mixMap)
         .map(([typeId, count]) => ({ typeId, count }))
         .sort((a, b) => b.count - a.count),
+      boss: CAMPAIGN_THEMES[upcomingIdx]?.boss ?? false,
+      surgeLane: surgeLaneOf(upcoming.groups, s.laneWindow) ?? null,
+      incidentId: s.pendingIncident?.id ?? null,
     }
   }
 
@@ -360,8 +467,9 @@ export function serializeState(s: GameState): AgentSnapshot {
       sla: Math.round(s.meters.sla),
       data: Math.floor(s.data),
     },
-    power: { used: Math.round(s.power.used), cap: Math.round(powerCap) },
-    cooling: { used: Math.round(s.cooling.used), cap: Math.round(coolCap) },
+    // live in every phase: the sim recomputes power after each build action (refreshPower)
+    power: { used: round2(s.power.used), cap: round2(s.power.cap) },
+    cooling: { used: round2(s.cooling.used), cap: round2(s.cooling.cap) },
     flags: { hasLab: labReady, hasLiquidLoop: liquidReady },
     modifiers: {
       buildCost: s.modifiers.buildCost,
@@ -380,6 +488,7 @@ export function serializeState(s: GameState): AgentSnapshot {
         }
       : null,
     nextWave,
+    lastReport: reportView(s.lastReport),
     board: {
       cols: GRID_COLS,
       rows: GRID_ROWS,
@@ -416,6 +525,8 @@ export function serializeState(s: GameState): AgentSnapshot {
       cashEarned: Math.round(s.stats.cashEarned),
       peakConcurrent: s.stats.peakConcurrent,
       lastReportWave: s.lastReport ? s.lastReport.waveIndex + 1 : null,
+      trustLostBy: roundLedger(s.stats.trustLostBy),
+      slaLostBy: roundLedger(s.stats.slaLostBy),
     },
   }
 }

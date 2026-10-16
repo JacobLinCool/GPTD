@@ -97,12 +97,12 @@ returns `503`; if the tab never answers, `504` after 15 s.
 
 | `fn` | args | effect |
 | --- | --- | --- |
-| `build` | `[defId, col, row]` | place a tower (see `catalog` + `board.freeTiles`) |
+| `build` | `[defId, col, row]` | place a tower (see `catalog` + `board.freeTiles`); allowed mid-wave as an emergency build |
 | `sell` | `[towerId]` | sell a tower (60% refund) |
-| `deploy` | `[towerId, modelId]` | deploy a checkpoint (only models in that rack's `deployableModelIds` fit) |
-| `upgradeHardware` | `[towerId]` | upgrade a rack one GPU tier |
+| `deploy` | `[towerId, modelId]` | deploy a checkpoint (only models in that rack's `deployableModelIds` fit) — **build phase only**: loading new weights drains the rack |
+| `upgradeHardware` | `[towerId]` | upgrade a rack one GPU tier — **build phase only**: new GPUs mean reloading the model |
 | `cycleRackRole` | `[towerId]` | cycle P/D disaggregation role (needs `inf_disagg`) |
-| `buyUpgrade` | `[upgradeId]` | buy an infra/safety upgrade (needs a Lab) |
+| `buyUpgrade` | `[upgradeId]` | buy a cash upgrade listed in `upgrades[]` (needs a Lab; the list is empty in the current tech tree) |
 | `research` | `[researchId]` | start a research project (from `research.options`) |
 | `postTrain` | `[baseIds[], method, target, effort]` | derive a checkpoint in the Studio (see `studio`); over GET use `args=baseId,method,target,effort` (single base) — `merge` (2 bases) needs the POST JSON form |
 | `startWave` | `[]` | begin the next wave (build phase only) |
@@ -127,23 +127,36 @@ guessing. Unknown actions are rejected the same way, never a crash.
   "phase": "build",            // build | wave | won | lost | menu
   "wave": 1, "totalWaves": 100, "isLastWave": false, "waveActive": false, "endless": false,
   "meters": { "cash": 300, "trust": 100, "sla": 100, "data": 0 },
-  "power":  { "used": 0, "cap": 6 },   // cap is recomputed live (correct in build phase)
+  "power":  { "used": 0, "cap": 6 },   // live kW in every phase (recomputed after each build action)
   "cooling":{ "used": 0, "cap": 6 },
   "flags":  { "hasLab": false, "hasLiquidLoop": false },
   "modifiers": { "buildCost": 1, "powerPrice": 1, "coolingCap": 1, "safetyDamage": 1, "volume": 1, "reward": 1 },
-  "incident": null,            // {id,name,desc} when an incident is telegraphed for the next wave
+  "incident": null,            // {id,name,desc,good} when an incident is telegraphed for the next wave
   "nextWave": { "wave": 1, "name": "…", "brief": "…", "clearBonus": 12, "totalRequests": 30,
-                "mix": [ { "typeId": "chat", "count": 30 } ] },   // build phase only; preview the upcoming wave
+                "mix": [ { "typeId": "chat", "count": 30 } ],
+                "boss": false,
+                "surgeLane": null,       // the one ingress lane the whole wave funnels into, or null
+                "incidentId": null },    // build phase only; preview the upcoming wave
+  "lastReport": null,          // the last cleared wave's report (below), null before the first clear
   "board":  { "cols": 24, "rows": 11, "core": { "col": 11, "row": 5 },
               "freeTiles": [ { "col": 4, "row": 2, "nearLane": true }, … ] },
-  "towers": [ { "id": 1, "defId": "srv_edge", "col": 4, "row": 2, "hwId": "hw_edge",
-               "modelId": "…", "sellValue": 3, "nextHwId": "hw_standard", "upgradeCost": 12,
-               "deployableModelIds": [ "…" ] } ],   // models that fit THIS rack's VRAM now
-  "catalog":[ { "defId": "srv_edge", "name": "Edge", "cost": 5, "affordable": true, "blockedReason": null } ],
+  "towers": [ { "id": 1, "defId": "srv_edge", "col": 4, "row": 2, "online": true, "range": 2.8,
+               "hwId": "hw_edge", "modelId": "…", "sellValue": 3, "nextHwId": "hw_standard",
+               "upgradeCost": 12, "deployableModelIds": [ "…" ] },   // models that fit THIS rack's VRAM now
+             { "id": 2, "defId": "guard_encoder", "range": 2.9, "coversLanes": [ 0, 1, 2, 3 ], … } ],
+  "catalog":[ { "defId": "srv_edge", "name": "Edge", "cost": 5, "range": 2.8, "affordable": true, "blockedReason": null },
+              { "defId": "guard_encoder", …,
+                "guardrail": { "archetype": "encoder", "side": "input", "latencyMs": 92,
+                               "recall": 0.975, "falsePositiveRate": 0.015,
+                               "catches": [ { "hazard": "jailbreak", "locked": false },
+                                            { "hazard": "injection", "locked": true, "unlockedBy": "r_eval_redteam_v1" } ] } } ],
   "hardware":[ { "id": "hw_edge", "name": "…", "hbmGb": 24, "cooling": "air",
                  "deployableModelIds": [ "…" ] } ],   // the GPU-tier ladder + what fits each tier
   "models": [ { "id": "…", "name": "…", "tier": "small", "quality": 41,
-               "paramsTotalB": 8, "paramsActiveB": 8, "isMoE": false, "isReasoning": false } ],
+               "qualityBy": { "chat": 60, "coding": 38, "reasoning": 41, "general": 52, "agentic": 30 },
+               "contextWindowK": 128, "paramsTotalB": 8, "paramsActiveB": 8, "isMoE": false, "isReasoning": false,
+               "alignment": { "safety": 58, "refusalStyle": "hard-refusal", "overRefusal": 0.12 },
+               "alignmentTax": 1.62 } ],
   "upgrades": [ { "id": "…", "level": 0, "maxLevel": 1, "buyable": false } ],
   "research": { "infra": null, "posttrain": null, "eval": null,
                 "options": [ { "id": "…", "name": "…", "desc": "…", "dataCost": 10, "requires": [ … ] } ] },
@@ -153,13 +166,42 @@ guessing. Unknown actions are rejected the same way, never a crash.
                             "unlocked": true, "requiresTech": null } ],
               "activeRun": null },
   "stats": { "served": 0, "sloMiss": 0, "bad": 0, "unservable": 0, "unsafe": 0,
-             "overRefused": 0, "leaked": 0, "cashEarned": 0, "peakConcurrent": 0, "lastReportWave": null }
+             "overRefused": 0, "leaked": 0, "cashEarned": 0, "peakConcurrent": 0, "lastReportWave": null,
+             "trustLostBy": {}, "slaLostBy": {} }   // cumulative Trust / SLA lost per outcome
 }
 ```
 
-`stats` carries all six request outcomes — `unsafe` and `overRefused` are
-what bleed **Trust**, `sloMiss` bleeds **SLA**. Watch them (and `incident` /
-`nextWave`) to pre-empt safety/latency waves instead of reacting after the fact.
+`lastReport` is the settled report of the last cleared wave:
+
+```jsonc
+{ "wave": 3, "served": 41, "sloMiss": 2, "bad": 0, "unservable": 0, "unsafe": 0, "overRefused": 1, "leaked": 3,
+  "total": 47,                 // every terminal outcome — the Goodput denominator
+  "goodputPct": 87.2,          // % of ALL requests served correctly, safely and within SLO
+  "sloAttainPct": 95.3,        // % of ANSWERED requests that met every latency bound
+  "trustLostBy": { "leaked": 6, "overRefused": 0.5 }, "slaLostBy": { "leaked": 9, "sloMiss": 3 },
+  "sloCauses": { "ttft": 2 },  // which latency bound each SLO-miss missed first (ttft / tpot / e2el)
+  "overRefusedBy": { "model": 1 },   // who wrongly refused: the model's alignment or a guardrail
+  "guardCaught": 4, "selfHandled": 2, "cacheHits": 12,
+  "cashIn": 9.4, "clearBonus": 8, "powerCost": 3.1, "avgTtft": 0.21, "p95Ttft": 0.48,
+  "avgLatency": 2.3, "p95Latency": 5.1, "duration": 41.6, "byType": { "chat": { "served": 30, … } } }
+```
+
+`stats` carries all seven request outcomes, and the ledgers say what each one cost:
+`unsafe` (an unsafe answer that was delivered) and `bad` (a wrong answer — refunded)
+cost **Trust**; `sloMiss` (correct but late — paid at 50%) costs **SLA** and a little
+Trust; `leaked` (a 504) and `unservable` (rejected by a context window or a KV
+budget) cost both meters; `overRefused` (a benign request refused by the model or a
+guard) costs a little of both. A jailbreak that is blocked or refused counts as
+`served`; one that is never answered costs SLA only. Read `lastReport.trustLostBy` / `slaLostBy` /
+`sloCauses` / `overRefusedBy` after each wave, and `incident` / `nextWave`
+before it, to fix the real cause instead of guessing.
+
+A guardrail screens **every request on the lanes its range touches** (see
+`towers[].coversLanes`), wherever on the lane it sits: each guard family on a lane
+adds its latency once (input → TTFT, output → E2EL) and one false-positive roll on
+benign traffic, while extra copies of the same guard add coverage, not recall.
+Detection of `injection` / `pii` stays locked until the red-team evals listed in
+`catches[].unlockedBy` are researched.
 
 ### Worked example
 

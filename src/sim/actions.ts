@@ -1,4 +1,5 @@
-import type { GameState, ServerHardwareDef, Tower, TowerDef } from '../core/types'
+import type { GameState, ServerHardwareDef, Tower, TowerDef, WaveDef } from '../core/types'
+import { CAMPAIGN_THEMES } from './campaign'
 import { HARDWARE_DEFS, HARDWARE_TIERS, TOWER_DEFS, UPGRADE_MAP, WAVES } from './content'
 import {
   hasLab,
@@ -12,6 +13,8 @@ import {
 } from './effects'
 import { generateEndlessWave } from './endless'
 import { isBuildable, tileCenter } from './pathing'
+import { refreshPower } from './power'
+import { surgeLaneOf } from './spawn'
 import { newWaveStats } from './telemetry'
 
 export function buildCost(s: GameState, def: TowerDef): number {
@@ -27,6 +30,10 @@ export function canPlaceAt(s: GameState, col: number, row: number): boolean {
   return !s.towers.some((t) => t.col === col && t.row === row)
 }
 
+/**
+ * Place a building. Allowed in the build phase AND mid-wave (an emergency build with
+ * cash); the power / cooling budget is recomputed at once so the HUD stays live.
+ */
 export function tryBuild(s: GameState, defId: string, col: number, row: number): boolean {
   if (s.phase !== 'build' && s.phase !== 'wave') return false
   const def = TOWER_DEFS[defId]
@@ -40,8 +47,9 @@ export function tryBuild(s: GameState, defId: string, col: number, row: number):
   if (s.meters.cash < cost) return false
   s.meters.cash -= cost
   const c = tileCenter(col, row)
+  const id = s.nextId++
   s.towers.push({
-    id: s.nextId++,
+    id,
     def,
     col,
     row,
@@ -56,8 +64,17 @@ export function tryBuild(s: GameState, defId: string, col: number, row: number):
     load: 0,
     hwId: def.hardwareId,
     modelId: def.defaultModelId,
+    role: undefined,
+    training: false,
+    // display state, refreshed every combat tick (declared up front: one object shape for every tower)
+    decodeIds: [],
+    prefillId: null,
+    kvFrac: 0,
+    batch: 0,
   })
+  s.events.push({ type: 'build', towerId: id, defId: def.id, x: c.x, y: c.y })
   s.events.push({ type: 'place', x: c.x, y: c.y })
+  refreshPower(s)
   return true
 }
 
@@ -72,20 +89,22 @@ export function sellTower(s: GameState, id: number): boolean {
   const i = s.towers.findIndex((t) => t.id === id)
   if (i < 0) return false
   const t = s.towers[i]
-  s.meters.cash += Math.round(towerValue(s, t) * 0.6)
-  s.events.push({ type: 'sell', x: t.x, y: t.y })
+  const refund = Math.round(towerValue(s, t) * 0.6)
+  s.meters.cash += refund
+  s.events.push({ type: 'sell', x: t.x, y: t.y, towerId: t.id, defId: t.def.id, refund })
   s.towers.splice(i, 1)
+  refreshPower(s)
   return true
 }
 
 /**
- * Deploy a checkpoint onto a placed rack. Open weights are free — deployment
- * costs nothing — but the rack must fit the model's VRAM and you must have
- * unlocked its architecture METHOD (MoE checkpoints need the MoE research,
- * reasoning checkpoints need the Reasoning research).
+ * Deploy a checkpoint onto a placed rack — between waves only. Open weights are free,
+ * so deployment costs nothing, but the rack must fit the model's VRAM, and loading new
+ * weights means draining the rack and restarting its inference engine: it cannot happen
+ * while traffic is live (a real engine cold start takes tens of seconds to minutes).
  */
 export function deployModel(s: GameState, towerId: number, modelId: string): boolean {
-  if (s.phase !== 'build' && s.phase !== 'wave') return false
+  if (s.phase !== 'build') return false
   const t = s.towers.find((x) => x.id === towerId)
   if (!t || t.def.kind !== 'server') return false
   const model = resolveModel(s, modelId) // base OR a derived checkpoint (P3b)
@@ -94,7 +113,9 @@ export function deployModel(s: GameState, towerId: number, modelId: string): boo
   if (!methodsUnlocked(s, model)) return false // architecture method not researched yet
   if (!serverFitsMemory(s, loadout(s, t.hwId, modelId))) return false
   t.modelId = modelId
+  s.events.push({ type: 'deploy', towerId: t.id, modelId, x: t.x, y: t.y })
   s.events.push({ type: 'train' })
+  refreshPower(s)
   return true
 }
 
@@ -114,9 +135,12 @@ export function hardwareUpgradeCost(s: GameState, t: Tower): number {
   return Math.round((next.cost - cur.cost) * s.modifiers.buildCost)
 }
 
-/** Upgrade a placed rack to the next hardware tier, keeping its model. */
+/**
+ * Upgrade a placed rack to the next hardware tier, keeping its model — between waves
+ * only: new GPUs mean reloading the model onto them, which drains the rack.
+ */
 export function upgradeHardware(s: GameState, towerId: number): boolean {
-  if (s.phase !== 'build' && s.phase !== 'wave') return false
+  if (s.phase !== 'build') return false
   const t = s.towers.find((x) => x.id === towerId)
   if (!t) return false
   const next = nextHardware(t)
@@ -128,7 +152,9 @@ export function upgradeHardware(s: GameState, towerId: number): boolean {
   if (s.meters.cash < cost) return false
   s.meters.cash -= cost
   t.hwId = next.id
+  s.events.push({ type: 'upgrade', towerId: t.id, hwId: next.id, x: t.x, y: t.y })
   s.events.push({ type: 'place', x: t.x, y: t.y })
+  refreshPower(s)
   return true
 }
 
@@ -148,6 +174,16 @@ export function buyUpgrade(s: GameState, id: string): boolean {
 
 export function startGame(s: GameState): void {
   if (s.phase === 'menu') s.phase = 'build'
+}
+
+/** Whether a campaign wave index is an authored boss wave (endless surges carry no boss flag). */
+function isBossWave(index: number): boolean {
+  return CAMPAIGN_THEMES[index]?.boss ?? false
+}
+
+/** The single ingress lane a wave's traffic funnels into (authored surge or a concentration incident), if any. */
+export function waveSurgeLane(s: GameState, w: WaveDef): number | undefined {
+  return surgeLaneOf(w.groups, s.laneWindow)
 }
 
 export function startWave(s: GameState): boolean {
@@ -181,7 +217,12 @@ export function startWave(s: GameState): boolean {
     started: false,
   }))
   s.nextLaneId = 0
-  s.events.push({ type: 'wave-start', index: s.waveIndex })
+  s.events.push({
+    type: 'wave-start',
+    index: s.waveIndex,
+    boss: isBossWave(s.waveIndex),
+    surgeLane: waveSurgeLane(s, w),
+  })
   return true
 }
 
