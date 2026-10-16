@@ -611,6 +611,15 @@ export interface Request {
   hitFlash: number
   cacheFlash: number
   alive: boolean
+  // ---- display-only (read by render/UI/agent; the sim never branches on these) ----
+  /** sloMiss cause, latched at the first violated bound. */
+  sloCause?: SloCause
+  /** overRefused: who refused it. */
+  refusedBy?: RefusedBy
+  /** hidden reasoning tokens this answer carries (0/undefined = an instruct model answered). */
+  thinkTokens?: number
+  /** the tower that generated most of the answer so far. */
+  answeredBy?: number
 }
 
 /** Runtime tower instance. */
@@ -638,6 +647,15 @@ export interface Tower {
   training?: boolean
   /** P/D disaggregation role (requires the research; undefined = auto) */
   role?: 'prefill' | 'decode'
+  // ---- display-only, refreshed each combat tick (render/UI read; the sim never branches on these) ----
+  /** request ids this rack decoded last tick. */
+  decodeIds?: number[]
+  /** request id whose prefill this rack ran last tick (null = none). */
+  prefillId?: number | null
+  /** fraction of this rack's KV budget in use last tick (0..1). */
+  kvFrac?: number
+  /** real decode batch last tick. */
+  batch?: number
 }
 
 export interface Meters {
@@ -724,20 +742,92 @@ export interface RuntimeSpawn extends SpawnGroup {
   started: boolean
 }
 
+/**
+ * The seven terminal outcomes of a request (§2.5) — ONE vocabulary shared by the
+ * sim telemetry, the board FX, audio, the wave report, the end screen and the
+ * agent bridge. (`src/outcomes.ts` maps each to its color / glyph / label / cue.)
+ */
+export type Outcome = 'served' | 'sloMiss' | 'bad' | 'unsafe' | 'overRefused' | 'unservable' | 'leaked'
+export const OUTCOMES: readonly Outcome[] = ['served', 'sloMiss', 'bad', 'unsafe', 'overRefused', 'unservable', 'leaked']
+/** Which latency bound a late answer missed first: time-to-first-token, per-token, end-to-end, or time-to-first-ANSWER-token (thinking models). */
+export type SloCause = 'ttft' | 'tpot' | 'e2el' | 'ttfat'
+/** Who wrongly refused a benign request: the model's own alignment (layer 1) or a guardrail (layer 2). */
+export type RefusedBy = 'model' | 'guard'
+/** Which meter ended the run. */
+export type LoseMeter = 'cash' | 'trust' | 'sla'
+
+/**
+ * Sim → presentation event stream (drained by game.ts each frame).
+ *
+ * Rule: events fire per request LIFECYCLE / player action / state TRANSITION — never
+ * per tick (tests do not drain `s.events`). Continuous display state lives on
+ * Tower/Request display fields instead.
+ *
+ * The `outcome`, `guard`, `selfHandle`, `build`, `upgrade`, `deploy`, `incident`,
+ * `research-start` and `posttrain-done` events are the precise vocabulary the board
+ * FX / audio / UI consume. The legacy `serve` / `leak` / `place` events are kept
+ * only until every consumer reads `outcome` (they are removed in the same update).
+ */
 export type GameEvent =
   | { type: 'fire'; fx: { x: number; y: number }; tx: number; ty: number; color: number }
+  | {
+      type: 'outcome'
+      requestId: number
+      typeId: string
+      laneId: number
+      x: number
+      y: number
+      outcome: Outcome
+      /** credits earned by this request (0 for every non-paying outcome). */
+      cash: number
+      /** meter deltas this outcome applied (negative = loss). */
+      dTrust: number
+      dSla: number
+      /** sloMiss only: the first latency bound violated. */
+      cause?: SloCause
+      /** the judged capability axis and the quality margin (effQ − difficulty; < 0 = wrong). */
+      axis?: ServerSpec
+      margin?: number
+      /** overRefused only: model (layer 1) vs guardrail (layer 2). */
+      refusedBy?: RefusedBy
+      /** the rack that generated (most of) the answer, and its model, when one did. */
+      towerId?: number
+      modelId?: string
+      /** true when a prefix-cache hit skipped (part of) the prefill. */
+      cached?: boolean
+    }
+  | {
+      type: 'guard'
+      towerId: number
+      requestId: number
+      x: number
+      y: number
+      /** caught = a hazard was cleared by this guard; overRefused = it wrongly blocked a benign request. */
+      result: 'caught' | 'overRefused'
+      archetype: GuardrailArchetype
+      hazard?: SafetyHazard
+    }
+  /** layer 1: the serving model's own alignment cleared a hazard (safe refusal / safe completion). */
+  | { type: 'selfHandle'; towerId: number; requestId: number; x: number; y: number; hazard: SafetyHazard }
   | { type: 'serve'; x: number; y: number; kind: 'good' | 'bad' | 'unsafe' | 'over_refused'; amount: number }
-  | { type: 'cache'; x: number; y: number }
+  | { type: 'cache'; x: number; y: number; towerId?: number; requestId?: number }
   | { type: 'leak'; x: number; y: number; unsafe: boolean }
   | { type: 'place'; x: number; y: number }
-  | { type: 'sell'; x: number; y: number }
-  | { type: 'brownout' }
-  | { type: 'wave-start'; index: number }
-  | { type: 'wave-clear'; index: number }
+  | { type: 'build'; towerId: number; defId: string; x: number; y: number }
+  | { type: 'upgrade'; towerId: number; hwId: string; x: number; y: number }
+  | { type: 'deploy'; towerId: number; modelId: string; x: number; y: number }
+  | { type: 'sell'; x: number; y: number; towerId?: number; defId?: string; refund?: number }
+  /** emitted on power-state TRANSITIONS only (on = brownout began, false = recovered). */
+  | { type: 'brownout'; on?: boolean }
+  | { type: 'wave-start'; index: number; boss?: boolean; surgeLane?: number }
+  | { type: 'wave-clear'; index: number; goodputPct?: number }
+  | { type: 'incident'; id: string }
   | { type: 'train' }
+  | { type: 'research-start'; id: string; track?: string }
   | { type: 'research-done'; id: string }
+  | { type: 'posttrain-done'; modelId: string }
   | { type: 'win' }
-  | { type: 'lose' }
+  | { type: 'lose'; meter?: LoseMeter }
 
 export interface GameStats {
   served: number
@@ -752,6 +842,9 @@ export interface GameStats {
   leaked: number
   cashEarned: number
   peakConcurrent: number
+  /** cumulative Trust / SLA lost per outcome over the run (display: end screen "biggest drains"). */
+  trustLostBy?: Partial<Record<Outcome, number>>
+  slaLostBy?: Partial<Record<Outcome, number>>
 }
 
 /** Per-request-type outcome row inside the wave telemetry (the six outcomes, §2.5). */
@@ -827,6 +920,15 @@ export interface WaveReport {
   goodputPct: number
   duration: number
   byType: Record<string, WaveTypeStat>
+  /** every terminal outcome this wave (the honest Goodput denominator). */
+  total?: number
+  /** Trust / SLA lost this wave per outcome (the "why did my meter drop" ledger). */
+  trustLostBy?: Partial<Record<Outcome, number>>
+  slaLostBy?: Partial<Record<Outcome, number>>
+  /** sloMiss count by the bound that was missed. */
+  sloCauses?: Partial<Record<SloCause, number>>
+  /** overRefused split by who refused. */
+  overRefusedBy?: Partial<Record<RefusedBy, number>>
 }
 
 export interface ActiveModifiers {

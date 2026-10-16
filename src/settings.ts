@@ -25,17 +25,42 @@ export interface AudioSettings {
   music: number
   /** sfx bus, 0..1 (raw gain). */
   sfx: number
+  /** interface sounds bus (hover / click / toggle), 0..1. */
+  ui: number
   muted: boolean
+  /** silence everything while the tab is hidden / unfocused. */
+  muteInBackground: boolean
+  /** 'full' = every clean serve chimes; 'reduced' = routine serves are thinned so failures stand out. */
+  sfxDensity: 'full' | 'reduced'
 }
+export type FxLevel = 'full' | 'reduced' | 'minimal'
 export interface A11ySettings {
-  /** hold idle/looping animations steady (core pulse, etc.). */
+  /** hold idle/looping animations steady (core pulse, ambient motion, tweens shortened). */
   reducedMotion: boolean
+  /** board shake on Trust Core hits / big failures. */
+  screenShake: boolean
+  /** limit full-screen flashes and rapid blinking. */
+  reduceFlashing: boolean
+  /** colorblind-safe outcome palette (every outcome also keeps a distinct glyph). */
+  colorblind: boolean
+  /** particle / popup density: full, reduced, or minimal (outcome glyphs only). */
+  fxLevel: FxLevel
 }
 export interface GameplaySettings {
   /** initial speed multiplier for a new run. */
   defaultSpeed: number
   /** hover tooltips on/off. */
   tooltips: boolean
+  /** start the next wave automatically after a short countdown in the build phase. */
+  autoStartWave: boolean
+  /** countdown length (seconds) for autoStartWave. */
+  autoStartDelay: number
+  /** require a second click to confirm selling a building. */
+  confirmSell: boolean
+  /** show hotkey badges on the build bar and action buttons. */
+  showHotkeys: boolean
+  /** pause automatically when the tab loses focus (never in agent mode). */
+  pauseOnBlur: boolean
 }
 export interface Settings {
   v: number
@@ -45,13 +70,30 @@ export interface Settings {
 }
 
 const KEY = 'gptd_settings'
-const VERSION = 1
+const VERSION = 2
+
+/** The OS-level reduced-motion preference seeds the default (the player can still override it). */
+const osReducedMotion = (): boolean => {
+  try {
+    return typeof matchMedia !== 'undefined' && matchMedia('(prefers-reduced-motion: reduce)').matches
+  } catch {
+    return false
+  }
+}
 
 const DEFAULTS: Settings = {
   v: VERSION,
-  audio: { master: 0.5, music: 0.5, sfx: 1.0, muted: false },
-  a11y: { reducedMotion: false },
-  gameplay: { defaultSpeed: 1, tooltips: true },
+  audio: { master: 0.5, music: 0.5, sfx: 1.0, ui: 0.6, muted: false, muteInBackground: true, sfxDensity: 'full' },
+  a11y: { reducedMotion: osReducedMotion(), screenShake: true, reduceFlashing: false, colorblind: false, fxLevel: 'full' },
+  gameplay: {
+    defaultSpeed: 1,
+    tooltips: true,
+    autoStartWave: false,
+    autoStartDelay: 5,
+    confirmSell: true,
+    showHotkeys: true,
+    pauseOnBlur: false,
+  },
 }
 
 const clamp01 = (v: number): number => (v < 0 ? 0 : v > 1 ? 1 : v)
@@ -132,6 +174,12 @@ export function setDefaultSpeed(n: number): void {
 }
 export function setTooltips(b: boolean): void {
   state.gameplay.tooltips = b
+  commit()
+}
+
+/** Generic typed patch for any section (persists + notifies). Prefer this for new settings. */
+export function updateSettings<K extends 'audio' | 'a11y' | 'gameplay'>(section: K, patch: Partial<Settings[K]>): void {
+  state[section] = { ...state[section], ...patch } as Settings[K]
   commit()
 }
 

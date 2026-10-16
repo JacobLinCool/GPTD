@@ -610,4 +610,28 @@ export const en: Record<string, string> = {
 
   // --- misc ---
   'boot.loading': 'BOOTING GIGAPROMPT…',
+
+  // ===== [ws:sim] sim rules: outcome causes, ledgers, guard/safety copy, agent diagnostics =====
+  // ===== [/ws:sim] =====
+
+  // ===== [ws:models] model roster: new models, provenance labels =====
+  // ===== [/ws:models] =====
+
+  // ===== [ws:physics] serving physics: thinking tokens, parallelism, batching, infra nodes =====
+  // ===== [/ws:physics] =====
+
+  // ===== [ws:economy] economy, campaign waves (names/briefs/teaches), incidents, studio =====
+  // ===== [/ws:economy] =====
+
+  // ===== [ws:render] board FX: outcome popups, banners, rack/request state =====
+  // ===== [/ws:render] =====
+
+  // ===== [ws:audio] audio: cue names, settings labels =====
+  // ===== [/ws:audio] =====
+
+  // ===== [ws:shell] UI shell: HUD, hotkeys, notifications, next-wave card, wave summary, end screen, settings =====
+  // ===== [/ws:shell] =====
+
+  // ===== [ws:panels] UI panels: inspect, deploy picker, model overview, request inspector, studio, research cards =====
+  // ===== [/ws:panels] =====
 }
