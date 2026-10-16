@@ -28,7 +28,7 @@ import {
 } from '../sim/effects'
 import { guardCoveredLanes } from '../sim/guards'
 import type { WavePreview, WavePreviewEntry } from '../sim/preview'
-import { categoryUnlocked, pSelfHandle } from '../sim/safety'
+import { categoryUnlocked, NOVEL_RECALL_MUL, pSelfHandle } from '../sim/safety'
 import { fmtLatencyMs, fmtTokens, rackFit } from './metrics'
 import { getPref, setPref } from './prefs'
 import { drawPanel, label, UIButton } from './theme'
@@ -421,6 +421,7 @@ export class NextWaveCard {
           })
         : t('next.subNormal', { lat: t(LAT_WORD[e.latClass]), axis, d: Math.round(e.difficulty) })
       if (e.hazards.length) sub += ' · ' + e.hazards.map((h) => t('next.hazard.' + h)).join(', ')
+      if (e.novelShare > 0) sub += ' ' + t('econ.next.novel', { pct: Math.round(e.novelShare * 100) })
       fitLine(row.sub, sub, NAME_W, 10)
       row.name.style.fill = e.hazards.length ? COLORS.warn : COLORS.textBright
       CHECKS.forEach((c, j) => {
@@ -495,6 +496,15 @@ export class NextWaveCard {
       else if (h.locked) lines.push(`✗ ${t('next.tip.locked', { h: name, p: Math.round(h.selfHandle * 100) })}`)
       else lines.push(`${h.selfHandle >= 0.9 ? '✓' : '✗'} ${t('next.tip.self', { h: name, p: Math.round(h.selfHandle * 100) })}`)
     }
+    // the era's adaptive attacks: classifier guards miss most of them (sim/safety NOVEL_RECALL_MUL)
+    if (e.novelShare > 0)
+      lines.push(
+        t('econ.next.novelTip', {
+          pct: Math.round(e.novelShare * 100),
+          enc: Math.round(NOVEL_RECALL_MUL.encoder * 100),
+          mod: Math.round(NOVEL_RECALL_MUL.moderation * 100),
+        }),
+      )
     lines.push(t('next.estimate'))
     return { title: `${def ? reqName(def) : e.typeId} ×${e.count}`, body: lines.join('\n') }
   }

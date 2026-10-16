@@ -17,8 +17,9 @@ import { prefersReducedMotion } from '../settings'
 import { buildCost, hardwareUpgradeCost, nextHardware } from '../sim/actions'
 import { HARDWARE_DEFS, METHOD_RECIPES, RESEARCH_DEFS, TOWER_DEFS, WAVES } from '../sim/content'
 import { deployBlocker, hasLab, hasLiquidLoop, hwNeedsLiquid, loadout, serverFitsMemory } from '../sim/effects'
-import { postTrainDataCost, resolveModel } from '../sim/models'
+import { mergeBlock, postTrainDataCost, resolveModel } from '../sim/models'
 import { isBuildable } from '../sim/pathing'
+import { powerBuildOpen } from '../sim/power'
 import { methodUnlocked, researchOwned, researchPrereqsMet, researchTrackOf } from '../sim/research'
 import { drawPanel, label } from './theme'
 
@@ -55,6 +56,7 @@ export function denyReason(s: GameState, a: DenyAction): DenyReason {
         const def = TOWER_DEFS[a.defId]
         if (!def) return r('generic')
         if (!inPlay(s)) return r('phasePlay')
+        if (def.kind === 'power' && !powerBuildOpen(s)) return r('powerFreeze')
         const cost = buildCost(s, def)
         if (s.meters.cash < cost) return cashShort(s, cost)
         return r('generic')
@@ -67,6 +69,7 @@ export function denyReason(s: GameState, a: DenyAction): DenyReason {
         if (s.towers.some((tw) => tw.col === a.col && tw.row === a.row)) return r('occupied')
         if (def.kind === 'server' && def.hardwareId && hwNeedsLiquid(HARDWARE_DEFS[def.hardwareId]) && !hasLiquidLoop(s))
           return r('liquid', { name: towerName(def) })
+        if (def.kind === 'power' && !powerBuildOpen(s)) return r('powerFreeze')
         const cost = buildCost(s, def)
         if (s.meters.cash < cost) return cashShort(s, cost)
         return r('generic')
@@ -145,6 +148,12 @@ export function denyReason(s: GameState, a: DenyAction): DenyReason {
         if (a.baseIds.length < need) return r('pickBase')
         for (let i = 0; i < need; i++) {
           if (!resolveModel(s, a.baseIds[i]) || !s.models[a.baseIds[i]]) return r('pickBase')
+        }
+        if (a.method === 'merge') {
+          const block = mergeBlock(s, a.baseIds[0], a.baseIds[1])
+          if (block === 'self' || block === 'missing') return r('mergePartner')
+          if (block === 'root') return r('mergeRoot')
+          if (block === 'body') return r('mergeBody')
         }
         const base = resolveModel(s, a.baseIds[0])
         const cost = postTrainDataCost(recipe, a.effort, base?.lineage?.depth ?? 0, base?.paramsTotalB ?? 8)

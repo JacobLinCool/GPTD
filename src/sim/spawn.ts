@@ -13,6 +13,7 @@ export function spawnRequest(
   rewardMul = 1,
   contextMul = 1,
   laneId = 0,
+  threat: SpawnThreat = {},
 ): Request {
   const def = REQUEST_TYPES[typeId]
   if (!def) throw new Error(`spawnRequest: unknown request type "${typeId}"`)
@@ -30,8 +31,9 @@ export function spawnRequest(
   // resolved scalar difficulty (§6.4): the primary-axis quality line, scaled by the
   // endless complexityMul. Replaces the retired def.complexity ([fix M2]).
   const difficulty = (def.difficulty[def.primaryAxis] ?? 0) * complexityMul
-  // §3.4 the request's hazard profile (snapshot from the def; open set starts equal).
-  const hazards: SafetyProfile = { ...(def.hazards ?? {}) }
+  // §3.4 the request's hazard profile: the def's (or the wave's override), escalated by the
+  // era's hazard pressure and clamped to severity 1; the open set starts equal.
+  const hazards = escalatedHazards(threat.hazards ?? def.hazards ?? {}, threat.hazardMul ?? 1)
   const hazardsOpen: SafetyProfile = { ...hazards }
   const risk = maxSeverity(hazardsOpen)
   const r: Request = {
@@ -63,6 +65,7 @@ export function spawnRequest(
     context,
     hazards,
     hazardsOpen,
+    novel: risk > 0 && !!threat.novel,
     safetyRisk: risk,
     reward: def.reward * rewardMul,
     // token-priced income (§6.6): the market multiplier (rewardMul, endless drift)
@@ -100,6 +103,32 @@ export function spawnRequest(
   }
   s.requests.push(r)
   return r
+}
+
+/** How a burst arms its requests: the era's hazard pressure, a novel-attack flag, an authored hazard override. */
+export interface SpawnThreat {
+  hazardMul?: number
+  novel?: boolean
+  hazards?: SafetyProfile
+}
+
+/** A hazard profile with every severity scaled by the era's pressure, clamped to 1. */
+export function escalatedHazards(base: SafetyProfile, mul: number): SafetyProfile {
+  const out: SafetyProfile = {}
+  for (const h of Object.keys(base) as (keyof SafetyProfile)[]) {
+    const v = base[h]
+    if (v !== undefined) out[h] = Math.min(1, v * mul)
+  }
+  return out
+}
+
+/**
+ * Is the k-th (0-based) request of a burst a NOVEL attack? Spreads `share` evenly over the
+ * burst by spawn order (no RNG draw, so adding novelty never perturbs the run's dice).
+ */
+export function isNovelAt(k: number, share: number): boolean {
+  if (share <= 0) return false
+  return Math.floor((k + 1) * share) > Math.floor(k * share)
 }
 
 /** Every ingress lane id [0..LANE_COUNT) — the default spread when no concentration is active. */
@@ -148,6 +177,7 @@ export function updateSpawns(s: GameState, dt: number): void {
         g.rewardMul ?? 1,
         g.contextMul ?? 1,
         lane,
+        { hazardMul: g.hazardMul, novel: isNovelAt(g.spawned, g.novelShare ?? 0), hazards: g.hazards },
       )
       if (g.lane === undefined) s.nextLaneId++
       g.spawned++

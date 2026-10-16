@@ -24,7 +24,7 @@ import { COLORS } from '../config'
 import type { CapabilityAxis, GameState, ModelDef, PostTrainMethod, PostTrainTarget } from '../core/types'
 import { METHOD_RECIPES } from '../sim/content'
 import { EFFORT_NOTCHES, resolveModel, studioPreview } from '../sim/models'
-import { canPostTrain, methodUnlocked, requisitionTarget } from '../sim/research'
+import { canPostTrain, methodUnlocked, requisitionPreview } from '../sim/research'
 import { RESEARCH_TARGET_SECONDS } from '../sim/content'
 import { getLang, modelName, t } from '../i18n'
 import { drawPanel, FocusList, label, UIButton } from './theme'
@@ -235,10 +235,16 @@ export class StudioTab {
     if (m !== 'merge') this.mergeId = null
   }
 
+  /** The base ids a run would train: a merge needs an explicitly picked, distinct partner. */
+  private runIds(): string[] | null {
+    if (!this.baseId) return null
+    if (this.method !== 'merge') return [this.baseId]
+    return this.mergeId && this.mergeId !== this.baseId ? [this.baseId, this.mergeId] : null
+  }
+
   private doTrain(): void {
-    if (!this.baseId) return
-    const ids = this.method === 'merge' ? [this.baseId, this.mergeId ?? this.baseId] : [this.baseId]
-    this.cb.onPostTrain(ids, this.method, this.target, this.effort)
+    const ids = this.runIds()
+    if (ids) this.cb.onPostTrain(ids, this.method, this.target, this.effort)
   }
 
   /** Position everything relative to the panel's (px,py) and the tab's content box. */
@@ -568,7 +574,9 @@ export class StudioTab {
       return
     }
 
-    const perWave = requisitionTarget(s) * RESEARCH_TARGET_SECONDS
+    // the racks this run would borrow, and their training rate (research.ts requisitionPreview)
+    const lend = requisitionPreview(s, 0, !s.research.posttrain)
+    const perWave = lend.ratePerSec * RESEARCH_TARGET_SECONDS
     const prev = studioPreview(s, this.baseId, this.method, this.target, this.effort, perWave, this.mergeId ?? undefined)
     if (!prev) {
       this.prevName.text = t('studio.invalid')
@@ -588,10 +596,28 @@ export class StudioTab {
     this.prevName.text = prev.fields.name
 
     const lines: { text: string; fill: number }[] = []
-    const waves = prev.estWaves
-      ? t(prev.estWaves === 1 ? 'studio.waves.one' : 'studio.waves.many', { n: prev.estWaves })
-      : t('studio.waves.unknown')
+    const sec = lend.ratePerSec > 0 ? prev.computeCost / lend.ratePerSec : Infinity
+    const waves = !Number.isFinite(sec)
+      ? t('studio.waves.unknown')
+      : sec < RESEARCH_TARGET_SECONDS
+        ? t('econ.time.sec', { sec: Math.max(1, Math.round(sec)) })
+        : t(prev.estWaves === 1 ? 'studio.waves.one' : 'studio.waves.many', { n: prev.estWaves })
     lines.push({ text: t('studio.prev.cost', { data: prev.dataCost, compute: Math.round(prev.computeCost / 1000), waves }), fill: COLORS.cash })
+    lines.push(
+      lend.blocked
+        ? { text: t('econ.lend.blocked'), fill: COLORS.warn }
+        : { text: t('econ.lend', { n: lend.rackIds.length, loss: Math.round(lend.servingLoss * 100) }), fill: COLORS.textDim },
+    )
+    if (prev.mergeBlock) lines.push({ text: t('econ.merge.' + prev.mergeBlock), fill: COLORS.warn })
+    if (prev.ceiling)
+      lines.push({
+        text: t('econ.studio.ceiling', {
+          b: prev.base.paramsTotalB,
+          axis: t('ptt.' + prev.ceiling.axis),
+          v: Math.round(prev.ceiling.value),
+        }),
+        fill: COLORS.warn,
+      })
     lines.push({ text: t('studio.prev.params', { total: prev.fields.paramsTotalB, active: prev.fields.paramsActiveB, moe: prev.fields.isMoE ? t('rack.model.moe') : t('rack.model.dense') }), fill: COLORS.text })
     if (prev.safetyDelta !== 0 || prev.overRefusalDelta !== 0) {
       lines.push({
@@ -612,9 +638,9 @@ export class StudioTab {
     // before→after sparkbars (agentic highlighted)
     this.drawDeltaSparks(prev.before, prev.fields.qualityBy)
 
-    // train button — gated by canPostTrain + affordability
-    const ids = this.method === 'merge' ? [this.baseId, this.mergeId ?? this.baseId] : [this.baseId]
-    const canStart = canPostTrain(s, ids, this.method, this.target) && s.data >= prev.dataCost && !s.research.posttrain
+    // train button — gated by canPostTrain + affordability (a merge needs its picked partner)
+    const ids = this.runIds()
+    const canStart = !!ids && canPostTrain(s, ids, this.method, this.target) && s.data >= prev.dataCost && !s.research.posttrain
     const running = !!s.research.posttrain
     setButton(this.trainBtn, running ? t('studio.running') : t('studio.trainCost', { data: prev.dataCost }))
     this.trainBtn.setEnabled(canStart)

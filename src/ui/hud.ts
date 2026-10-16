@@ -540,7 +540,8 @@ export class Hud {
     bar(g, 16, 26, 118, 14, s.meters.trust / 100, COLORS.trust, s.meters.trust < 25)
     bar(g, 16, 68, 118, 14, s.meters.sla / 100, COLORS.sla, s.meters.sla < 25)
     bar(g, 326, 26, 112, 14, s.power.cap ? s.power.used / s.power.cap : 0, COLORS.power, s.power.used > s.power.cap)
-    bar(g, 326, 68, 112, 14, s.cooling.cap ? s.cooling.used / s.cooling.cap : 0, COLORS.cooling, s.cooling.used > s.cooling.cap)
+    // red when either cooling pool (air, or the liquid loops' own) is over its capacity
+    bar(g, 326, 68, 112, 14, s.cooling.cap ? s.cooling.used / s.cooling.cap : 0, COLORS.cooling, isThrottling(s))
 
     this.lblTrust.text = t('hud.trust')
     this.lblSla.text = t('hud.sla')

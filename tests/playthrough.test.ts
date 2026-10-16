@@ -19,19 +19,11 @@ import {
   RESEARCH_TARGET_SECONDS,
   WAVES,
 } from '../src/sim/content'
-import {
-  loadout,
-  loadoutOf,
-  serverDeployable,
-  serverFitsMemory,
-  serverHeat,
-  serverPerUserDecodeTokS,
-  serverPower,
-} from '../src/sim/effects'
+import { loadout, serverDeployable, serverFitsMemory, serverPerUserDecodeTokS } from '../src/sim/effects'
 import { computeDerivedFields, resolveModel } from '../src/sim/models'
 import { LAT_CLASS_SLO } from '../src/config'
 import { CORE_TILE, isBuildable, isPathTile } from '../src/sim/pathing'
-import { updatePower } from '../src/sim/power'
+import { coolingPools, towerHeatKw, towerLiquidCooled, towerPowerKw, updatePower } from '../src/sim/power'
 import {
   demoAutoplay as productionDemoAutoplay,
   demoCanContinueCampaign as productionDemoCanContinueCampaign,
@@ -92,16 +84,11 @@ function place(s: GameState, defId: string, slot: Slot | undefined): boolean {
   return tryBuild(s, defId, slot.col, slot.row)
 }
 function estDraw(s: GameState): number {
-  return s.towers.reduce(
-    (n, t) => n + (t.def.kind === 'server' ? serverPower(s, loadoutOf(s, t)) : (t.def.powerDraw ?? 0)),
-    0,
-  )
+  return s.towers.reduce((n, t) => n + towerPowerKw(s, t), 0)
 }
+/** Heat the AIR pool must reject (a Liquid Loop cools only direct-liquid-cooled racks). */
 function estHeat(s: GameState): number {
-  return s.towers.reduce(
-    (n, t) => n + (t.def.kind === 'server' ? serverHeat(s, loadoutOf(s, t)) : (t.def.heat ?? 0)),
-    0,
-  )
+  return s.towers.reduce((n, t) => n + (towerLiquidCooled(s, t) ? 0 : towerHeatKw(s, t)), 0)
 }
 function ensureCapacity(s: GameState, addDraw: number, addHeat: number): void {
   updatePower(s)
@@ -113,7 +100,7 @@ function ensureCapacity(s: GameState, addDraw: number, addHeat: number): void {
     updatePower(s)
   }
   guard = 0
-  while (estHeat(s) + addHeat > s.cooling.cap - 1 && s.meters.cash >= 70 && guard++ < 12) {
+  while (estHeat(s) + addHeat > coolingPools(s).air.cap - 1 && s.meters.cash >= 70 && guard++ < 12) {
     if (!place(s, 'cooling', infraSlot())) break
     updatePower(s)
   }

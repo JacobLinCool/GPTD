@@ -76,6 +76,20 @@ export const OVERREF_K: Record<GuardrailArchetype, number> = {
   moderation: 0.05,
 }
 
+/**
+ * §3.6 recall a guard family keeps against a NOVEL attack (an adaptive variant of the era —
+ * a fresh suffix, many-shot or obfuscated injection — the classifier never trained on).
+ * Fine-tuned classifiers are brittle under distribution shift and evasion (REFERENCE-DOSSIER
+ * §3.6, arXiv 2504.11168): an encoder loses most of its recall, a moderation endpoint
+ * (retrained continuously) some; a generative judge reasons about intent and keeps it.
+ * The model's own alignment (layer 1) is judged on severity, not novelty.
+ */
+export const NOVEL_RECALL_MUL: Record<GuardrailArchetype, number> = {
+  encoder: 0.45,
+  generative: 1,
+  moderation: 0.7,
+}
+
 function clamp01(v: number): number {
   return v < 0 ? 0 : v > 1 ? 1 : v
 }

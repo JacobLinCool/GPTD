@@ -104,7 +104,7 @@ returns `503`; if the tab never answers, `504` after 15 s.
 | `cycleRackRole` | `[towerId]` | cycle P/D disaggregation role (needs `inf_disagg`) |
 | `buyUpgrade` | `[upgradeId]` | buy a cash upgrade listed in `upgrades[]` (needs a Lab; the list is empty in the current tech tree) |
 | `research` | `[researchId]` | start a research project (from `research.options`) |
-| `postTrain` | `[baseIds[], method, target, effort]` | derive a checkpoint in the Studio (see `studio`); over GET use `args=baseId,method,target,effort` (single base) — `merge` (2 bases) needs the POST JSON form |
+| `postTrain` | `[baseIds[], method, target, effort]` | derive a checkpoint in the Studio (see `studio`); over GET use `args=baseId,method,target,effort` (single base) — `merge` (2 bases) needs the POST JSON form and two DIFFERENT checkpoints of the same base model with one shared architecture |
 | `startWave` | `[]` | begin the next wave (build phase only) |
 | `continueEndless` | `[]` | after a win, enter endless mode |
 | `select` | `[towerId]` | highlight a rack in the inspect panel (visibility) |
@@ -128,11 +128,16 @@ guessing. Unknown actions are rejected the same way, never a crash.
   "wave": 1, "totalWaves": 100, "isLastWave": false, "waveActive": false, "endless": false,
   "meters": { "cash": 300, "trust": 100, "sla": 100, "data": 0 },
   "power":  { "used": 0, "cap": 6 },   // live kW in every phase (recomputed after each build action)
-  "cooling":{ "used": 0, "cap": 6 },
+  "cooling":{ "used": 0, "cap": 6 },   // every heat load against every cooling asset
+  "coolingLiquid": { "used": 0, "cap": 0 },   // the Liquid Loops' own pool: it cools only liquid-cooled racks
   "flags":  { "hasLab": false, "hasLiquidLoop": false },
-  "modifiers": { "buildCost": 1, "powerPrice": 1, "coolingCap": 1, "safetyDamage": 1, "volume": 1, "reward": 1 },
+  "modifiers": { "buildCost": 1, "powerPrice": 1, "coolingCap": 1, "safetyDamage": 1, "volume": 1, "reward": 1,
+                 "powerCap": 1,      // usable share of the power feed (a grid curtailment order cuts it)
+                 "powerBuild": 1,    // 0 = no new Power Plant can be connected (interconnection freeze)
+                 "slaDamage": 1 },   // multiplier on every SLA penalty (an enterprise pilot)
   "incident": null,            // {id,name,desc,good} when an incident is telegraphed for the next wave
-  "nextWave": { "wave": 1, "name": "…", "brief": "…", "clearBonus": 12,
+  "nextWave": { "wave": 1, "name": "…", "brief": "…",
+                "clearBonus": 12,        // the SLA contract in credits at 100% Goodput; it pays × the wave's Goodput
                 "totalRequests": 30,     // incident volume already folded in
                 "mix": [ { "typeId": "chat", "count": 30, "latClass": "IN", "axis": "chat",
                            "difficulty": 18, "inputTokens": 512, "outputTokens": 256, "hazards": [] } ],
@@ -164,7 +169,10 @@ guessing. Unknown actions are rejected the same way, never a crash.
                "alignmentTax": 1.62 } ],
   "upgrades": [ { "id": "…", "level": 0, "maxLevel": 1, "buyable": false } ],
   "research": { "infra": null, "posttrain": null, "eval": null,
-                "options": [ { "id": "…", "name": "…", "desc": "…", "dataCost": 10, "requires": [ … ] } ] },
+                "options": [ { "id": "…", "name": "…", "desc": "…", "dataCost": 10, "requires": [ … ] } ],
+                // what one more project would lend now: the strongest racks that fit under the 45% cap
+                // (blocked = fewer than two online racks: research waits and every rack keeps serving)
+                "requisition": { "rackIds": [ 3 ], "lentTflops": 362, "capTflops": 489, "servingLossPct": 33.3, "blocked": false } },
   "studio": { "available": false, "baseModelIds": [ "…" ], "targets": [ "chat", "coding", … ],
               "effortNotches": [ 0.25, 0.5, 1, 1.5, 2 ],
               "methods": [ { "id": "sft", "name": "…", "allowedTargets": [ … ], "dataCost": 8,

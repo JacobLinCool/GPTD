@@ -13,8 +13,9 @@ import {
   WAVES,
 } from '../sim/content'
 import { deployBlocker, hasLab, hasLiquidLoop, hwNeedsLiquid, loadout, serverFitsMemory } from '../sim/effects'
-import { postTrainDataCost, resolveModel } from '../sim/models'
+import { mergeBlock, postTrainDataCost, resolveModel } from '../sim/models'
 import { isBuildable } from '../sim/pathing'
+import { powerBuildOpen } from '../sim/power'
 import { methodUnlocked, researchOwned, researchPrereqsMet, researchTrackOf } from '../sim/research'
 
 const cash = (s: GameState): number => Math.floor(s.meters.cash)
@@ -34,6 +35,8 @@ export function explainRejection(s: GameState, fn: string, args: unknown[]): str
         if (s.towers.some((t) => t.col === col && t.row === row)) return `tile (${col},${row}) is already occupied`
         if (def.kind === 'server' && def.hardwareId && hwNeedsLiquid(HARDWARE_DEFS[def.hardwareId]) && !hasLiquidLoop(s))
           return `${def.name} is liquid-cooled — build a Liquid Cooling Loop (cooling_liquid) first`
+        if (def.kind === 'power' && !powerBuildOpen(s))
+          return `an interconnection freeze is in force: no new Power Plant can be connected until this wave is cleared — fit the fleet inside the power you have`
         const c = buildCost(s, def)
         if (s.meters.cash < c) return `not enough cash: ${def.name} costs ${c}, have ${cash(s)}`
         return 'build rejected'
@@ -134,7 +137,16 @@ export function explainRejection(s: GameState, fn: string, args: unknown[]): str
         for (let i = 0; i < need; i++) {
           if (!resolveModel(s, baseIds[i]) || !s.models[baseIds[i]]) return `base model "${baseIds[i]}" is not owned`
         }
-        const dc = postTrainDataCost(recipe, effort)
+        if (method === 'merge') {
+          const block = mergeBlock(s, baseIds[0], baseIds[1])
+          if (block === 'self') return `a merge needs two DIFFERENT checkpoints (merging a model with itself changes nothing)`
+          if (block === 'root')
+            return `merge partners must descend from the same base model (weights of different bases cannot be averaged)`
+          if (block === 'body')
+            return `merge partners must share one architecture (same params, layers, KV heads, head dim, attention) — a distilled or differently shaped checkpoint has no weights to average`
+        }
+        const base = resolveModel(s, baseIds[0])
+        const dc = postTrainDataCost(recipe, effort, base?.lineage?.depth ?? 0, base?.paramsTotalB ?? 8)
         if (s.data < dc) return `not enough data: this run needs ${dc}, have ${data(s)}`
         return 'post-training rejected'
       }

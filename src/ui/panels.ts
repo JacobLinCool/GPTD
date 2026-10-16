@@ -34,9 +34,10 @@ import {
   sizeLabel,
 } from '../sim/content'
 import { StudioTab } from './studio'
+import { coolingPools } from '../sim/power'
 import {
   activeSlotFor,
-  requisitionTarget,
+  requisitionPreview,
   researchOwned,
   researchTrackOf,
   researchUnlocked,
@@ -1327,8 +1328,12 @@ function statLines(s: GameState, tw: Tower): { text: string; fill: number }[] {
   } else if (d.kind === 'cooling') {
     line(t('inspect.cooling.cap', { v: d.cooling ?? 0 }), COLORS.cooling)
     line(t('inspect.cooling.l1'))
+    const pool = coolingPools(s).air
+    line(t('econ.cooling.airPool', { used: Math.round(pool.used), cap: Math.round(pool.cap) }), COLORS.textDim)
   } else if (d.kind === 'cooling_liquid') {
     line(t('inspect.coolingLiquid.cap', { v: d.cooling ?? 0 }), COLORS.cooling)
+    const pool = coolingPools(s).liquid
+    line(t('econ.cooling.liquidPool', { used: Math.round(pool.used), cap: Math.round(pool.cap) }), COLORS.textDim)
     line(t('inspect.coolingLiquid.l1'))
     line(t('inspect.coolingLiquid.l2'), COLORS.textDim)
   } else if (d.kind === 'lab') {
@@ -1716,6 +1721,8 @@ export class TrainingPanel {
       }
       if (node) tail.push(`${node.optimizes.map((o) => t('opt.' + o)).join('/')} · ${t('coupling.' + node.coupling)} · ${node.sourceRef}`)
       if (tail.length) parts.push(tail.join('   '))
+      // what starting it would cost the fleet right now: the lent racks and the wave time
+      if (!researchOwned(s, def) && !activeSlotFor(s, def)) parts.push(lendLine(s, def.compute))
       return parts.join('\n')
     }
     return null
@@ -1819,7 +1826,7 @@ export class TrainingPanel {
       this.rdStatus.text = t('research.status', {
         name: def ? t(`research.${def.id}.name`, undefined, def.name) : activeSlot.id,
         pct: Math.floor((activeSlot.progress / activeSlot.compute) * 100),
-        flops: fmtFlops(requisitionTarget(s)),
+        flops: fmtFlops(requisitionPreview(s, 0, false).lentTflops),
       })
       this.rdStatus.style.fill = COLORS.textDim
     } else {
@@ -1842,6 +1849,18 @@ function infraConflictOwned(s: GameState, id: string): boolean {
 function infraAvailable(s: GameState, def: (typeof RESEARCH_LIST)[number]): boolean {
   if (activeSlotFor(s, def)) return true
   return researchUnlocked(s, def) && !infraConflictOwned(s, def.id)
+}
+
+/**
+ * The requisition a new project of `compute` TF·s would make right now (research.ts
+ * requisitionPreview): how many racks it lends, the serving compute lost while they
+ * train, and the board seconds of wave time it needs — or why it would wait.
+ */
+function lendLine(s: GameState, compute: number): string {
+  const rq = requisitionPreview(s, compute, true)
+  if (rq.blocked) return t('econ.lend.blocked')
+  const sec = Number.isFinite(rq.seconds) ? Math.max(1, Math.round(rq.seconds)) : 0
+  return `${t('econ.lend', { n: rq.rackIds.length, loss: Math.round(rq.servingLoss * 100) })} · ${t('econ.time.sec', { sec })}`
 }
 
 /** Aggregate training compute (bf16 TFLOPS) as TFLOPS / PFLOPS. */
