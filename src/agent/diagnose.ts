@@ -13,10 +13,10 @@ import {
   WAVES,
 } from '../sim/content'
 import { deployBlocker, hasLab, hasLiquidLoop, hwNeedsLiquid, loadout, serverFitsMemory } from '../sim/effects'
-import { mergeBlock, postTrainDataCost, resolveModel } from '../sim/models'
+import { EFFORT_NOTCHES, mergeBlock, postTrainRunDataCost, resolveModel } from '../sim/models'
 import { isBuildable } from '../sim/pathing'
 import { powerBuildOpen } from '../sim/power'
-import { methodUnlocked, researchOwned, researchPrereqsMet, researchTrackOf } from '../sim/research'
+import { methodUnlocked, researchOwned, researchPrereqsMet, researchTrackOf, validEffort } from '../sim/research'
 
 const cash = (s: GameState): number => Math.floor(s.meters.cash)
 const data = (s: GameState): number => Math.floor(s.data)
@@ -145,8 +145,9 @@ export function explainRejection(s: GameState, fn: string, args: unknown[]): str
           if (block === 'body')
             return `merge partners must share one architecture (same params, layers, KV heads, head dim, attention) — a distilled or differently shaped checkpoint has no weights to average`
         }
-        const base = resolveModel(s, baseIds[0])
-        const dc = postTrainDataCost(recipe, effort, base?.lineage?.depth ?? 0, base?.paramsTotalB ?? 8)
+        if (!validEffort(effort))
+          return `effort must be one of ${EFFORT_NOTCHES.join(', ')} (got ${JSON.stringify(effort)}; see state.studio.effortNotches)`
+        const dc = postTrainRunDataCost(s, baseIds, recipe, effort)
         if (s.data < dc) return `not enough data: this run needs ${dc}, have ${data(s)}`
         return 'post-training rejected'
       }

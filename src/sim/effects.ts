@@ -1185,7 +1185,7 @@ export function hiddenTokensFor(
  * utilization factor. Lower-precision GEMMs do the same work for less energy (FP8 −15%,
  * 4-bit a further −5%), and Speculative Decoding keeps a draft head hot and burns verify
  * compute on every rack (+8%). An H100 rack reads ~0.56 kW, a DGX-H200 ~4.5 kW, an
- * NVL72 ~57.6 kW — real kW.
+ * NVL72 ~69 kW (BF16; 1200 W per GPU) — real kW.
  */
 export function serverPower(s: GameState, lo: Loadout): number {
   if (!lo.hw) return 0

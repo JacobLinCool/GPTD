@@ -406,7 +406,7 @@ describe('liquid-cooling hard gate (OQ-G8, §5.5)', () => {
     expect(t.hwId).toBe('hw_superpod')
     return t
   }
-  /** Enough grid for an NVL72 (≈58 kW): base 6 kW + 7 Power Plants. */
+  /** Enough grid for an FP8 NVL72 (72 × 1200 W × 0.8 × 0.85 ≈ 59 kW): base 6 kW + 7 Power Plants. */
   function powerFor(s: GameState): void {
     for (const col of [2, 4, 6, 8, 10, 12, 14]) expect(tryBuild(s, 'power', col, 4)).toBe(true)
   }
@@ -580,8 +580,8 @@ describe('racks & model deployment', () => {
   it('hardware upgrades walk the tier ladder up to GigaCluster', () => {
     const s = createState(32)
     richBuild(s)
-    // the top three tiers (pod/superpod/giga) are liquid-cooled — a Liquid Cooling
-    // Loop is required before upgrading into them (§6.5 hard gate, OQ-G8).
+    // the top tier (the GB200 NVL72) is liquid-cooled — a Liquid Cooling Loop is
+    // required before upgrading into it (§6.5 hard gate, OQ-G8); the DGX nodes are air.
     tryBuild(s, 'cooling_liquid', 7, 4)
     tryBuild(s, 'srv_edge', 3, 2)
     const t = lastTower(s)

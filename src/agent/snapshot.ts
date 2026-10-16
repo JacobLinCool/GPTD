@@ -174,6 +174,8 @@ export interface AgentSnapshot {
     powerBuild: number
     /** multiplier on every SLA penalty (an enterprise pilot). */
     slaDamage: number
+    /** the Liquid Cooling Loops' capacity alone (a loop fault); coolingCap scales both pools. */
+    liquidCoolingCap: number
   }
   incident: { id: string; name: string; desc: string; good: boolean } | null
   nextWave:
@@ -542,6 +544,7 @@ export function serializeState(s: GameState): AgentSnapshot {
       powerCap: s.modifiers.powerCap,
       powerBuild: s.modifiers.powerBuild,
       slaDamage: s.modifiers.slaDamage,
+      liquidCoolingCap: s.modifiers.liquidCoolingCap,
     },
     incident: s.pendingIncident
       ? {

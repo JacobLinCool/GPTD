@@ -52,7 +52,9 @@ export type WaveVolume = 'trickle' | 'steady' | 'heavy' | 'flood' | 'extreme'
  * that sim.ts forces for that wave (overriding the random roll), so a real event
  * lands its signature consequence (DeepSeek's price war, a grid emergency, the EU
  * AI Act audit…). A theme's explicit `incident` picks the exact incident inside the
- * category. `none` leaves the wave to the random incident roll.
+ * category (e.g. `power-spike` is the grid category: its default is the capacity-auction
+ * price spike, and a wave may force a curtailment, an interconnection freeze, an on-site fuel
+ * spike or a firm nuclear PPA instead). `none` leaves the wave to the random incident roll.
  */
 export type WaveSpecial =
   | 'none'
@@ -118,7 +120,8 @@ export const BOSS_BUDGET_MUL = 1.25
  * steeper). The authored volume bands set the rhythm — breathers after a peak, floods in the busy
  * quarters — but a run is meant to end from ACCUMULATED pressure (the era's volume, tokens, quality
  * line, hazards and incidents climbing together), never from one wave that suddenly doubles the
- * load a fleet just proved it could carry.
+ * load a fleet just proved it could carry. The cap counts the volume of the incident a wave
+ * forces (campaignBudgets), and a boss's random hard incident is never a volume surge (sim.ts).
  */
 export const STEP_CAP = 1.6
 export const BOSS_STEP_CAP = 1.8
@@ -273,9 +276,9 @@ export function groupMuls(tier: number, typeId: string): GroupMuls {
 
 /**
  * The late-game (max-tier) spawn token counts for an archetype — the SAME math
- * buildWave + spawnRequest apply at the end of the campaign (tier scaling ×
- * per-archetype LENGTH_SENS, then input = base × ctx × √work). The Codex shows
- * this as the "base → era" range so the displayed numbers aren't read as fixed.
+ * buildWave + spawnRequest apply at the end of the campaign (the archetype's
+ * ERA_TOKEN_GROWTH on the eraTokenRamp via groupMuls, then input = base × ctx × √work).
+ * The Codex shows this as the "base → era" range so the displayed numbers aren't read as fixed.
  */
 export function eraTokenRange(def: RequestTypeDef, tier = MAX_TIER): { input: number; output: number } {
   const m = groupMuls(tier, def.id)
@@ -370,23 +373,36 @@ function hashLane(s: string): number {
 }
 
 /**
- * The campaign's request budgets: each wave's band budget (waveBudget), capped at STEP_CAP
- * (BOSS_STEP_CAP for a boss) × the wave before it, so the load climbs in steps a growing fleet
- * can follow.
+ * The volume multiplier of the incident a theme FORCES (its signature incident), which
+ * startWave applies to every burst. Default: none (×1) — content.ts passes the real lookup.
  */
-export function campaignBudgets(themes: WaveTheme[]): number[] {
+export type ThemeVolumeOf = (theme: WaveTheme) => number
+
+/**
+ * The campaign's request budgets: each wave's band budget (waveBudget), capped so the load the
+ * wave actually brings — its budget × its forced incident's volume — is at most STEP_CAP
+ * (BOSS_STEP_CAP for a boss) × the load the wave before it brought, so the load climbs in steps
+ * a growing fleet can follow even when a viral surge or an outage's retry storm lands on top.
+ */
+export function campaignBudgets(themes: WaveTheme[], volumeOf: ThemeVolumeOf = () => 1): number[] {
   const out: number[] = []
+  let prevEff: number | undefined
   for (const th of themes) {
     const raw = waveBudget(th.tier, th.volume, th.boss ?? false)
-    const prev = out[out.length - 1]
-    out.push(prev === undefined ? raw : Math.min(raw, Math.ceil(prev * (th.boss ? BOSS_STEP_CAP : STEP_CAP))))
+    const v = Math.max(1e-6, volumeOf(th))
+    const b =
+      prevEff === undefined
+        ? raw
+        : Math.min(raw, Math.floor(Math.ceil(prevEff * (th.boss ? BOSS_STEP_CAP : STEP_CAP)) / v))
+    out.push(b)
+    prevEff = b * v
   }
   return out
 }
 
-/** Build the full campaign from the authored theme table. */
-export function buildCampaign(themes: WaveTheme[]): WaveDef[] {
-  const budgets = campaignBudgets(themes)
+/** Build the full campaign from the authored theme table (`volumeOf`: the forced incident's volume). */
+export function buildCampaign(themes: WaveTheme[], volumeOf: ThemeVolumeOf = () => 1): WaveDef[] {
+  const budgets = campaignBudgets(themes, volumeOf)
   return themes.map((th, i) => buildWave(th, budgets[i]))
 }
 

@@ -262,7 +262,7 @@ export const START = {
  * §6.5 utilization factor on a rack's nameplate TDP: a serving rack rarely sits at
  * 100% of its TDP wall (decode is bandwidth-bound, idle slots draw less). Real PUE-
  * adjacent utilization is ~0.7–0.85; we use 0.8 so the meters track real datacenter
- * draw (an 8× H200 pod ~4.5 kW served, an NVL72 ~58 kW). serverPower() applies this
+ * draw (an 8× H200 pod ~4.5 kW served, an NVL72 ~69 kW). serverPower() applies this
  * on top of the FP8/INT4/throughput/spec modifiers.
  */
 export const RACK_UTILIZATION = 0.8

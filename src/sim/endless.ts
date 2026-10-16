@@ -15,10 +15,10 @@ import { WAVES } from './content'
 /**
  * Endless mode: past the authored campaign, surges are generated procedurally from
  * the seeded RNG. They RESUME at the wave-100 load — the same per-request scaling
- * (campaign.ts groupMuls at the max tier), the same tier-12 extreme request budget,
- * cadence, hazard pressure and contract value — and climb from there: volume and
- * per-request work grow every surge, and after a short grace the quality lines
- * harden by a small additive step. The model tree tops out at the roster's largest
+ * (campaign.ts groupMuls at the max tier), wave 100's tier-12 extreme boss request
+ * budget, cadence, hazard pressure and SLA contract — and climb from there: volume, the
+ * contract and per-request work grow every surge, and after a short grace the quality
+ * lines harden by a small additive step. The model tree tops out at the roster's largest
  * open checkpoint while difficulty does not, so every endless run eventually ends;
  * the score is how deep you got.
  */
@@ -32,7 +32,7 @@ export interface EndlessScaling {
   /** era hazard pressure and novel-attack share. */
   hazardMul: number
   novelShare: number
-  /** the SLA-contract value of clearing the surge (pre-CLEAR_BONUS_SCALE). */
+  /** the SLA-contract value of clearing the surge (pre-CLEAR_BONUS_SCALE): wave 100's, + 40 a surge. */
   clearBonus: number
 }
 
@@ -48,7 +48,8 @@ export function endlessScaling(waveIndex: number): EndlessScaling {
     complexity: base.complexityMul + 0.01 * Math.max(0, d - COMPLEXITY_GRACE),
     hazardMul: hazardMulOf(MAX_TIER) * (1 + 0.01 * d),
     novelShare: Math.min(0.65, novelShareOf(MAX_TIER) + 0.005 * d),
-    clearBonus: tierBonus(MAX_TIER, false) + 40 * d,
+    // a surge carries wave 100's boss-sized load, so its contract resumes at wave 100's (boss) contract
+    clearBonus: tierBonus(MAX_TIER, true) + 40 * d,
   }
 }
 

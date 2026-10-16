@@ -34,7 +34,7 @@ import {
   AA_META,
 } from './roster.bench.generated'
 import { GENERATED_ROSTER } from './roster.generated'
-import { buildCampaign, CAMPAIGN_THEMES, themeIncidentId } from './campaign'
+import { buildCampaign, CAMPAIGN_THEMES, themeIncidentId, type WaveTheme } from './campaign'
 import { alignmentTax } from './safety'
 
 /* ------------------------------------------------------------------ *
@@ -330,9 +330,12 @@ export const REQUEST_LIST = Object.values(REQUEST_TYPES)
 /**
  * Real accelerator ladder (§5.2–5.5). Each entry carries PER-GPU specs and a
  * `gpus` count; aggregate fields (bf16Tflops / fp8Tflops / hbmGb / hbmTbs /
- * tdpWatts) are filled at load = perGpu × gpus. The abstract power-system
- * fields (powerDraw / heat / cost / range / color / accent / desc) are kept
- * unchanged for the existing power system this phase.
+ * tdpWatts) are filled at load = perGpu × gpus. A rack's power and heat are real
+ * kW from `tdpWatts` (effects.ts serverPower); the legacy `powerDraw` / `heat`
+ * numbers are dead data no system reads. `cooling` is the rack's cooling class:
+ * `liquid` (the GB200 NVL72, 1200 W/GPU, past the ~1000 W air limit) can run only
+ * on a Liquid Cooling Loop. `range` / `color` / `accent` / `desc` are the board
+ * and panel display fields.
  */
 type HwSpec = Omit<
   ServerHardwareDef,
@@ -395,7 +398,7 @@ const HW_SPECS: Record<string, HwSpec> = {
   hw_giga: {
     id: 'hw_giga', name: 'GB200 NVL72', gpuModel: 'GB200 NVL72 (72× B200)', gpus: 72,
     bf16TflopsPerGpu: 2250, fp8TflopsPerGpu: 4500, fp4TflopsPerGpu: 9000, hbmGbPerGpu: 192, hbmTbsPerGpu: 8.0,
-    tdpWattsPerGpu: 1000, cooling: 'liquid', capexUsd: 3000000, gpuHrUsdPerGpu: 5.0,
+    tdpWattsPerGpu: 1200, cooling: 'liquid', capexUsd: 3000000, gpuHrUsdPerGpu: 5.0,
     powerDraw: 26, heat: 26, range: 3.6, color: 0xf5e663, accent: 0xfdf6b8,
     desc: 'A 72-GPU NVLink rack: 13.8 TB of HBM. A trillion-parameter model spans a pipeline of 8-GPU tensor-parallel stages; smaller models run as many replicas. Per-user speed is still one 8-GPU group\'s.',
   },
@@ -1196,7 +1199,7 @@ export const METHOD_RECIPES: Record<PostTrainMethod, MethodRecipe> = calibrateRe
 
 /** Sizing target: a project wants a training cluster that finishes within ~one wave. */
 export const RESEARCH_TARGET_SECONDS = 60
-/** Never requisition more than this share of total fleet FLOPS. */
+/** Never requisition more than this share of the ONLINE fleet's FLOPS (dark racks serve nothing and never count). */
 export const RESEARCH_MAX_SHARE = 0.45
 
 /**
@@ -1597,12 +1600,13 @@ export const TOWER_DEFS: Record<string, TowerDef> = {
     range: 0,
     color: 0x36e0e0,
     accent: 0xb6fffb,
-    // §5.5: a direct-liquid loop sized for a high-density rack — an NVL72 is ~58 kW
-    // served. ENABLES liquid-cooled racks (>1000 W/GPU, the NVL72) and is their own
-    // heat-rejection pool: its kW cools ONLY liquid racks (power.ts), never air racks.
-    cooling: 60,
-    tagline: 'Enables liquid racks · +60 kW liquid',
-    desc: 'Direct liquid cooling (DLC) to the cold plates. REQUIRED before a GB200 NVL72 rack (>1000 W/GPU) can run — it cannot be served at all without a loop. Its +60 kW cools only liquid-cooled racks: air-cooled racks, up to the DGX B200, still reject their heat through Cooling Towers.',
+    // §5.5: a direct-liquid loop (one coolant-distribution unit) sized for one fully loaded
+    // NVL72 — 72 GPUs × 1200 W × 0.8 is 69 kW served in BF16, ~75 kW with speculative
+    // decoding. ENABLES liquid-cooled racks (1200 W/GPU, past the ~1000 W air limit) and is
+    // their own heat-rejection pool: its kW cools ONLY liquid racks (power.ts), never air racks.
+    cooling: 75,
+    tagline: 'Enables liquid racks · +75 kW liquid',
+    desc: 'Direct liquid cooling (DLC) to the cold plates. REQUIRED before a GB200 NVL72 rack (1200 W per GPU, past what air can cool) can run — it cannot be served at all without a loop. Its +75 kW, enough for one NVL72 at full load, cools only liquid-cooled racks: air-cooled racks, up to the 1000 W/GPU DGX B200, still reject their heat through Cooling Towers.',
   },
   lab: {
     id: 'lab',
@@ -1624,19 +1628,15 @@ export const BUILD_ORDER = [
   'cache',
   'guard_encoder',
   'guard_llm',
-  // 'guard_mod' (Moderation) hidden for now — no harmful/pii traffic in the
-  // current roster makes it situational; the def + safety logic stay for re-enable.
+  // 'guard_mod' (the Moderation API) is not on the build bar: the ten Q–P hotkey slots are
+  // taken, and Llama Guard already catches every hazard it does (harmful content — e.g. the
+  // W48 reasoning lane — and PII after Red-Team II) plus jailbreaks and injection. The def and
+  // its moderation family in guards.ts / safety.ts stay for a future slot.
   'power',
   'cooling',
   'cooling_liquid',
   'lab',
 ]
-
-/* ------------------------------------------------------------------ *
- *  WAVES — the escalating campaign.                                  *
- * ------------------------------------------------------------------ */
-
-export const WAVES: WaveDef[] = buildCampaign(CAMPAIGN_THEMES)
 
 /**
  * The DETERMINISTIC between-wave incident a campaign wave forces (overriding the
@@ -1755,13 +1755,15 @@ export const INCIDENTS: IncidentDef[] = [
     mods: { powerPrice: 0.6 },
     desc: 'A long-term nuclear power-purchase agreement locks in cheap firm baseload. Power costs fall this wave.',
   },
-  /* --- cooling shortfalls (coolingCap ↓): dense racks throttle. --- */
+  /* --- cooling shortfalls: a liquid-loop fault cuts only the Liquid Cooling Loops' pool
+   *     (liquidCoolingCap ↓ — the liquid racks throttle, air racks never notice); a water
+   *     restriction curbs evaporative cooling for every pool (coolingCap ↓). --- */
   {
     id: 'inc_cooling_failure',
     name: 'Liquid Loop Fault',
     icon: '🌡',
-    mods: { coolingCap: 0.55 },
-    desc: 'A coolant-distribution fault cuts heat-rejection headroom; dense racks throttle until the plumbing recovers.',
+    mods: { liquidCoolingCap: 0.55 },
+    desc: 'A coolant-distribution unit fails: your Liquid Cooling Loops lose 45% of their capacity this wave, so liquid-cooled racks throttle until the plumbing recovers. Air-cooled racks are unaffected.',
   },
   {
     id: 'inc_water_drought',
@@ -1851,11 +1853,13 @@ export const INCIDENTS: IncidentDef[] = [
       s.data = Math.max(0, Math.floor(s.data * 0.6))
     },
   },
-  /* --- good fortune (banner glows green): a surge you can profit from, or a boon. --- */
+  /* --- good fortune (banner glows green): a surge you can profit from, or a boon. A good
+   *     incident never lands as a boss's or a 10th wave's forced hard shock. --- */
   {
     id: 'inc_viral_ghibli',
     name: 'Viral Demand Surge',
     icon: '📈',
+    good: true,
     mods: { volume: 1.4, reward: 1.2 },
     desc: 'A feature goes viral — "the GPUs are melting." Request volume explodes far past provisioned capacity, but each clean serve pays more.',
   },
@@ -1876,3 +1880,16 @@ export const INCIDENTS: IncidentDef[] = [
     desc: 'A holiday / overnight lull — request volume dips well below peak this wave. A breather to catch up on capacity and research.',
   },
 ]
+
+/* ------------------------------------------------------------------ *
+ *  WAVES — the escalating campaign (built after INCIDENTS: the step   *
+ *  cap counts the volume of the incident each wave forces).           *
+ * ------------------------------------------------------------------ */
+
+/** The volume multiplier of the incident a theme forces (×1 when it forces none, or none with volume). */
+export function forcedIncidentVolume(theme: WaveTheme): number {
+  const id = themeIncidentId(theme)
+  return (id ? INCIDENTS.find((i) => i.id === id)?.mods.volume : undefined) ?? 1
+}
+
+export const WAVES: WaveDef[] = buildCampaign(CAMPAIGN_THEMES, forcedIncidentVolume)

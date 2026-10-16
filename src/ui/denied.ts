@@ -17,7 +17,7 @@ import { prefersReducedMotion } from '../settings'
 import { buildCost, hardwareUpgradeCost, nextHardware } from '../sim/actions'
 import { HARDWARE_DEFS, METHOD_RECIPES, RESEARCH_DEFS, TOWER_DEFS, WAVES } from '../sim/content'
 import { deployBlocker, hasLab, hasLiquidLoop, hwNeedsLiquid, loadout, serverFitsMemory } from '../sim/effects'
-import { mergeBlock, postTrainDataCost, resolveModel } from '../sim/models'
+import { mergeBlock, postTrainRunDataCost, resolveModel } from '../sim/models'
 import { isBuildable } from '../sim/pathing'
 import { powerBuildOpen } from '../sim/power'
 import { methodUnlocked, researchOwned, researchPrereqsMet, researchTrackOf } from '../sim/research'
@@ -155,8 +155,7 @@ export function denyReason(s: GameState, a: DenyAction): DenyReason {
           if (block === 'root') return r('mergeRoot')
           if (block === 'body') return r('mergeBody')
         }
-        const base = resolveModel(s, a.baseIds[0])
-        const cost = postTrainDataCost(recipe, a.effort, base?.lineage?.depth ?? 0, base?.paramsTotalB ?? 8)
+        const cost = postTrainRunDataCost(s, a.baseIds, recipe, a.effort)
         if (s.data < cost) return r('data', { need: Math.ceil(cost - s.data) })
         return r('generic')
       }

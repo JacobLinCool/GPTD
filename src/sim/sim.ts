@@ -137,8 +137,9 @@ function clearWave(s: GameState): void {
  * refresh the kW budget so a telegraphed power / cooling shock is visible in the build
  * phase. The effect is live immediately (during the build phase and the wave):
  * `buildCost` / `powerBuild` bite on what the player is about to place, while the rest
- * (`powerPrice`, `powerCap`, `coolingCap`, `safetyDamage`, `slaDamage`, `volume`,
- * `reward`) bite once the wave runs. It is cleared back to defaults at the next
+ * (`powerPrice`, `powerCap`, `coolingCap`, `liquidCoolingCap`, `safetyDamage`, `slaDamage`,
+ * `volume`, `reward`) bite once the wave runs (the cooling and power caps also show in the
+ * build-phase kW budget). It is cleared back to defaults at the next
  * wave-clear. Also called when a won run continues into endless mode.
  */
 export function rollIncident(s: GameState): void {
@@ -160,7 +161,8 @@ export function rollIncident(s: GameState): void {
     if (hardNight) {
       // a boss already brings its own volume spike, so its hard shock is an operating one
       // (power, cooling, supply, price, safety, data) — never a second single-entry funnel
-      const hard = INCIDENTS.filter((i) => !i.good && !(boss && i.concentrate))
+      // or a volume surge on top of the boss's budget step
+      const hard = INCIDENTS.filter((i) => !i.good && !(boss && (i.concentrate || (i.mods.volume ?? 1) > 1)))
       inc = hard[s.rng.int(hard.length)]
     } else if (s.rng.chance(0.6)) {
       // (3) otherwise a 60% chance of a random incident — the per-run variability.

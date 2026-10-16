@@ -33,9 +33,10 @@ export function towerLiquidCooled(s: GameState, t: Tower): boolean {
 }
 
 /**
- * §6.5 hard gate (OQ-G8): a liquid-cooled rack (GB200 NVL72-class, >1000 W/GPU) CANNOT be
- * online unless the datacenter has at least one Liquid Cooling Loop. This is a hard gate
- * (the rack goes dark), not a soft throttle — an air-cooled rack never needs it.
+ * §6.5 hard gate (OQ-G8): a liquid-cooled rack (`cooling: 'liquid'` — the GB200 NVL72, whose
+ * 1200 W/GPU is past the ~1000 W air-cooling limit) CANNOT be online unless the datacenter has
+ * at least one Liquid Cooling Loop. This is a hard gate (the rack goes dark), not a soft
+ * throttle — an air-cooled rack never needs it.
  */
 function liquidGated(s: GameState, t: Tower): boolean {
   return towerLiquidCooled(s, t) && !hasLiquidLoop(s)
@@ -51,7 +52,8 @@ export interface CoolingPools {
  * Real heat-rejection capacity per pool (kW), before any load: the base chillers and Cooling
  * Towers form the AIR pool; Liquid Cooling Loops form the LIQUID pool, which only liquid-cooled
  * racks can use (a coolant loop plumbed to cold plates cannot cool an air-cooled chassis). A
- * cooling-shortfall incident (`coolingCap`) cuts both.
+ * site-wide cooling shortfall (`coolingCap`, a water restriction) cuts both; a liquid-loop
+ * fault (`liquidCoolingCap`) cuts only the liquid pool.
  */
 function coolingCapacity(s: GameState): { air: number; liquid: number } {
   let air = START.baseCooling
@@ -61,7 +63,10 @@ function coolingCapacity(s: GameState): { air: number; liquid: number } {
     if (t.def.kind === 'cooling_liquid') liquid += kw
     else air += kw
   }
-  return { air: air * s.modifiers.coolingCap, liquid: liquid * s.modifiers.coolingCap }
+  return {
+    air: air * s.modifiers.coolingCap,
+    liquid: liquid * s.modifiers.coolingCap * s.modifiers.liquidCoolingCap,
+  }
 }
 
 /**

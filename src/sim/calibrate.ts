@@ -227,9 +227,9 @@ export interface BenchInputs {
  * gain/cap/tax/forget constants are honest GAME CURVES (not first-principles
  * physics), so they are tuned by autoplay regression rather than derived.
  *
- * P5 DECISION (after the full autoplay re-tune): the AUTHORED table already passes
- * the campaign balance gate and the §6.3 band-displacement ordering — a competent
- * player wins the 20-wave campaign and the §6.4 capability-compression lesson holds
+ * The AUTHORED table already passes the campaign balance gate (the playthrough's
+ * depth gate through the 100-wave gauntlet) and the §6.3 band-displacement ordering —
+ * a competent player gets deep into the campaign and the §6.4 capability-compression lesson holds
  * (a GRPO-agentic run on an agentic-capable 120B base clears the agent line, while
  * adapters move far less). So `calibrateRecipes` does NOT mutate the table; it is a
  * VALIDATING pass-through: it asserts the displacement ordering still holds (so a
