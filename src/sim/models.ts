@@ -344,9 +344,22 @@ export function computeDerivedFields(
   const baseInstant = instantVector(base)
   let qualityByInstant: Record<CapabilityAxis, number> | undefined
   if (method === 'merge' && other) {
-    // a weight average answers instantly with the parents' instant paths (either one's, if only it has one)
-    const paths = [baseInstant, instantVector(other)].filter((v): v is Record<CapabilityAxis, number> => !!v)
-    qualityByInstant = paths.length === 2 ? avgVec(paths[0], paths[1]) : paths.length === 1 ? { ...paths[0] } : undefined
+    // a weight average answers instantly with the parents' instant paths. When only one parent has
+    // one, that path keeps whatever the averaging cost its owner (a merge never answers instantly
+    // better than the parent that supplies the instant path, nor above the merged thinking vector
+    // where that parent's path was its thinking vector).
+    const own = (
+      [
+        [base, baseInstant],
+        [other, instantVector(other)],
+      ] as const
+    ).filter((p): p is readonly [ModelDef, Record<CapabilityAxis, number>] => !!p[1])
+    if (own.length === 2) qualityByInstant = avgVec(own[0][1], own[1][1])
+    else if (own.length === 1) {
+      const [owner, path] = own[0]
+      qualityByInstant = {} as Record<CapabilityAxis, number>
+      for (const a of CAP_AXES) qualityByInstant[a] = clampQ(path[a] + Math.min(0, qualityBy[a] - owner.qualityBy[a]))
+    }
   } else if (baseInstant) {
     qualityByInstant = {} as Record<CapabilityAxis, number>
     for (const a of CAP_AXES) qualityByInstant[a] = clampQ(baseInstant[a] + (qualityBy[a] - base.qualityBy[a]))

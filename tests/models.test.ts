@@ -1,6 +1,10 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
+import { benchSource, GENERATED as BENCH_FILE } from '../scripts/aa-sync.mjs'
+import { archSource, GENERATED as ARCH_FILE } from '../scripts/arch-sync.mjs'
+import { generateRoster, GENERATED as POOL_FILE } from '../scripts/gen-roster.mjs'
+import { dataProblems } from '../scripts/thinking-sync.mjs'
 import type { GameState } from '../src/core/types'
 import { pwl, ROSTER_FRONTIER_TOLERANCE, THINK_TOKENS_FALLBACK, thinkingOf } from '../src/sim/calibrate'
 import { DEFAULT_MODEL_ID, HARDWARE_DEFS, INFRA_NODES, MODEL_CANDIDATES, MODEL_DEFS, REQUEST_TYPES } from '../src/sim/content'
@@ -31,6 +35,30 @@ function infraOn(s: GameState, ...ids: string[]): void {
     s.upgrades[id] = 1
   }
 }
+
+describe('the generated roster files are in sync with the data (offline)', () => {
+  // each pipeline's pure half rebuilds its file from the committed data; a data edit without a
+  // regeneration (an architecture field, a bridge fit, a pin) shows up here as a diff
+  it('roster.arch.generated.ts is data/model-arch.json + data/model-thinking.json, rebuilt', () => {
+    expect(readFileSync(ARCH_FILE, 'utf8'), 'stale — run: node scripts/arch-sync.mjs build').toBe(archSource().text)
+  })
+
+  it('roster.bench.generated.ts is every pin resolved through both snapshots and data/aa-bridges.json', () => {
+    expect(readFileSync(BENCH_FILE, 'utf8'), 'stale — run: node scripts/aa-sync.mjs build').toBe(benchSource().text)
+  })
+
+  it('roster.generated.ts holds every unclaimed checkpoint, and no pin is left to add', () => {
+    const pool = generateRoster()
+    expect(Object.keys(pool.newPins), 'unpinned checkpoints — run: node scripts/gen-roster.mjs').toEqual([])
+    expect(readFileSync(POOL_FILE, 'utf8'), 'stale — run: node scripts/gen-roster.mjs').toBe(pool.text)
+  })
+
+  it('every checkpoint has thinking evidence and every pin is the variant its mode serves', () => {
+    // thinking-sync verify's cache-free checks: no thinker pinned on a Non-reasoning row, and an
+    // instant pin only on a hybrid, on a Non-reasoning row
+    expect(dataProblems()).toEqual([])
+  })
+})
 
 describe('benchmark cells on the frozen reference scale', () => {
   it('every pinned model measured on the reference snapshot keeps its reference cells exactly', () => {
@@ -231,6 +259,29 @@ describe('thinking support (chat template) and the thinking budget (AA telemetry
     expect(q.real?.instantVia).toBe('Qwen3.5 27B (Non-reasoning)')
     expect(q.qualityByInstant!.chat).toBeLessThan(q.qualityBy.chat)
     expect(q.qualityByInstant!.reasoning).toBeLessThan(q.qualityBy.reasoning)
+  })
+
+  it('a measured Non-reasoning row is kept as measured, even where it beats the thinking row', () => {
+    // small Qwen3 / Qwen3.5 score higher with thinking OFF on SciCode and HLE (AA, measured):
+    // Qwen3.5 2B SciCode 7.2 instant vs 2.8 thinking. Only the pair fit is clamped to thinking.
+    expect(AA_INSTANT_VIA.g_qwen3_5_2b).toBe('Qwen3.5 2B (Non-reasoning)')
+    expect(AA_BENCH_INSTANT.g_qwen3_5_2b.sciCode).toBe(7.2)
+    expect(AA_BENCH.g_qwen3_5_2b.sciCode).toBe(2.8)
+    const q = candidate('g_qwen3_5_2b')
+    expect(q.qualityByInstant!.coding).toBeGreaterThan(q.qualityBy.coding)
+    // so every inversion, cell or axis, comes from a measured row, never from the fit
+    for (const [id, cells] of Object.entries(AA_BENCH_INSTANT)) {
+      const inverted = CELLS.some(([field]) => {
+        const k = field as keyof (typeof AA_BENCH)[string]
+        return (cells[k] ?? 0) > (AA_BENCH[id][k] ?? Infinity) + 0.05
+      })
+      if (inverted) expect(AA_INSTANT_VIA[id], id).not.toBe('')
+    }
+    for (const m of MODEL_CANDIDATES) {
+      if (!m.qualityByInstant) continue
+      const up = (['chat', 'general', 'coding', 'reasoning', 'agentic'] as const).some((a) => m.qualityByInstant![a] > m.qualityBy[a])
+      if (up) expect(m.real?.instantVia, m.id).not.toBe('')
+    }
   })
 
   it('a hybrid AA timed only in thinking mode gets its instant cells from the pair fit, never above thinking', () => {

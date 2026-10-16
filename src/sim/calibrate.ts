@@ -30,6 +30,9 @@ import type { MethodRecipe, PostTrainMethod, ServerSpec, ThinkingSupport } from 
  * vector, `qualityByInstant`, calibrated from its instant-mode cells through the SAME
  * blends and curves (`qualityFromBenchmarks`): the cells come from AA's Non-reasoning row
  * of the same checkpoint, or the per-cell thinking→instant pair fit (scripts/aa-cells.mjs).
+ * Only the pair fit is clamped to the thinking cell. A measured Non-reasoning row is kept as
+ * measured, and on a few cells it beats the thinking row (for example small Qwen3 / Qwen3.5
+ * on SciCode and HLE), so such a hybrid's instant vector can sit above its thinking vector.
  *
  * Deliberately NOT derived from the Artificial Analysis composite Intelligence
  * Index: that index re-baselines between versions (MiniMax-M2 read 61 then 28).

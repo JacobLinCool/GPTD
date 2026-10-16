@@ -867,7 +867,7 @@ const ROSTER: RosterEntry[] = [
     id: 'kimi_k3', name: 'Kimi K3', tier: 'frontier', variant: 'instruct', spec: 'reasoning', hf: 'moonshotai/Kimi-K3',
     bench: {}, alignment: ALIGN_FRONTIER, instructFollow: 84,
     real: R('Moonshot AI', '2026-07-27', 'high'),
-    desc: 'The largest open model: 2.78T/104B with Kimi Delta Attention on 69 of 93 layers. Even in MXFP4 its 1.56 TB of weights need the NVL72.',
+    desc: 'The largest open model: 2.78T/104B with Kimi Delta Attention on 69 of 93 layers. As released, its 1.56 TB of MXFP4 weights are more than an 8×B200 node holds, so the NVL72 is its home.',
   },
   // ---- the generated pool (gen-roster: every open checkpoint in data/model-arch.json no hand entry claims) ----
   ...GENERATED_ROSTER,

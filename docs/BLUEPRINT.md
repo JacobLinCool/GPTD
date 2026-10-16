@@ -212,7 +212,7 @@ Studio 預覽在天花板截斷增益時標示出來（`StudioPreview.ceiling`�
 - `safety` target / `rlhf` / `cai` → `alignment.safety += {rlhf 28, cai 26, 其他 18} × √effort`（上限 100）；`cai` 同時 `overRefusal −= 0.04·√effort` 並轉為 `safe-completion`；`rlhf` 與 safety-target 的 `dpo` 則 `overRefusal += 0.05·√effort`（§2.4 張力；`none` 轉為 `hard-refusal`）。
 - `sft` → `instructFollow += 8·√effort`（上限 100）。
 - 推理訓練（`grpo`，或任何 method 的 `reasoning` target）讓 `never` 模型變成 `always` 思考者（DeepSeek-R1 從 V3 長出的路線）；hybrid 保留它的開關，thinker 維持 thinker。變成思考者而 `thinkTokens = 0` 的模型得到 1500。
-- `merge`：兩個 parent 的 safety、overRefusal、instructFollow 取平均；refusalStyle 兩者相同才保留，否則 `hard-refusal`；thinking 支援相同才保留，否則 `hybrid`（instant 向量取兩個 parent instant 路徑的平均）；thinkTokens 取較大者。
+- `merge`：兩個 parent 的 safety、overRefusal、instructFollow 取平均；refusalStyle 兩者相同才保留，否則 `hard-refusal`；thinking 支援相同才保留，否則 `hybrid`（instant 向量取兩個 parent instant 路徑的平均；只有一個 parent 有 instant 路徑時沿用它，但每軸扣掉平均讓那個 parent 掉的分數：`path + min(0, merged − 該 parent 的 qualityBy)`，所以不會比提供路徑的 parent 更強，instruct parent 的路徑也不會高過合併後的 thinking 向量）；thinkTokens 取較大者。
 
 > **worked example（GRPO reasoning on MiniCPM5-2B：base reasoning 91、effort 1.0、depth 1）**：`rawGain = 28 × 1 / 1.15 ≈ 24.3`；`headroom = 39/130 = 0.3` → `uncapped = min(24.3, 40 × 0.3 = 12) = 12`；body 2.52B 的天花板看 ≤ 5.04B 的 roster base，最高 reasoning 92（Qwen3.5 4B）→ `ceiling = 98` → `gain = min(12, 98 − 91) = 7` → `reasoning 98`；其他四軸各遺忘 0.15；MiniCPM5 是 hybrid，保留開關，instant 向量同步 +7。天花板截掉了四成的增益：小 body 再怎麼訓練，最多也只比兩倍大小以內最好的 base 高 6 分。
 

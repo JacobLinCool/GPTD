@@ -32,8 +32,15 @@
 //                                               (HF_TOKEN honoured for gated repos; `config` names a mirror)
 //   node scripts/arch-sync.mjs extract [repo…]  (re)derive the config fields of data/model-arch.json from the cache;
 //                                               fields listed in an entry's `manual` are never overwritten
-//   node scripts/arch-sync.mjs verify           re-extract every cached entry and report drift (read-only)
+//   node scripts/arch-sync.mjs verify [repo…] [--allow-uncached]
+//                                               re-extract every entry (or the named ones) from the cache and report
+//                                               drift (read-only); exits 1 on any drift, and on any entry without a
+//                                               cached config.json unless --allow-uncached (a gated repo with no
+//                                               mirror stays uncached)
 //   node scripts/arch-sync.mjs build            compute the derived serving fields (+ the thinking mode) → src/sim/roster.arch.generated.ts
+//
+// `archSource()` is the pure half of `build` (data in, file text out); tests/models.test.ts compares it
+// with the committed src/sim/roster.arch.generated.ts, so an edit to the data without a rebuild fails the tests.
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
@@ -455,12 +462,17 @@ function extractInto(repos) {
   saveArch(arch)
 }
 
-function verify() {
+function verify(args) {
+  const allowUncached = args.includes('--allow-uncached')
+  const only = args.filter((a) => !a.startsWith('--'))
   const arch = loadArch()
+  for (const repo of only) if (!arch.models[repo]) throw new Error(`${repo}: not in data/model-arch.json`)
+  const repos = only.length ? only : Object.keys(arch.models)
   let drift = 0
-  let skipped = 0
-  for (const [repo, e] of Object.entries(arch.models)) {
-    if (!existsSync(join(dirOf(repo), 'config.json'))) { skipped++; continue }
+  const uncached = []
+  for (const repo of repos) {
+    const e = arch.models[repo]
+    if (!existsSync(join(dirOf(repo), 'config.json'))) { uncached.push(repo); continue }
     const x = extract(repo)
     const manual = new Set(e.manual ?? [])
     for (const k of DERIVED_KEYS) {
@@ -468,7 +480,14 @@ function verify() {
       if (JSON.stringify(x[k]) !== JSON.stringify(e[k])) { drift++; console.log(`  ! ${repo} ${k}: committed ${JSON.stringify(e[k])} ≠ config ${JSON.stringify(x[k])}`) }
     }
   }
-  console.log(`verify: ${Object.keys(arch.models).length - skipped} checked, ${skipped} without a cached config (run fetch), ${drift} drifted fields`)
+  const checked = repos.length - uncached.length
+  console.log(`verify: ${checked}/${repos.length} checked against .cache/hf, ${uncached.length} without a cached config.json, ${drift} drifted fields`)
+  if (uncached.length) console.log(`  uncached: ${uncached.slice(0, 12).join(', ')}${uncached.length > 12 ? ` … (+${uncached.length - 12})` : ''}`)
+  if (drift) throw new Error(`${drift} committed field(s) disagree with config.json — run extract (or list the field in the entry's \`manual\`)`)
+  if (checked === 0) throw new Error('nothing verified: .cache/hf holds no config.json — run: node scripts/arch-sync.mjs fetch')
+  if (uncached.length && !allowUncached)
+    throw new Error(`${uncached.length} checkpoint(s) unverified (no cached config.json) — run fetch (HF_TOKEN for gated repos), or pass --allow-uncached`)
+  console.log(uncached.length ? `✓ ${checked}/${repos.length} verified, ${uncached.length} uncached (allowed)` : `✓ ${checked}/${repos.length} verified, no drift`)
 }
 
 /* ------------------------------------------------------------------ *
@@ -537,10 +556,15 @@ const tsStr = (v) => `'${String(v).replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'
 const summary = (d) =>
   `${String(d.paramsTotalB).padStart(6)}B/${String(d.paramsActiveB).padEnd(5)} ${d.attn.padEnd(13)} KV ${(d.kvBytesPerToken / 1024).toFixed(1).padStart(6)} KB/tok + ${String(d.kvStateMbPerReq).padStart(6)} MB/req · ${d.precision} ${d.nativeWeightBytes} B/param · ${d.contextWindowK}K`
 
-function build() {
+/**
+ * The text of src/sim/roster.arch.generated.ts from data/model-arch.json + data/model-thinking.json
+ * (pure: reads the data, writes nothing). `rows` carries a one-line summary per checkpoint for the log.
+ */
+function archSource() {
   const arch = loadArch()
   const thinking = JSON.parse(readFileSync(THINKING, 'utf8')).models
   const lines = []
+  const rows = []
   for (const [repo, e] of Object.entries(arch.models)) {
     for (const k of ['paramsTotalB', 'paramsActiveB', 'layers', 'kv', 'nativeWeightBytes', 'contextK', 'license']) if (e[k] == null) throw new Error(`${repo}: missing ${k}`)
     const mode = thinking[repo]?.mode
@@ -549,9 +573,9 @@ function build() {
     const toggle = mode === 'never' ? null : thinking[repo].toggle
     const d = { ...rest, thinking: mode, ...(toggle ? { thinkingToggle: toggle } : {}), confidence }
     lines.push(`  '${repo}': { ${Object.entries(d).map(([k, v]) => `${k}: ${typeof v === 'string' ? tsStr(v) : v}`).join(', ')} },`)
-    console.log(`${repo.padEnd(56)} ${summary(d)}`)
+    rows.push(`${repo.padEnd(56)} ${summary(d)}`)
   }
-  const out =
+  const text =
     `// AUTO-GENERATED by \`node scripts/arch-sync.mjs build\` — do NOT edit by hand.\n` +
     `// Source: data/model-arch.json (Hugging Face config.json + safetensors metadata per checkpoint) and\n` +
     `// data/model-thinking.json (the chat template's thinking support: always / hybrid / never).\n` +
@@ -559,20 +583,26 @@ function build() {
     `// joins every roster entry to its checkpoint here. KV bytes are BF16 (the KV-quant research scales them).\n` +
     `import type { ModelArch } from './content'\n\n` +
     `export const MODEL_ARCH: Record<string, ModelArch> = {\n${lines.join('\n')}\n}\n`
-  writeFileSync(GENERATED, out)
-  console.log(`✓ wrote ${GENERATED} — ${lines.length} checkpoints`)
+  return { text, rows }
 }
 
-export { loadArch, derive }
+function build() {
+  const { text, rows } = archSource()
+  for (const r of rows) console.log(r)
+  writeFileSync(GENERATED, text)
+  console.log(`✓ wrote ${GENERATED} — ${rows.length} checkpoints`)
+}
+
+export { loadArch, derive, archSource, GENERATED }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   const [cmd, ...args] = process.argv.slice(2)
   try {
     if (cmd === 'fetch') await fetchAll(args)
     else if (cmd === 'extract') extractInto(args)
-    else if (cmd === 'verify') verify()
+    else if (cmd === 'verify') verify(args)
     else if (cmd === 'build') build()
-    else { console.error('usage: node scripts/arch-sync.mjs <fetch|extract|verify|build> [repo…]'); process.exit(1) }
+    else { console.error('usage: node scripts/arch-sync.mjs <fetch|extract|verify|build> [repo…] (verify: [--allow-uncached])'); process.exit(1) }
   } catch (e) {
     console.error('✗', e.message)
     process.exit(1)

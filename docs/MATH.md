@@ -722,7 +722,8 @@ forget: every non-gain axis −= forgetScale × √effort × (1 + 0.5·max(0, de
 instant vector (hybrid): base instant + the same per-axis delta
 merge: axes averaged (no gain, tax or forgetting); safety, overRefusal, instructFollow averaged;
        refusalStyle kept if shared, else hard-refusal; release precision = the higher of the two;
-       thinking = same support ? it : hybrid; instant = mean of the parents' instant paths
+       thinking = same support ? it : hybrid; instant = mean of the parents' instant paths, or,
+       when only one parent has one: path + min(0, merged − that parent's qualityBy) per axis
        mergeBlock: missing / self / different roster root / different body
 distill: body = the largest roster base strictly smaller (active and total) ; each axis capped at
          min(teacher, student + 18) (instant likewise) ; window and longCtx = the smaller

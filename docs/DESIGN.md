@@ -161,7 +161,7 @@ Each model also carries an **`alignment`** profile (`safety` / `refusalStyle` / 
 - **Qwen3.8-27B** — the dense 27B that clears the agentic line; a hybrid of 48 Gated DeltaNet and 16 attention layers, so only a quarter of its layers hold KV.
 - **Hy3 / Muse Spark Open** — the full-attention foils whose KV per token is 10–60× the hybrids'.
 - **DeepSeek-V4-Pro-0813** — 1.6T with FP4 experts and compressed attention: fits one 8-GPU box at its release precision.
-- **Kimi K3** — the 2.78T top of the tree; even in MXFP4 its 1.56 TB of weights need the NVL72 and a pipeline of two tensor-parallel stages.
+- **Kimi K3** — the 2.78T top of the tree; as released, its 1.56 TB of MXFP4 weights need the NVL72 and a pipeline of two tensor-parallel stages.
 
 ---
 
