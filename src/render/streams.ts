@@ -1,4 +1,4 @@
-import type { GameState, Request, Tower } from '../core/types'
+import type { GameState, Request } from '../core/types'
 import { HARDWARE_DEFS } from '../sim/content'
 import { loadoutOf, serverPerUserDecodeTokS } from '../sim/effects'
 import { fxDensity, fxLevel } from './anim'
@@ -16,15 +16,6 @@ interface RackStream {
   tokS: number
   tokAt: number
   dotted: number
-}
-
-/** The ids a rack is working this tick, from the display fields (or the legacy fallback). */
-export function rackActivity(t: Tower): { prefillId: number | null; decodeIds: readonly number[] } {
-  if (t.decodeIds !== undefined || t.prefillId !== undefined)
-    return { prefillId: t.prefillId ?? null, decodeIds: t.decodeIds ?? [] }
-  // LEGACY-BRIDGE: before the sim publishes Tower.decodeIds/prefillId, a busy rack shows one
-  // link to its front target. Delete with the legacy 'fire' event.
-  return { prefillId: null, decodeIds: t.load > 0 && t.targetId != null ? [t.targetId] : [] }
 }
 
 /**
@@ -58,7 +49,7 @@ export class StreamLayer {
     const pxTex = this.fx.frame('sq2')
     for (const t of s.towers) {
       if (t.def.kind !== 'server' || !t.online || t.training) continue
-      const act = rackActivity(t)
+      const act = { prefillId: t.prefillId ?? null, decodeIds: t.decodeIds ?? [] }
       if (act.prefillId == null && act.decodeIds.length === 0) continue
       seen.add(t.id)
       let st = this.racks.get(t.id)

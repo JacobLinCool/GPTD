@@ -213,7 +213,9 @@ class LineageGraph extends Container {
       if (!cols.has(d)) cols.set(d, [])
       cols.get(d)!.push(id)
     }
-    for (const arr of cols.values()) arr.sort((a, b) => a.localeCompare(b))
+    // roots in name order; every later column follows its parents' rows (barycenter), so
+    // edges run straight across instead of crossing
+    cols.get(0)?.sort((a, b) => a.localeCompare(b))
 
     const colW = Math.max(250, Math.min(360, (this.W - 56) / (maxDepth + 1)))
     // leave a wide inter-column gap so a relation label ("finetune") fits cleanly
@@ -224,8 +226,24 @@ class LineageGraph extends Container {
     const graphW = maxDepth * colW + nodeW
     const startX = Math.max(18, (this.W - graphW) / 2)
     const pos = new Map<string, { x: number; y: number }>()
+    const parentY = (id: string): number => {
+      let sum = 0
+      let n = 0
+      for (const e of edges) {
+        const p = e.to === id ? pos.get(e.from) : undefined
+        if (p) {
+          sum += p.y
+          n++
+        }
+      }
+      return n ? sum / n : Infinity
+    }
     for (let d = 0; d <= maxDepth; d++) {
       const arr = cols.get(d) ?? []
+      if (d > 0) {
+        const by = new Map(arr.map((id) => [id, parentY(id)]))
+        arr.sort((a, b) => by.get(a)! - by.get(b)! || a.localeCompare(b))
+      }
       const colX = startX + d * colW
       const totalH = arr.length * (nodeH + rowGap)
       const startY = Math.max(16, (this.H - totalH) / 2)
@@ -522,6 +540,52 @@ export class ModelOverview {
       this.query = (this.query + e.key.toLowerCase()).slice(0, 24)
       consume()
     }
+  }
+
+  /**
+   * Keyboard (routed by the Game while the modal is open): ↑ / ↓ move the selected row
+   * and the table scrolls with it, PgUp / PgDn page, Home / End jump, [ / ] cycle the
+   * origin filter. Letters type a filter query (the capture listener above).
+   */
+  key(code: string): boolean {
+    if (!this.view.visible || this.showLineage) return false
+    if (code === 'BracketLeft' || code === 'BracketRight') {
+      const i = FILTERS.indexOf(this.filter)
+      this.filter = FILTERS[(i + (code === 'BracketLeft' ? -1 : 1) + FILTERS.length) % FILTERS.length]
+      this.scroll = 0
+      setUiPref('models.filter', this.filter)
+      return true
+    }
+    const rows = this.rowCache
+    if (!rows.length) return false
+    let i = this.selected ? rows.findIndex((r) => r.m.id === this.selected) : -1
+    switch (code) {
+      case 'ArrowUp':
+        i = i < 0 ? this.scroll : i - 1
+        break
+      case 'ArrowDown':
+        i = i < 0 ? this.scroll : i + 1
+        break
+      case 'PageUp':
+        i = (i < 0 ? this.scroll : i) - VISIBLE_ROWS
+        break
+      case 'PageDown':
+        i = (i < 0 ? this.scroll : i) + VISIBLE_ROWS
+        break
+      case 'Home':
+        i = 0
+        break
+      case 'End':
+        i = rows.length - 1
+        break
+      default:
+        return false
+    }
+    i = Math.max(0, Math.min(rows.length - 1, i))
+    this.selected = rows[i].m.id
+    if (i < this.scroll) this.scroll = i
+    else if (i >= this.scroll + VISIBLE_ROWS) this.scroll = i - VISIBLE_ROWS + 1
+    return true
   }
 
   private setSort(key: SortKey): void {

@@ -4,6 +4,7 @@ import type { TextureFactory } from '../render/textures'
 import { t } from '../i18n'
 import { prefersReducedMotion } from '../settings'
 import { drawPanel, UIButton } from './theme'
+import { uiSound } from './uiSound'
 
 export interface Rect {
   x: number
@@ -83,12 +84,16 @@ export class Codex {
   }
 
   say(msg: CodexMessage): void {
-    this.view.visible = true
     const hideControls = msg.hideControls ?? false
     // Prefix: tutorial (no speaker) keeps the "CODEX:" persona; an agent passes its
     // own name (e.g. "CLAUDE:") or an empty string for no prefix at all.
     const prefix = msg.speaker === undefined ? t('codex.prefix') : msg.speaker ? `${msg.speaker}:  ` : ''
-    this.txt.text = prefix + msg.text
+    const text = prefix + msg.text
+    // a NEW message chirps (re-showing the same line, e.g. after a modal closed, stays quiet;
+    // the engine rate-limits the cue so an agent narrating every move never chatters)
+    if (text !== this.txt.text) uiSound('codex')
+    this.view.visible = true
+    this.txt.text = text
     const textH = this.txt.height
     const showNext = msg.showNext ?? false
     // Reserve the Skip/Next button row only when the controls are shown; agent

@@ -2,18 +2,16 @@
  * ui/boardOverlay.ts — shell hints drawn over the board (above the world, below
  * every panel), all click-through:
  *   • the hovered building's range ring + a one-line mini card (no tool active);
- *   • the next wave's single-entry SURGE arrow at its ingress (build phase);
  *   • a cursor label for the active tool (blueprint cost, paint running total,
  *     "tap again to build" on touch);
  *   • the PAUSED pill over a dimmed board, naming why it paused;
  *   • a rotate-to-landscape hint on narrow portrait screens.
  * Presentation only: it reads state handed to it and owns no game rules.
  */
-import { Container, Graphics, Text } from 'pixi.js'
+import { Container, Graphics } from 'pixi.js'
 import { COLORS, DESIGN_H, DESIGN_W, GRID_COLS, GRID_ROWS, GRID_X, GRID_Y, TILE } from '../config'
 import type { Tower } from '../core/types'
-import { prefersReducedMotion } from '../settings'
-import { LANE_PATHS } from '../sim/pathing'
+import { towerRangeTiles } from '../sim/effects'
 import { drawPanel, label } from './theme'
 
 export interface CursorLabel {
@@ -24,13 +22,8 @@ export interface CursorLabel {
 }
 
 export interface BoardOverlayState {
-  /** board time for the gentle pulse (frozen while paused). */
-  time: number
   /** hovered building (no tool active) and the mini-card line once the hover settled. */
   hover: { tower: Tower; card: string | null } | null
-  /** single-entry surge lanes of the next wave (build phase). */
-  surgeLanes: number[]
-  surgeLabel: string
   /** cursor label for the active tool. */
   cursor: CursorLabel | null
   /** the PAUSED pill text (null = running). */
@@ -46,7 +39,6 @@ export class BoardOverlay {
   readonly view = new Container()
   private g = new Graphics()
   private dim = new Graphics()
-  private surgeTags: Text[] = []
   private hoverBg = new Graphics()
   private hoverTxt = label('', 11, COLORS.textBright)
   private cursorBg = new Graphics()
@@ -81,13 +73,12 @@ export class BoardOverlay {
   update(st: BoardOverlayState): void {
     const g = this.g
     g.clear()
-    const steady = prefersReducedMotion()
-    const pulse = steady ? 1 : 0.6 + 0.4 * Math.sin(st.time * 5)
 
     // --- hovered building: range ring + mini card ---
     const h = st.hover
-    if (h && h.tower.def.range > 0) {
-      const r = h.tower.def.range * TILE
+    const reach = h ? towerRangeTiles(h.tower) : 0
+    if (h && reach > 0) {
+      const r = reach * TILE
       g.circle(h.tower.x, h.tower.y, r).fill({ color: h.tower.def.color, alpha: 0.05 })
       g.circle(h.tower.x, h.tower.y, r).stroke({ width: 1, color: h.tower.def.color, alpha: 0.45 })
     }
@@ -104,43 +95,6 @@ export class BoardOverlay {
       this.hoverTxt.x = x + 8
       this.hoverTxt.y = y + 4
     }
-
-    // --- single-entry surge: a chevron at the flooded ingress + a tag ---
-    st.surgeLanes.forEach((laneId, i) => {
-      const lane = LANE_PATHS[laneId]
-      if (!lane || lane.waypoints.length < 2) return
-      const a = lane.waypoints[0]
-      const b = lane.waypoints[1]
-      const len = Math.hypot(b.x - a.x, b.y - a.y) || 1
-      const ux = (b.x - a.x) / len
-      const uy = (b.y - a.y) / len
-      const px = -uy
-      const py = ux
-      for (let k = 0; k < 3; k++) {
-        const d = 10 + k * 13
-        const cx = a.x + ux * d
-        const cy = a.y + uy * d
-        g.moveTo(cx - ux * 6 + px * 8, cy - uy * 6 + py * 8)
-          .lineTo(cx + ux * 4, cy + uy * 4)
-          .lineTo(cx - ux * 6 - px * 8, cy - uy * 6 - py * 8)
-          .stroke({ width: 3, color: COLORS.warn, alpha: (0.45 + 0.18 * k) * pulse })
-      }
-      g.circle(a.x, a.y, 9).stroke({ width: 2, color: COLORS.warn, alpha: 0.9 * pulse })
-      let tag = this.surgeTags[i]
-      if (!tag) {
-        tag = label('', 10, COLORS.warn, 'bold')
-        this.surgeTags.push(tag)
-        this.view.addChild(tag)
-      }
-      tag.text = st.surgeLabel
-      tag.visible = true
-      // keep the tag on the board, offset away from the lane's travel direction
-      const tx = a.x - ux * 14 - tag.width / 2
-      const ty = a.y - uy * 14 - (uy > 0.5 ? 18 : -6)
-      tag.x = Math.round(Math.max(GRID_X + 2, Math.min(GRID_X + BOARD_W - tag.width - 2, tx)))
-      tag.y = Math.round(Math.max(GRID_Y + 2, Math.min(GRID_Y + BOARD_H - 14, ty)))
-    })
-    for (let i = st.surgeLanes.length; i < this.surgeTags.length; i++) this.surgeTags[i].visible = false
 
     // --- cursor label (blueprint / paint / touch confirm) ---
     const c = st.cursor

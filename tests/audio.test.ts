@@ -217,27 +217,26 @@ describe('audio/director — events → cues', () => {
     expect(rec.cues.find((c) => c.id === 'serve.refused')?.params.by).toBe('guard')
   })
 
-  it('plays legacy serve/leak events only until the precise outcome vocabulary is seen', () => {
+  it('sounds each player action from its precise event: build, deploy, research start, sell, cache', () => {
     const rec = new Recorder()
     const d = new AudioDirector(rec)
     const s = createState(1)
-    s.phase = 'wave'
-    // legacy-only frame: played at the end of the frame
-    d.onEvent({ type: 'serve', x: 100, y: 100, kind: 'good', amount: 3 }, s)
-    d.onEvent({ type: 'leak', x: 600, y: 300, unsafe: true }, s)
-    d.update(s, 1 / 60, RUN)
-    expect(rec.ids()).toEqual(['serve.clean', 'serve.unsafe'])
-    // a frame with both twins plays once
+    s.phase = 'build'
+    d.onEvent({ type: 'build', towerId: 1, defId: 'srv_edge', x: 400, y: 300 }, s)
+    d.onEvent({ type: 'build', towerId: 2, defId: 'cache', x: 400, y: 300 }, s)
+    d.onEvent({ type: 'deploy', towerId: 1, modelId: Object.keys(s.models)[0], x: 400, y: 300 }, s)
+    d.onEvent({ type: 'research-start', id: 'inf_batching', track: 'infra' }, s)
+    d.onEvent({ type: 'research-start', id: 'pt_1', track: 'posttrain' }, s)
+    d.onEvent({ type: 'sell', x: 400, y: 300, towerId: 2, defId: 'cache', refund: 5 }, s)
+    d.onEvent({ type: 'cache', x: 400, y: 300, towerId: 2, requestId: 7 }, s)
+    expect(rec.ids()).toEqual(['build', 'build', 'deploy', 'research.start', 'research.start', 'sell', 'cache.hit'])
+    expect(rec.cues[0].params.rack).toBe(true)
+    expect(rec.cues[1].params.rack).toBe(false)
+    expect(rec.cues[4].params.posttrain).toBe(true)
+    // nothing is held back for the end of the frame
     rec.cues.length = 0
-    d.onEvent({ type: 'serve', x: 100, y: 100, kind: 'bad', amount: 0 }, s)
-    d.onEvent(outcomeEv('sloMiss'), s)
     d.update(s, 1 / 60, RUN)
-    expect(rec.ids()).toEqual(['serve.late'])
-    // from then on legacy events are ignored
-    rec.cues.length = 0
-    d.onEvent({ type: 'serve', x: 100, y: 100, kind: 'good', amount: 3 }, s)
-    d.update(s, 1 / 60, RUN)
-    expect(rec.ids()).toEqual([])
+    expect(rec.ids().filter((c) => !c.startsWith('ui.'))).toEqual([])
   })
 
   it('sounds a guardrail catch at the guard, but leaves a guard refusal to its outcome', () => {
@@ -296,15 +295,11 @@ describe('audio/director — events → cues', () => {
     const s = createState(1)
     s.derivedModels['drv_1'] = {} as never
     d.onEvent({ type: 'research-done', id: 'inf_batching' }, s)
+    // a Studio run announces itself twice (posttrain-done, then research-done): one sound
+    d.onEvent({ type: 'posttrain-done', modelId: 'drv_1' }, s)
     d.onEvent({ type: 'research-done', id: 'drv_1' }, s)
     d.update(s, 1 / 60, RUN)
     expect(rec.ids()).toEqual(['research.done', 'checkpoint.minted'])
-    // once the sim announces posttrain-done, the legacy twin is ignored
-    rec.cues.length = 0
-    d.onEvent({ type: 'research-done', id: 'drv_1' }, s)
-    d.onEvent({ type: 'posttrain-done', modelId: 'drv_1' }, s)
-    d.update(s, 1 / 60, RUN)
-    expect(rec.ids()).toEqual(['checkpoint.minted'])
   })
 })
 
@@ -317,7 +312,12 @@ describe('audio/director — continuous state', () => {
     const s = createState(1)
     s.phase = 'wave'
     d.update(s, 1 / 60, RUN)
+    // a dark rack alone is state, not an event: the cue comes from the sim's transition
     s.towers.push(darkRack)
+    for (let i = 0; i < 5; i++) d.update(s, 1 / 60, RUN)
+    expect(rec.ids().filter((c) => c.startsWith('power.'))).toEqual([])
+    d.onEvent({ type: 'brownout', on: true }, s)
+    d.onEvent({ type: 'brownout', on: true }, s) // a repeat is not a transition
     for (let i = 0; i < 5; i++) d.update(s, 1 / 60, RUN)
     expect(rec.ids().filter((c) => c.startsWith('power.'))).toEqual(['power.down'])
     // the sim's precise event while paused waits for the board to resume
@@ -358,17 +358,20 @@ describe('audio/director — continuous state', () => {
     expect(beats()).toBe(2)
   })
 
-  it('announces a telegraphed incident once from state when the sim does not emit it', () => {
+  it('announces an incident from its event, good or bad', () => {
     const rec = new Recorder()
     const d = new AudioDirector(rec)
     const s = createState(1)
     s.phase = 'build'
-    d.update(s, 1 / 60, RUN)
     const bad = INCIDENTS.find((i) => !i.good)!
+    const good = INCIDENTS.find((i) => i.good)
+    // the telegraphed state alone stays silent; the sim's event carries the cue
     s.pendingIncident = bad
     d.update(s, 1 / 60, RUN)
-    d.update(s, 1 / 60, RUN)
-    expect(rec.ids()).toEqual(['incident.bad'])
+    expect(rec.ids()).toEqual([])
+    d.onEvent({ type: 'incident', id: bad.id }, s)
+    if (good) d.onEvent({ type: 'incident', id: good.id }, s)
+    expect(rec.ids()).toEqual(good ? ['incident.bad', 'incident.good'] : ['incident.bad'])
   })
 
   it('drives the music scene, intensity and the pause muffle from the game', () => {

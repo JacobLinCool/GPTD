@@ -166,7 +166,7 @@ const HELP = {
   stateKeys: [
     'phase, wave, totalWaves, isLastWave, waveActive, endless',
     'meters{cash,trust,sla,data}, power{used,cap}, cooling{used,cap} (live kW in every phase), flags{hasLab,hasLiquidLoop}, modifiers{buildCost,powerPrice,coolingCap,safetyDamage,volume,reward}',
-    'incident{id,name,desc,good} | null, nextWave{name,brief,clearBonus,totalRequests,mix[],boss,surgeLane,incidentId} | null (build phase)',
+    'incident{id,name,desc,good} | null, nextWave{wave,name,brief,clearBonus,totalRequests,mix[{typeId,count,latClass,axis,difficulty,inputTokens,outputTokens,hazards}],volumeMul,estDurationSec,projectedBill,boss,surgeLane,incidentId} | null (build phase)',
     'lastReport{wave,served,sloMiss,bad,unservable,unsafe,overRefused,leaked,total,goodputPct,sloAttainPct,trustLostBy,slaLostBy,sloCauses,overRefusedBy,guardCaught,selfHandled,byType,…} | null',
     'board{cols,rows,core,freeTiles[{col,row,nearLane}]}, towers[{id,defId,col,row,online,range,coversLanes(guards),hwId,modelId,role,sellValue,nextHwId,upgradeCost,deployableModelIds}]',
     'catalog[{defId,cost,range,guardrail{archetype,side,latencyMs,recall,falsePositiveRate,catches[{hazard,locked,unlockedBy}]}}], hardware[{id,name,hbmGb,cooling,deployableModelIds}]',

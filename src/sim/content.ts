@@ -43,7 +43,7 @@ export const REQUEST_TYPES: Record<string, RequestTypeDef> = {
     id: 'embed',
     name: 'Embedding',
     glyph: '⋯',
-    color: 0x8595ad,
+    color: 0xc3e25a, // lime: an offline throughput job, never the grey of a disabled control
     work: 1,
     inputTokens: 2000,
     outputTokens: 0,
@@ -227,7 +227,7 @@ export const REQUEST_TYPES: Record<string, RequestTypeDef> = {
     id: 'batch',
     name: 'Batch / Offline Gen',
     glyph: '▤',
-    color: 0x8aa0c0,
+    color: 0xd9b382, // sand: bulk offline work, distinct from every rack tier and outcome hue
     work: 140,
     inputTokens: 1000,
     outputTokens: 4000,
@@ -1447,7 +1447,7 @@ export const TOWER_DEFS: Record<string, TowerDef> = {
       guardHardwareId: 'hw_perf', // an H100-class rack of its own (OQ-G16: independent tile)
       baseRecall: 0.92,
     },
-    tagline: 'Both sides · all hazards · a real 12B inference',
+    tagline: 'Both sides · all hazards (injection/PII after Red-Team) · a real 12B inference',
     desc: 'A generative 12B guardrail (Llama Guard 4) on its own H100: each check is a full (shorter) LLM inference, so it adds real latency at BOTH ends (TTFT on the prompt, E2EL on the answer) for every request on the lanes it covers. Catches jailbreak and harmful content always, injection after Red-Team Eval and PII after Red-Team Eval II; its output check stops an unsafe answer before delivery.',
   },
   guard_mod: {
@@ -1468,7 +1468,7 @@ export const TOWER_DEFS: Record<string, TowerDef> = {
       runsOnRoofline: false,
       baseRecall: 0.88,
     },
-    tagline: 'Both sides · harmful + PII · vendor-hosted',
+    tagline: 'Both sides · harmful (+ PII after Red-Team II) · vendor-hosted',
     desc: 'A vendor-hosted moderation pass (OpenAI omni): a 120 ms extra model call on someone else’s racks, on the input and again on the output of every request on the lanes it covers. Catches harmful content always and PII leakage after Red-Team Eval II — but not jailbreaks.',
   },
   power: {

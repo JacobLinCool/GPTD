@@ -1,11 +1,11 @@
 import { BitmapText, Container, Graphics, Rectangle, Sprite } from 'pixi.js'
 import { COLORS, GRID_COLS, GRID_ROWS, GRID_X, GRID_Y, TILE } from '../config'
-import type { GameEvent, GameState, Outcome, Request, TowerDef } from '../core/types'
+import type { GameEvent, GameState, Request, TowerDef } from '../core/types'
 import { onLangChange, t, waveName } from '../i18n'
 import { outcomeColor } from '../outcomes'
 import { CAMPAIGN_THEMES } from '../sim/campaign-data'
 import { HARDWARE_DEFS, WAVES } from '../sim/content'
-import { defLoadout, serverPower } from '../sim/effects'
+import { defLoadout, serverPower, towerRangeTiles } from '../sim/effects'
 import { CORE_POS, LANE_PATHS, isBuildable, posAt, tileCenter, worldToTile } from '../sim/pathing'
 import { clamp01, fxLevel, reducedMotion } from './anim'
 import { BannerLayer } from './banners'
@@ -13,14 +13,14 @@ import { CoreView } from './core'
 import { FxManager } from './fx'
 import { LaneLayer } from './lanes'
 import { POP_FONT, fmtCredits } from './popups'
-import { RackLayer, rangeTiles } from './racks'
+import { RackLayer } from './racks'
 import { RequestLayer } from './requests'
-import { StreamLayer, rackActivity } from './streams'
+import { StreamLayer } from './streams'
 import { REQ_PX, type TextureFactory } from './textures'
 
 export interface WorldView {
   selectedId: number | null
-  /** S4: the request packet selected for the RequestInspector (Expert Mode). */
+  /** the request packet selected for the RequestInspector (both modes). */
   selectedRequestId?: number | null
   buildDef: TowerDef | null
   canAfford: boolean
@@ -101,9 +101,6 @@ export class WorldRenderer {
   private selT = 0
   private selId: number | null = null
   private dipT = -1
-  /** the sim publishes the precise outcome/action vocabulary (legacy events are then ignored) */
-  private modernOutcomes = false
-  private legacy: GameEvent[] = []
 
   constructor(private factory: TextureFactory) {
     this.fx = new FxManager(factory)
@@ -143,13 +140,14 @@ export class WorldRenderer {
     this.setupInteraction()
     onLangChange(() => {
       this.racks.refreshLanguage()
+      this.lanes.refreshLanguage()
       this.hintKey = ''
     })
   }
 
   // ---- controls the UI shell binds (range key, next-wave preview) ----
 
-  /** Toggle every support building's coverage ring (the range key). */
+  /** Toggle every coverage ring, racks included (the range key). */
   toggleRanges(): boolean {
     this.rangesOn = !this.rangesOn
     return this.rangesOn
@@ -218,7 +216,6 @@ export class WorldRenderer {
     this.core.reset()
     this.fx.clear()
     this.banners.clear()
-    this.legacy.length = 0
     this.auraKey = ''
     this.hintKey = ''
     this.dipT = -1
@@ -239,15 +236,13 @@ export class WorldRenderer {
     this.clock += dt
     this.speed = frame.speed
     this.fx.setSpeed(frame.speed)
-    this.flushLegacy()
     // who is being worked this tick (breathing, bar LOD)
     const active = new Set<number>()
     if (frame.running) {
       for (const tw of s.towers) {
         if (tw.def.kind !== 'server' || !tw.online) continue
-        const act = rackActivity(tw)
-        if (act.prefillId != null) active.add(act.prefillId)
-        for (const id of act.decodeIds) active.add(id)
+        if (tw.prefillId != null) active.add(tw.prefillId)
+        for (const id of tw.decodeIds ?? []) active.add(id)
       }
     }
     const hoverTower = this.hoverTower(s)
@@ -289,7 +284,6 @@ export class WorldRenderer {
   onEvent(ev: GameEvent, s: GameState): void {
     switch (ev.type) {
       case 'outcome':
-        this.modernOutcomes = true
         this.outcome(ev)
         break
       case 'guard':
@@ -332,47 +326,6 @@ export class WorldRenderer {
       case 'lose':
         this.core.shatter()
         break
-      case 'serve':
-      case 'leak':
-        // LEGACY-BRIDGE: rendered at sync only if this sim build never sends `outcome`.
-        if (!this.modernOutcomes) this.legacy.push(ev)
-        break
-    }
-  }
-
-  /** Map the legacy serve/leak vocabulary onto outcomes until the sim sends `outcome`. */
-  private flushLegacy(): void {
-    if (!this.legacy.length) return
-    const evs = this.legacy
-    this.legacy = []
-    if (this.modernOutcomes) return
-    for (const ev of evs) {
-      let outcome: Outcome
-      let cash = 0
-      if (ev.type === 'serve') {
-        outcome =
-          ev.kind === 'good'
-            ? 'served'
-            : ev.kind === 'over_refused'
-              ? 'overRefused'
-              : ev.kind === 'unsafe'
-                ? 'unsafe'
-                : 'bad'
-        cash = ev.amount
-      } else if (ev.type === 'leak') outcome = ev.unsafe ? 'unsafe' : 'leaked'
-      else continue
-      this.outcome({
-        type: 'outcome',
-        requestId: -1,
-        typeId: '',
-        laneId: 0,
-        x: ev.x,
-        y: ev.y,
-        outcome,
-        cash,
-        dTrust: outcome === 'served' ? 0 : -1,
-        dSla: outcome === 'leaked' ? -1 : 0,
-      })
     }
   }
 
@@ -384,7 +337,7 @@ export class WorldRenderer {
   private outcome(ev: OutcomeEvent): void {
     const pos = this.requests.posOf(ev.requestId) ?? { x: ev.x, y: ev.y }
     const { x, y } = pos
-    if (ev.requestId >= 0) this.requests.noteDeath(ev.requestId, ev.outcome)
+    this.requests.noteDeath(ev.requestId, ev.outcome)
     if (ev.towerId != null) this.racks.kick(ev.towerId)
     const col = outcomeColor(ev.outcome)
     const label = t(`fx.${ev.outcome}`)
@@ -515,7 +468,7 @@ export class WorldRenderer {
     for (const tw of s.towers) {
       if (tw.def.kind !== 'cache' || !tw.online) continue
       const d = (tw.x - p.x) ** 2 + (tw.y - p.y) ** 2
-      if (d < bd && d <= (tw.def.range * TILE) ** 2) {
+      if (d < bd && d <= (towerRangeTiles(tw) * TILE) ** 2) {
         bd = d
         best = tw.id
       }
@@ -602,9 +555,10 @@ export class WorldRenderer {
   }
 
   /**
-   * Coverage rings of support buildings: hidden by default (no "circle soup"), shown
-   * on hover / selection, while placing a related building, or all at once with the
-   * range key. Rebuilt only when the visible set changes.
+   * Coverage rings: hidden by default (no "circle soup"). A support building's ring
+   * shows on hover / selection or while placing a related building; the range key
+   * (toggle, or hold Alt) shows every ring at once, the racks' serving reach included.
+   * Rebuilt only when the visible set changes.
    */
   private drawAuras(s: GameState, wv: WorldView, hoverId: number | null): void {
     const all = this.rangesOn || this.rangeHold
@@ -613,13 +567,23 @@ export class WorldRenderer {
       : false
     const ids: number[] = []
     for (const tw of s.towers) {
+      if (tw.def.kind === 'server') {
+        if (all) ids.push(tw.id)
+        continue
+      }
       if (tw.def.kind !== 'cache' && tw.def.kind !== 'router' && tw.def.kind !== 'guardrail') continue
       const related =
         planning &&
         (wv.buildDef!.kind === 'server' ? tw.def.kind !== 'guardrail' : tw.def.kind === wv.buildDef!.kind)
       if (all || related || tw.id === hoverId || tw.id === wv.selectedId) ids.push(tw.id)
     }
-    const key = ids.join(',') + '|' + s.towers.length
+    // a ring's reach (hardware tier) and online state are part of the key: an upgraded rack redraws
+    let key = ''
+    for (const id of ids) {
+      const tw = s.towers.find((x) => x.id === id)
+      if (tw) key += `${id}:${towerRangeTiles(tw)}:${tw.online ? 1 : 0},`
+    }
+    key += '|' + (wv.selectedId ?? -1)
     if (key === this.auraKey) return
     this.auraKey = key
     const g = this.auraG
@@ -627,7 +591,7 @@ export class WorldRenderer {
     for (const id of ids) {
       const tw = s.towers.find((x) => x.id === id)
       if (!tw || tw.id === wv.selectedId) continue // the selection draws its own ring
-      const r = rangeTiles(tw) * TILE
+      const r = towerRangeTiles(tw) * TILE
       g.circle(tw.x, tw.y, r).fill({ color: tw.def.color, alpha: 0.035 })
       g.circle(tw.x, tw.y, r).stroke({ width: 1, color: tw.def.color, alpha: tw.online ? 0.38 : 0.15 })
     }
@@ -763,7 +727,7 @@ export class WorldRenderer {
             .lineTo(cx - sx * L, cy)
         }
         g.stroke({ width: 2, color: COLORS.sla, alpha: 0.95 })
-        const R = rangeTiles(tw) * TILE
+        const R = towerRangeTiles(tw) * TILE
         if (R > 0) {
           g.circle(tw.x, tw.y, R).fill({ color: COLORS.sla, alpha: 0.05 * fade })
           g.circle(tw.x, tw.y, R).stroke({ width: 1.5, color: COLORS.sla, alpha: 0.45 * fade })

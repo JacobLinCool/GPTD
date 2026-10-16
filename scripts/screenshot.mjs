@@ -1,93 +1,53 @@
-// Headless end-to-end playtest: drives the built game with a real browser,
-// plays through two waves at 3× speed, asserts the platform actually serves
-// requests and survives, and captures screenshots. Surfaces runtime errors.
+// Headless end-to-end playtest of the BUILT game (`pnpm preview` first, then `pnpm e2e`).
+//
+// It plays real waves through the real input paths — build hotkeys (Q–P) and board
+// clicks, Space to start, `.`/Z to cycle and upgrade racks, [ ] for tabs, PgUp/PgDn,
+// G for coverage rings, Esc / arrows / Enter through the system hub and Settings, H for
+// the hotkey sheet, L / K for the Training Lab and Model Overview, the checkpoint card's
+// DEPLOY ×n — and reads the outcome through `window.__game` (the snapshot getter and
+// panel visibility), never through pixel guesses. Four scenarios cover both languages ×
+// both display modes and capture every surface a player meets: title, build board, NEXT
+// WAVE card (incl. a single-entry surge), rack inspect + deploy picker, live wave,
+// request inspector, wave report (Expert ledger / Normal summary), hotkey sheet,
+// Training Lab (Infra + Studio), Model Overview + lineage, the rollout card, every
+// Settings tab, and the end screen. Fails on any page error, console error or broken
+// assertion.
+//
+//   node scripts/screenshot.mjs [url]          (default http://127.0.0.1:4173/)
+//   GPTD_SHOTS=/some/dir node scripts/screenshot.mjs
 import { chromium } from 'playwright'
 import { mkdirSync } from 'node:fs'
 
 const URL = process.argv.slice(2).find((arg) => arg !== '--') || 'http://127.0.0.1:4173/'
-const OUT = '/tmp/gptd-shots'
+const OUT = process.env.GPTD_SHOTS || '/tmp/gptd-shots'
 mkdirSync(OUT, { recursive: true })
+
+// board geometry (src/config.ts): a 1280×720 viewport renders the 1280×720 design 1:1
+const GRID_X = 64
+const GRID_Y = 96
+const TILE = 48
+const tile = (col, row) => [GRID_X + (col + 0.5) * TILE, GRID_Y + (row + 0.5) * TILE]
+// build hotkeys follow BUILD_ORDER (src/sim/content.ts)
+const BUILD = {
+  edge: 'KeyQ',
+  frontier: 'KeyW',
+  router: 'KeyE',
+  cache: 'KeyR',
+  encoder: 'KeyT',
+  llmGuard: 'KeyY',
+  power: 'KeyU',
+  cooling: 'KeyI',
+  liquid: 'KeyO',
+  lab: 'KeyP',
+}
 
 const browser = await chromium.launch({
   channel: 'chrome',
   headless: true,
-  args: [
-    '--enable-unsafe-swiftshader',
-    '--use-gl=angle',
-    '--use-angle=swiftshader',
-    '--ignore-gpu-blocklist',
-  ],
+  args: ['--enable-unsafe-swiftshader', '--use-gl=angle', '--use-angle=swiftshader', '--ignore-gpu-blocklist'],
 })
-const page = await browser.newPage({ viewport: { width: 1280, height: 720 }, deviceScaleFactor: 1 })
 
 const errors = []
-page.on('console', (m) => {
-  if (m.type() === 'error') errors.push('console.error: ' + m.text())
-})
-page.on('pageerror', (e) => errors.push('pageerror: ' + (e?.message || e)))
-
-const shot = (name) => page.screenshot({ path: `${OUT}/${name}.png` }).then(() => console.log('shot:', name))
-const wait = (ms) => page.waitForTimeout(ms)
-const snap = () => page.evaluate(() => window.__game?.snapshot ?? null)
-const clearSelection = () =>
-  page.evaluate(() => {
-    const g = window.__game
-    if (!g) return
-    g.selectedDefId = null
-    g.selectedTowerId = null
-    g.selectedRequestId = null
-  })
-const closeModels = () =>
-  page.evaluate(() => {
-    const g = window.__game
-    if (!g) return
-    g.modelsOpen = false
-  })
-const tile = (col, row) => [64 + (col + 0.5) * 48, 96 + (row + 0.5) * 48]
-const BUILD_COUNT = 11
-const BUILD_PAD_X = 12
-const BUILD_GAP = 6
-const BUILD_CONTROL_W = 184
-const BUILD_CONTROL_X = 1280 - BUILD_CONTROL_W - BUILD_PAD_X
-const BUILD_TRAY_W = BUILD_CONTROL_X - BUILD_PAD_X - 16
-const BUILD_CARD_W = Math.floor((BUILD_TRAY_W - BUILD_GAP * (BUILD_COUNT - 1)) / BUILD_COUNT)
-const TRAIN_PANEL_W = 1180
-const TRAIN_PANEL_H = 500
-const TRAIN_PANEL_X = (1280 - TRAIN_PANEL_W) / 2
-const TRAIN_PANEL_Y = (720 - TRAIN_PANEL_H) / 2
-const STUDIO_BASE_VISIBLE_ROWS = 6
-const STUDIO_BASE_ITEM_H = 50
-const STUDIO_BASE_ROW_STEP = 54
-const trainTab = (offsetX) => [TRAIN_PANEL_X + offsetX, TRAIN_PANEL_Y + 52]
-const trainClose = () => [TRAIN_PANEL_X + TRAIN_PANEL_W - 104, TRAIN_PANEL_Y + 31]
-const studioBaseLastY =
-  TRAIN_PANEL_Y + 102 + (STUDIO_BASE_VISIBLE_ROWS - 1) * STUDIO_BASE_ROW_STEP + STUDIO_BASE_ITEM_H / 2
-const studioBaseDown = () => [TRAIN_PANEL_X + 272, studioBaseLastY]
-const studioBaseLast = () => [TRAIN_PANEL_X + 139, studioBaseLastY]
-const studioTrain = () => [TRAIN_PANEL_X + 936, TRAIN_PANEL_Y + 411]
-const buildBtn = (i) => [BUILD_PAD_X + i * (BUILD_CARD_W + BUILD_GAP) + BUILD_CARD_W / 2, 672]
-const pick = async (i) => {
-  await page.mouse.click(...buildBtn(i))
-  await wait(90)
-}
-const placeAt = async (i, cells) => {
-  await pick(i)
-  for (const [c, r] of cells) {
-    await page.mouse.click(...tile(c, r))
-    await wait(90)
-  }
-}
-async function waitPhase(target, timeoutMs) {
-  const t0 = Date.now()
-  let s = await snap()
-  while (Date.now() - t0 < timeoutMs) {
-    s = await snap()
-    if (s && s.phase === target) return s
-    await wait(300)
-  }
-  return s
-}
-
 const assert = (cond, msg) => {
   if (!cond) {
     errors.push('ASSERT FAILED: ' + msg)
@@ -95,199 +55,483 @@ const assert = (cond, msg) => {
   } else console.log('  ✓ ' + msg)
 }
 
-await page.goto(URL, { waitUntil: 'networkidle' })
-await page.waitForSelector('canvas', { timeout: 10000 })
-await wait(1200)
-await shot('1-menu')
+/**
+ * One scenario = a fresh browser context with the language / display mode preset in
+ * localStorage (exactly what the in-game toggles persist) and the guided tutorial
+ * skipped so the Codex bubble does not cover the board.
+ */
+async function scenario(name, { lang, mode, tutorial = false }, body) {
+  console.log(`\n=== ${name} (${lang}, ${mode}) ===`)
+  const ctx = await browser.newContext({ viewport: { width: 1280, height: 720 }, deviceScaleFactor: 1 })
+  await ctx.addInitScript(
+    ([l, m, tut]) => {
+      try {
+        localStorage.setItem('gptd_lang', l)
+        localStorage.setItem('gptd_mode', m)
+        if (!tut) localStorage.setItem('gptd_tut_done', '1')
+      } catch {
+        /* storage blocked: defaults */
+      }
+    },
+    [lang, mode, tutorial],
+  )
+  const page = await ctx.newPage()
+  page.on('console', (m) => {
+    if (m.type() === 'error') errors.push(`[${name}] console.error: ${m.text()}`)
+  })
+  page.on('pageerror', (e) => errors.push(`[${name}] pageerror: ${e?.message || e}`))
+  const h = helpers(page, name)
+  await page.goto(URL, { waitUntil: 'networkidle' })
+  await page.waitForSelector('canvas', { timeout: 15000 })
+  await h.wait(1200)
+  try {
+    await body(h)
+  } catch (e) {
+    errors.push(`[${name}] threw: ${e?.stack || e}`)
+    await h.shot('zz-failure')
+  }
+  await ctx.close()
+}
 
-// Pick EXPERT MODE on the title screen (mode is locked once the run starts),
-// then start the run.
-await page.mouse.click(740, 443)
-await wait(300)
-await shot('1b-menu-expert')
-await page.mouse.click(640, 546)
-await wait(500)
-const s0 = await snap()
-assert(s0 && s0.mode === 'expert', `expert mode selected (got ${s0?.mode})`)
-await shot('2-build-empty')
+function helpers(page, name) {
+  const wait = (ms) => page.waitForTimeout(ms)
+  const snap = () => page.evaluate(() => window.__game?.snapshot ?? null)
+  /** a presentation fact read off the live Game (panel visibility, the open tab …) */
+  const peek = (fn, arg) => page.evaluate(fn, arg)
+  const press = async (code, ms = 80) => {
+    await page.keyboard.press(code)
+    await wait(ms)
+  }
+  const click = async (x, y, ms = 90) => {
+    await page.mouse.click(x, y)
+    await wait(ms)
+  }
+  const shot = (label) =>
+    page.screenshot({ path: `${OUT}/${name}-${label}.png` }).then(() => console.log('  shot:', `${name}-${label}`))
+  /** pick a build tool by hotkey, click each tile, then drop the tool (Esc) */
+  const build = async (code, cells) => {
+    await press(code)
+    for (const [c, r] of cells) await click(...tile(c, r))
+    // Esc drops a held tool; with nothing held it would open the system hub instead
+    if (await peek(() => window.__game.selectedDefId != null)) await press('Escape')
+  }
+  async function waitPhase(target, timeoutMs) {
+    const t0 = Date.now()
+    let s = await snap()
+    while (Date.now() - t0 < timeoutMs) {
+      s = await snap()
+      if (s && (Array.isArray(target) ? target.includes(s.phase) : s.phase === target)) return s
+      await wait(250)
+    }
+    return s
+  }
+  /** Space starts the wave; a low-cash warning arms START, so a second Space confirms. */
+  const startWave = async () => {
+    await press('Space', 150)
+    if ((await snap())?.phase === 'build') await press('Space', 150)
+  }
+  /**
+   * Build only while the run stays solvent: place `code` on `cells` when cash covers its
+   * nominal `cost` (build bar price) per tile plus `reserve` for the next wave's bill.
+   */
+  const buildIfAffordable = async (code, cells, cost, reserve = 20) => {
+    const free = []
+    for (const [c, r] of cells) {
+      const taken = await peek(([cc, rr]) => window.__game.state.towers.some((t) => t.col === cc && t.row === rr), [c, r])
+      if (!taken) free.push([c, r])
+    }
+    const cash = (await snap())?.cash ?? 0
+    if (!free.length || cash < cost * free.length + reserve) return false
+    await build(code, free)
+    await deselect()
+    return true
+  }
+  /** the hardware tier of every rack, in id order */
+  const rackTiers = () =>
+    peek(() => window.__game.state.towers.filter((t) => t.def.kind === 'server').map((t) => t.hwId))
+  /** click each rack and upgrade it one hardware tier (Z); returns how many moved up */
+  const upgradeAllRacks = async () => {
+    const racks = await peek(() =>
+      window.__game.state.towers.filter((t) => t.def.kind === 'server').map((t) => [t.col, t.row]),
+    )
+    const before = await rackTiers()
+    for (const [c, r] of racks) {
+      // drop the previous selection first: its inspect panel docks over the board's edge
+      await deselect()
+      await click(...tile(c, r), 60)
+      await press('KeyZ', 60)
+    }
+    await deselect()
+    const after = await rackTiers()
+    const moved = after.filter((hw, i) => hw !== before[i]).length
+    assert(moved > 0, `${name}: Z upgrades the clicked rack (${moved}/${racks.length} racks moved up a tier)`)
+    return moved
+  }
+  /** jump the campaign so the next wave is a single-entry surge (Matsu Cable Cut, lane 2) and capture it */
+  const surgePreview = async () => {
+    await deselect()
+    await peek(() => {
+      window.__game.state.waveIndex = 4
+    })
+    await wait(400)
+    const lane = await peek(() => window.__game.preview?.surgeLane ?? null)
+    assert(lane !== null, `${name}: the NEXT WAVE preview names the surge lane (${lane})`)
+    await shot('build-surge')
+  }
+  /** let the game loop run two frames (panels re-lay out on the frame after a state change) */
+  const frames = () => page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))))
+  /** clear any selection / tool without opening the system hub, and wait until the panels close */
+  const deselect = async () => {
+    await peek(() => {
+      const g = window.__game
+      g.selectedDefId = null
+      g.selectedTowerId = null
+      g.selectedRequestId = null
+    })
+    await frames()
+  }
+  /** cycle a selected rack's inspect tabs with ] until `tab` is open */
+  const inspectTab = async (tab) => {
+    for (let i = 0; i < 3; i++) {
+      if ((await peek(() => window.__game.inspect.tab)) === tab) return true
+      await press('BracketRight', 120)
+    }
+    return (await peek(() => window.__game.inspect.tab)) === tab
+  }
+  /** Esc → hub, ↓↓ Enter → Settings, then every tab with ], then back out */
+  const settingsTour = async () => {
+    await deselect()
+    await press('Escape', 200)
+    assert(await peek(() => window.__game.systemMenuOpen), `${name}: Esc opens the system hub`)
+    await shot('hub')
+    await press('ArrowDown')
+    await press('ArrowDown')
+    await press('Enter', 250)
+    assert(await peek(() => window.__game.settingsPanel.visible), `${name}: Enter on Settings opens it`)
+    // start from the first tab whatever was remembered
+    for (let i = 0; i < 4 && (await peek(() => window.__game.settingsPanel.current)) !== 0; i++) await press('BracketRight')
+    for (const tab of ['audio', 'display', 'a11y', 'gameplay']) {
+      await shot(`settings-${tab}`)
+      await press('BracketRight', 150)
+    }
+    await press('Escape', 150) // settings → hub
+    await press('Escape', 150) // hub → board
+    assert(!(await peek(() => window.__game.systemMenuOpen)), `${name}: Esc closes the hub`)
+  }
+  /** the starter fleet: Edge racks on all four ingress lanes + power and cooling */
+  const starterFleet = async () => {
+    await build(BUILD.edge, [
+      [4, 2],
+      [5, 2],
+      [8, 2],
+      [9, 0],
+      [10, 0],
+      [4, 8],
+      [5, 8],
+      [8, 8],
+      [18, 8],
+      [19, 8],
+    ])
+    await build(BUILD.power, [
+      [2, 4],
+      [2, 8],
+    ])
+    await build(BUILD.cooling, [
+      [6, 4],
+      [14, 8],
+    ])
+  }
+  /** once packets are on the board, pause and open the request inspector on one (clicked on the board) */
+  const inspectRequest = async () => {
+    const find = () =>
+      peek(() => {
+        const s = window.__game.state
+        if (s.phase !== 'wave') return null
+        const onTower = (r) => s.towers.some((t) => Math.hypot(t.x - r.x, t.y - r.y) < 30)
+        const r = s.requests.find((q) => q.alive && !onTower(q))
+        return r ? { x: r.x, y: r.y } : null
+      })
+    let p = null
+    for (let i = 0; i < 60 && !p; i++) {
+      p = await find()
+      if (!p) await wait(150)
+    }
+    if (!p) {
+      assert(false, `${name}: a live packet appeared to inspect`)
+      return
+    }
+    await press('Space', 150) // pause: the packet holds still
+    p = (await find()) ?? p
+    await click(p.x, p.y, 300)
+    const open = await peek(() => window.__game.requestInspect.view.visible)
+    assert(open, `${name}: clicking a packet opens the request inspector`)
+    await shot('request-inspector')
+    await deselect()
+    if ((await snap())?.paused) await press('Space', 150) // resume
+  }
+  /** end the run (SLA to zero mid-wave) and capture the end screen after its hold */
+  const endScreen = async () => {
+    const s = await snap()
+    if (s?.phase === 'build') await startWave()
+    await wait(600)
+    await peek(() => {
+      window.__game.state.meters.sla = 0
+    })
+    const lost = await waitPhase('lost', 15000)
+    assert(lost?.phase === 'lost', `${name}: the run ends when SLA hits zero`)
+    // the core shatters first, then the end screen (a ~1.2 s board-time hold; slow headless frames stretch it)
+    let shown = false
+    for (let i = 0; i < 40 && !shown; i++) {
+      await wait(250)
+      shown = await peek(() => window.__game.overlay.view.visible)
+    }
+    assert(shown, `${name}: the end screen shows after the hold`)
+    await wait(300)
+    await shot('end-screen')
+  }
+  return {
+    page,
+    wait,
+    snap,
+    peek,
+    press,
+    click,
+    shot,
+    build,
+    buildIfAffordable,
+    waitPhase,
+    startWave,
+    upgradeAllRacks,
+    surgePreview,
+    deselect,
+    inspectTab,
+    settingsTour,
+    starterFleet,
+    inspectRequest,
+    endScreen,
+  }
+}
 
-// BUILD_ORDER: 0=Edge 1=BigRack 2=Router 3=Cache 4=Encoder 5=LLMGuard
-//              6=Moderation 7=Power 8=Cooling 9=Liquid 10=Lab
-// Edge GPU racks blanketing ALL FOUR ingress lanes (top rows 0/2, bottom row 8),
-// plus power and cooling to run them — a competent starter fleet that survives the
-// rebalanced early gauntlet (the old top-row-only build leaked the bottom lanes).
-await placeAt(0, [
-  [4, 2],
-  [5, 2],
-  [8, 2],
-  [9, 0],
-  [10, 0],
-  [4, 8],
-  [5, 8],
-  [8, 8],
-  [18, 8],
-  [19, 8],
-])
-await placeAt(7, [
-  [2, 4],
-  [2, 8],
-]) // Power plants
-await placeAt(8, [
-  [6, 4],
-  [14, 8],
-]) // Cooling towers
-await shot('3-build-placed')
+// ---------------------------------------------------------------------------------
+// 1. English · Expert — the full loop: build, two waves, research, a Studio run that
+//    mints a checkpoint, the model table, every panel, and the end screen.
+// ---------------------------------------------------------------------------------
+await scenario('en-expert', { lang: 'en', mode: 'expert' }, async (h) => {
+  await h.shot('title')
+  await h.press('Space', 400) // Space on the title = START
+  const s0 = await h.snap()
+  assert(s0?.phase === 'build' && s0.mode === 'expert', `run started in Expert (${s0?.phase}/${s0?.mode})`)
+  await h.starterFleet()
+  await h.upgradeAllRacks() // an L4 misses the interactive TPOT; an L40S serves chat cleanly
+  const s1 = await h.snap()
+  assert(s1.towers >= 14, `starter fleet placed by hotkeys (${s1.towers} buildings)`)
+  await h.press('Period', 120)
+  assert((await h.peek(() => window.__game.selectedTowerId)) != null, '. selects a rack')
+  await h.deselect()
+  await h.wait(150)
+  assert(await h.peek(() => window.__game.nextWave.view.visible), 'NEXT WAVE card shows in the build phase')
+  await h.shot('build-next-wave')
 
-// Upgrade every Edge rack one tier to Standard (L40S). A weak L4 cannot meet the
-// interactive TPOT, so every chat correct-but-LATE → slo_miss → ZERO clean serves
-// → no Data → the Studio run can never be funded. A Standard rack clears the SLO,
-// serves cleanly, and banks the Data that pays for a post-training run. (Driven via
-// the __game instance — esbuild preserves member names, like the snapshot getter.)
-await page.evaluate(() => {
-  const g = window.__game
-  if (!g || !g.state) return
-  for (const t of g.state.towers) if (t.def && t.def.kind === 'server') g.doUpgradeHardware(t.id)
+  // rack inspect: overview, then the deploy picker ([ ] cycles the tabs)
+  await h.click(...tile(4, 2), 200)
+  assert(await h.peek(() => window.__game.inspect.view.visible), 'clicking a rack opens its inspect panel')
+  await h.shot('inspect-overview')
+  assert(await h.inspectTab('deploy'), '] reaches the Deploy tab')
+  await h.shot('inspect-deploy-picker')
+  await h.press('PageDown', 150)
+  assert((await h.peek(() => window.__game.inspect.scroll)) > 0, 'PgDn pages the deploy picker')
+  await h.press('PageUp', 100)
+  assert(await h.inspectTab('stats'), '] reaches the Telemetry tab (Expert)')
+  await h.shot('inspect-telemetry')
+  await h.deselect()
+
+  // coverage rings (G) and the hotkey sheet (H)
+  await h.press('KeyG', 150)
+  await h.shot('ranges-on')
+  await h.press('KeyG', 100)
+  await h.press('KeyH', 250)
+  assert(await h.peek(() => window.__game.hotkeys.visible), 'H opens the hotkey sheet')
+  await h.shot('hotkeys')
+  await h.press('KeyH', 150)
+
+  await h.startWave() // 1×: the live shot catches packets on the lanes
+  await h.wait(2500)
+  await h.shot('wave1-live')
+  await h.press('Digit6') // 6× for the rest of the wave
+  const w1 = await h.waitPhase('build', 60000)
+  assert(w1?.phase === 'build' && w1.report === 1, `wave 1 cleared and its report settled (${w1?.phase}, report ${w1?.report})`)
+  assert(w1.served > 0, `wave 1 served requests (${w1.served})`)
+  assert(await h.peek(() => window.__game.report.view.visible), 'the wave report shows after the wave')
+  await h.shot('wave1-report-expert')
+
+  // Training Lab: Infra research by keyboard, then the Studio
+  await h.build(BUILD.lab, [[2, 6]])
+  await h.press('KeyL', 300)
+  assert(await h.peek(() => window.__game.trainingOpen), 'L opens the Training Lab')
+  for (let i = 0; i < 3 && (await h.peek(() => window.__game.training.tab)) !== 'infra'; i++) await h.press('BracketRight', 150)
+  await h.press('ArrowDown', 150) // focus the first research card
+  await h.press('Enter', 200) // research it (Data permitting)
+  await h.shot('training-infra')
+  await h.press('PageDown', 150)
+  await h.shot('training-infra-paged')
+  await h.press('BracketRight', 250)
+  assert((await h.peek(() => window.__game.training.tab)) === 'studio', '] switches to the Studio')
+  await h.shot('training-studio')
+  await h.press('KeyL', 200)
+  assert(!(await h.peek(() => window.__game.trainingOpen)), 'L closes the Training Lab')
+
+  // a guard on the core lanes now; a router and a cache once the bank can carry them
+  await h.buildIfAffordable(BUILD.encoder, [[10, 4]], 14)
+  await h.buildIfAffordable(BUILD.router, [[6, 2]], 24)
+  await h.buildIfAffordable(BUILD.cache, [[16, 2]], 20)
+  await h.shot('build-expanded')
+  await h.press('Digit1')
+  await h.startWave()
+  await h.inspectRequest()
+  await h.press('Digit6')
+  const w2 = await h.waitPhase('build', 60000)
+  assert(w2?.phase === 'build' && w2.wave >= 2, `wave 2 cleared (${w2?.phase} at wave ${w2?.wave})`)
+
+  // a Studio SFT run on the rack's model (the Game action the TRAIN button calls)
+  const base = await h.peek(() => {
+    const g = window.__game
+    const rack = g.state.towers.find((t) => t.def.kind === 'server' && t.modelId)
+    return rack ? rack.modelId : null
+  })
+  const started = await h.peek((id) => window.__game.doPostTrain([id], 'sft', 'chat', 1), base)
+  assert(started, `Studio started an SFT run on ${base}`)
+  for (let w = 0; w < 4; w++) {
+    if ((await h.snap())?.derived >= 1) break
+    await h.buildIfAffordable(BUILD.router, [[6, 2]], 24, 30)
+    await h.buildIfAffordable(BUILD.cache, [[16, 2]], 20, 30)
+    await h.startWave()
+    await h.waitPhase('build', 60000)
+  }
+  const sTrain = await h.snap()
+  assert(sTrain.derived >= 1, `the Studio minted a derived checkpoint (${sTrain.derived})`)
+  await h.shot('build-after-checkpoint')
+
+  // the checkpoint card's one-click rollout: DEPLOY ×n puts it on every rack it fits
+  const derivedId = await h.peek(() => Object.keys(window.__game.state.derivedModels)[0] ?? null)
+  if (derivedId) {
+    await h.peek((id) => window.__game.rolloutNotice(id), derivedId)
+    await h.wait(500)
+    await h.shot('notice-rollout')
+    const btn = await h.peek(() => {
+      const card = window.__game.notices.cards.find((c) => c.notice?.action)
+      if (!card) return null
+      const b = card.actBtn.getBounds()
+      return [b.x + b.width / 2, b.y + b.height / 2]
+    })
+    assert(!!btn, 'a new checkpoint card offers DEPLOY ×n')
+    if (btn) {
+      await h.click(btn[0], btn[1], 300)
+      const running = await h.peek(
+        (id) => window.__game.state.towers.filter((t) => t.def.kind === 'server' && t.modelId === id).length,
+        derivedId,
+      )
+      assert(running > 0, `DEPLOY ×n rolled the checkpoint out (${running} racks run it)`)
+    }
+  }
+
+  // Model Overview (K): the table, the derived row by keyboard, the lineage view
+  await h.press('KeyK', 300)
+  assert(await h.peek(() => window.__game.modelsOpen), 'K opens the Model Overview')
+  await h.press('BracketRight', 150) // filter: Base
+  await h.press('BracketRight', 150) // filter: Derived
+  await h.press('ArrowDown', 200) // select the first row
+  await h.shot('models-derived')
+  await h.peek(() => (window.__game.models.showLineage = true))
+  await h.wait(250)
+  await h.shot('models-lineage')
+  await h.peek(() => (window.__game.models.showLineage = false))
+  await h.press('Escape', 150) // letters type a filter query in the table, so Esc closes it
+  assert(!(await h.peek(() => window.__game.modelsOpen)), 'Esc closes the Model Overview')
+
+  await h.settingsTour()
+  await h.endScreen()
 })
-await wait(200)
 
-// 3× speed, run Wave 1
-await page.keyboard.press('3')
-await page.mouse.click(1170, 651) // START WAVE
-await wait(2000)
-await shot('4-wave1-live')
+// ---------------------------------------------------------------------------------
+// 2. 正體中文 · Normal — the plain-language surfaces.
+// ---------------------------------------------------------------------------------
+await scenario('zh-normal', { lang: 'zh-TW', mode: 'normal' }, async (h) => {
+  await h.shot('title')
+  await h.press('Space', 400)
+  await h.starterFleet()
+  await h.upgradeAllRacks()
+  await h.shot('build-next-wave')
+  await h.click(...tile(4, 2), 200)
+  await h.shot('inspect-overview')
+  assert(await h.inspectTab('deploy'), 'zh Normal: ] reaches the Deploy tab')
+  await h.shot('inspect-deploy-picker')
+  await h.deselect()
+  await h.startWave()
+  await h.wait(1500)
+  await h.shot('wave1-live')
+  await h.inspectRequest()
+  await h.press('Digit6')
+  const w1 = await h.waitPhase('build', 60000)
+  assert(w1?.phase === 'build', 'zh Normal: wave 1 cleared')
+  assert(await h.peek(() => window.__game.report.view.visible), 'zh Normal: the plain-language wave summary shows')
+  await h.shot('wave1-summary-normal')
+  await h.press('KeyH', 250)
+  await h.shot('hotkeys')
+  await h.press('KeyH', 150)
+  await h.build(BUILD.lab, [[2, 6]])
+  await h.press('KeyL', 300)
+  await h.shot('training')
+  await h.press('BracketRight', 250)
+  await h.shot('training-next-tab')
+  await h.press('KeyL', 200)
+  await h.settingsTour()
+  await h.endScreen()
+})
 
-const afterW1 = await waitPhase('build', 40000)
-console.log('after wave 1:', JSON.stringify(afterW1))
-assert(afterW1 && afterW1.phase === 'build', 'wave 1 cleared (back to build)')
-// 4 weak L4 Edge racks on Llama-8B can legitimately MISS the interactive SLO on
-// every chat (correct-but-late → slo_miss, zero cash) and still clear the wave —
-// the realistic P1 economy. So assert the wave processed traffic, not raw serves.
-assert(afterW1 && afterW1.trust > 50, `trust healthy (${afterW1?.trust})`)
-assert(afterW1 && afterW1.report === 1, `expert wave report settled (got ${afterW1?.report})`)
-await shot('4b-wave1-report')
-// dismiss the expert wave report (✕) so the next build clicks hit tiles
-await page.mouse.click(301, 160)
-await wait(200)
+// ---------------------------------------------------------------------------------
+// 3. English · Normal — the request inspector and the Normal wave summary in English.
+// ---------------------------------------------------------------------------------
+await scenario('en-normal', { lang: 'en', mode: 'normal' }, async (h) => {
+  await h.press('Space', 400)
+  await h.starterFleet()
+  await h.upgradeAllRacks()
+  await h.shot('build-next-wave')
+  await h.startWave()
+  await h.inspectRequest()
+  await h.press('Digit6')
+  const w1 = await h.waitPhase('build', 60000)
+  assert(w1?.phase === 'build', 'en Normal: wave 1 cleared')
+  await h.shot('wave1-summary-normal')
+  await h.surgePreview()
+  await h.endScreen()
+})
 
-// Select the rack to open the reworked S3 RackInspect (four cards). The
-// rack-upgrade button now sits below the four cards, so its pixel position is
-// layout-dependent — we capture the panel screenshot and log the loadout rather
-// than assert on a fragile pixel (the deploy/upgrade buttons live in the panel).
-await page.mouse.click(...tile(4, 2)) // select the rack
-await wait(200)
-await shot('5a-inspect-rack')
-// Do not use Escape here: after the system-menu work, Escape is a global
-// priority stack and may open the hub once the selection is gone. This smoke test
-// only needs to dismiss the inspect panel before continuing to build.
-await clearSelection()
-await wait(100)
-const s1 = await snap()
-console.log('loadouts:', JSON.stringify(s1?.loadouts))
-
-// S7 ModelOverview — open the all-checkpoints table from the HUD "MODELS" button.
-// The button sits left of the control cluster (≈ x 850..946, y 14..44).
-await page.mouse.click(898, 29)
-await wait(300)
-await snap()
-await shot('8a-models-overview')
-// S8 LineageGraph — toggle the lineage DAG view (top-right "LINEAGE" button).
-await page.mouse.click(1126, 110)
-await wait(300)
-await shot('8b-lineage-graph')
-// Avoid the global Escape stack here; close the modal state directly so the new
-// System hub cannot accidentally open and block the following build clicks.
-await closeModels()
-await wait(200)
-
-// Place a Training Lab (build index 10) — it unlocks the tech tree + the Studio,
-// and boosts Data yield from serves so we can afford a post-training run.
-await placeAt(10, [[2, 6]])
-// Peek at the INFRA TECH tab so the screenshot shows the grouped serving tree.
-await page.mouse.click(1170, 693) // TRAIN (open the Training Lab panel)
-await wait(300)
-await page.mouse.click(...trainTab(510)) // INFRA TECH tab
-await wait(300)
-await shot('5b-infra-tab')
-await page.mouse.click(...trainClose()) // CLOSE
-await wait(200)
-
-await placeAt(2, [[6, 2]]) // Router
-await placeAt(3, [[16, 2]]) // Cache
-// two Encoder guardrails flanking the Trust Core — the jailbreak waves (DAN, etc.)
-// wreck Trust without a second-layer guard, so a competent build adds them early.
-await placeAt(4, [
-  [10, 4],
-  [12, 4],
-])
-await shot('5-build-expanded')
-
-// Run Wave 2 (Coding Boom) to bank Data for a Studio run.
-await page.mouse.click(1170, 651)
-await wait(2500)
-await shot('6-wave2-live')
-const afterW2 = await waitPhase('build', 45000)
-console.log('after wave 2:', JSON.stringify(afterW2))
-assert(afterW2 && (afterW2.phase === 'build' || afterW2.wave >= 2), 'survived into/through wave 2')
-await shot('7-after-wave2')
-
-// S9 Post-Training Studio — open the panel, run an SFT (the starter method needs
-// no unlock) on the default base, then advance a wave to mint the checkpoint.
-await page.mouse.click(1170, 693) // TRAIN (open the Training Lab panel)
-await wait(300)
-await page.mouse.click(...trainTab(720)) // POST-TRAINING STUDIO tab
-await wait(300)
-await shot('9a-studio')
-// scroll the base list to the bottom and pick a SMALL base (8B-active) so the
-// tiny edge fleet can train it within a wave or two.
-for (let i = 0; i < 12; i++) {
-  await page.mouse.click(...studioBaseDown())
-  await wait(50)
-}
-await page.mouse.click(...studioBaseLast()) // last visible base (smallest)
-await wait(150)
-await page.mouse.click(...studioTrain()) // TRAIN button — SFT/chat/effort 1.0
-await wait(300)
-const sStudio = await snap()
-console.log('studio posttrain:', sStudio?.posttrain, 'derived:', sStudio?.derived, 'data:', sStudio?.data)
-assert(sStudio && sStudio.posttrain != null, `Studio started a post-training run (got ${sStudio?.posttrain})`)
-await shot('9b-studio-training')
-await page.mouse.click(...trainClose()) // CLOSE
-await wait(200)
-
-// Run waves until the posttrain run requisitions enough compute to complete,
-// minting the derived model (a tiny edge fleet trains slowly — give it a few waves).
-let afterW3 = null
-for (let w = 0; w < 4; w++) {
-  const pre = await snap()
-  if (pre && pre.derived >= 1) break
-  await page.mouse.click(1170, 651) // START WAVE
-  await wait(2500)
-  afterW3 = await waitPhase('build', 45000)
-  console.log(`after studio wave ${w + 1}:`, afterW3?.derived, 'posttrain:', afterW3?.posttrain)
-  if (afterW3 && afterW3.derived >= 1) break
-}
-const sAfterTrain = await snap()
-console.log('after training waves:', JSON.stringify(sAfterTrain))
-assert(sAfterTrain && sAfterTrain.derived >= 1, `Studio created a derived checkpoint (${sAfterTrain?.derived})`)
-
-// reopen S7 to confirm the new derived checkpoint appears in the table (filter: Derived)
-await page.mouse.click(898, 29)
-await wait(300)
-const sFinal = await snap()
-console.log('final models:', sFinal?.models, 'derived:', sFinal?.derived)
-assert(sFinal && sFinal.models > 16, `derived checkpoint is owned + listed (${sFinal?.models} models)`)
-await page.mouse.click(1126, 120) // TABLE toggle; the modal remembers the earlier Lineage view
-await wait(200)
-await page.mouse.click(594, 127) // Derived filter (modal filter row)
-await wait(200)
-await shot('8c-models-with-derived')
-await page.mouse.click(180, 208) // select the first derived row; validates the detail card layout
-await wait(200)
-await shot('8d-derived-detail')
-await closeModels()
-await wait(150)
+// ---------------------------------------------------------------------------------
+// 4. 正體中文 · Expert — the Expert ledger, deploy picker and model table in zh-TW.
+// ---------------------------------------------------------------------------------
+await scenario('zh-expert', { lang: 'zh-TW', mode: 'expert' }, async (h) => {
+  await h.press('Space', 400)
+  await h.starterFleet()
+  await h.upgradeAllRacks()
+  await h.click(...tile(4, 2), 200)
+  assert(await h.inspectTab('deploy'), 'zh Expert: ] reaches the Deploy tab')
+  await h.shot('inspect-deploy-picker')
+  await h.deselect()
+  await h.startWave()
+  await h.wait(2500)
+  await h.shot('wave1-live')
+  await h.press('Digit6')
+  const w1 = await h.waitPhase('build', 60000)
+  assert(w1?.phase === 'build' && w1.report === 1, 'zh Expert: wave 1 cleared with a report')
+  await h.shot('wave1-report-expert')
+  await h.press('KeyK', 300)
+  await h.shot('models')
+  await h.press('Escape', 150)
+  await h.surgePreview()
+  await h.endScreen()
+})
 
 await browser.close()
-console.log('errors:', errors.length)
+console.log('\nerrors:', errors.length)
 for (const e of errors) console.log('  ' + e)
 process.exit(errors.length ? 1 : 0)

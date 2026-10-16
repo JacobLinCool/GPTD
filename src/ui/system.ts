@@ -10,8 +10,11 @@
  * drive the hub; [ and ] switch settings tabs.
  */
 import { Container, Graphics, Text } from 'pixi.js'
+import type { AudioBus } from '../audio/engine'
 import { COLORS, DESIGN_H, DESIGN_W } from '../config'
+import { OUTCOMES, type Outcome } from '../core/types'
 import { t } from '../i18n'
+import { OUTCOME_STYLE, outcomeColor } from '../outcomes'
 import {
   getLang,
   setLang,
@@ -33,6 +36,7 @@ import {
   resetToDefaults,
   updateSettings,
 } from '../settings'
+import { drawOutcomeGlyph } from './hud'
 import { getPref, setPref } from './prefs'
 import { drawPanel, FocusList, label, UIButton } from './theme'
 import { Slider, SegmentedControl, Toggle } from './widgets'
@@ -142,8 +146,8 @@ export class SystemMenu {
 export interface SettingsCallbacks {
   /** back to the System menu hub. */
   onBack: () => void
-  /** play a short tick so a volume change is audible. */
-  onPreview: () => void
+  /** make a volume change audible on its own bus, or play one outcome's sound. */
+  onPreview: (target: AudioBus | Outcome) => void
   /** re-arm the tutorial. */
   onReplayTutorial: () => void
   /** mode is switchable on the title or once the tutorial is finished. */
@@ -172,7 +176,7 @@ export class SettingsPanel {
   private pages: Container[] = []
   private current = Math.max(0, Math.min(TABS.length - 1, getPref('settings.tab', 0)))
   private PW = 620
-  private PH = 560
+  private PH = 610
   private px: number
   private py: number
   private cb: SettingsCallbacks
@@ -186,6 +190,9 @@ export class SettingsPanel {
   private segFx!: SegmentedControl<FxLevel>
   private segSpeed!: SegmentedControl<number>
   private segAuto!: SegmentedControl<number>
+  /** Settings ▸ Audio: one button per outcome that plays its sound (redrawn when the palette changes). */
+  private outcomeBtns: { o: Outcome; btn: UIButton; glyph: Graphics }[] = []
+  private outcomePalette = ''
   private lblModeLock = label('', 11, COLORS.warn)
   private btnReplay!: UIButton
   private btnBack!: UIButton
@@ -222,7 +229,7 @@ export class SettingsPanel {
   private ctrlX(): number {
     return this.px + 300
   }
-  /** A bold row label with an optional dim one-line explanation beneath it. */
+  /** A bold row label with an optional dim explanation (at most two lines) beneath it. */
   private addRowLabel(page: Container, key: string, fallback: string, y: number, subKey?: string): void {
     const l = label('', 15, COLORS.text, 'bold')
     l.x = this.px + 28
@@ -237,7 +244,14 @@ export class SettingsPanel {
       sub.style.breakWords = true
       sub.style.wordWrapWidth = this.ctrlX() - this.px - 44
       page.addChild(sub)
-      this.relabels.push(() => (sub.text = t(subKey)))
+      this.relabels.push(() => {
+        // two lines at most (the next row starts 52 px down): a longer translation steps the size down
+        sub.text = t(subKey)
+        for (const size of [11, 10, 9]) {
+          sub.style.fontSize = size
+          if (sub.height <= 30) break
+        }
+      })
     }
   }
   private addToggle(page: Container, i: number, read: () => boolean, write: (v: boolean) => void, accent?: number): void {
@@ -274,7 +288,7 @@ export class SettingsPanel {
     const page = this.newPage()
     const sx = this.ctrlX()
     const sw = 230
-    const mk = (i: number, read: () => number, on: (x: number) => void): void => {
+    const mk = (i: number, read: () => number, on: (x: number) => void, bus: AudioBus): void => {
       const vlabel = label('', 13, COLORS.textDim)
       const s = new Slider({
         w: sw,
@@ -284,7 +298,7 @@ export class SettingsPanel {
           on(x)
           vlabel.text = Math.round(x * 100) + '%'
         },
-        onCommit: () => this.cb.onPreview(),
+        onCommit: () => this.cb.onPreview(bus),
       })
       s.x = sx
       s.y = this.rowY(i) + 4
@@ -296,13 +310,13 @@ export class SettingsPanel {
     }
     const a = (): Readonly<ReturnType<typeof getSettings>['audio']> => getSettings().audio
     this.addRowLabel(page, 'set.master', 'Master', this.rowY(0))
-    mk(0, () => a().master, setMasterVolume)
+    mk(0, () => a().master, setMasterVolume, 'master')
     this.addRowLabel(page, 'set.music', 'Music', this.rowY(1))
-    mk(1, () => a().music, setMusicVolume)
+    mk(1, () => a().music, setMusicVolume, 'music')
     this.addRowLabel(page, 'set.sfx', 'SFX', this.rowY(2))
-    mk(2, () => a().sfx, setSfxVolume)
+    mk(2, () => a().sfx, setSfxVolume, 'sfx')
     this.addRowLabel(page, 'set.uiVolume', 'Interface', this.rowY(3))
-    mk(3, () => a().ui, (v) => updateSettings('audio', { ui: Math.max(0, Math.min(1, v)) }))
+    mk(3, () => a().ui, (v) => updateSettings('audio', { ui: Math.max(0, Math.min(1, v)) }), 'ui')
 
     this.addRowLabel(page, 'set.mute', 'Mute', this.rowY(4))
     this.addToggle(page, 4, () => a().muted, (v) => setMuted(v), COLORS.danger)
@@ -323,6 +337,40 @@ export class SettingsPanel {
     this.segDensity.y = this.rowY(6) - 4
     page.addChild(this.segDensity)
     this.relabels.push(() => this.segDensity.relabel((v) => t('set.sfxDensity.' + v)))
+
+    // the seven outcome sounds, one tap each (the glyph + colour the board and HUD use)
+    this.addRowLabel(page, 'set.outcomeSounds', 'Outcome Sounds', this.rowY(7), 'set.outcomeSounds.sub')
+    const bw = 38
+    const gap = 4
+    OUTCOMES.forEach((o, i) => {
+      const btn = new UIButton({
+        w: bw,
+        h: 30,
+        accent: outcomeColor(o),
+        silent: true,
+        onTap: () => this.cb.onPreview(o),
+        tooltip: () => ({ title: t(OUTCOME_STYLE[o].labelKey), body: t(OUTCOME_STYLE[o].causeKey) }),
+      })
+      btn.x = this.ctrlX() + i * (bw + gap)
+      btn.y = this.rowY(7) - 4
+      const glyph = new Graphics()
+      glyph.x = bw / 2
+      glyph.y = 15
+      btn.addChild(glyph)
+      page.addChild(btn)
+      this.outcomeBtns.push({ o, btn, glyph })
+    })
+  }
+
+  /** Redraw the outcome glyphs when the colorblind palette flips. */
+  private drawOutcomeButtons(): void {
+    const key = getSettings().a11y.colorblind ? 'cb' : 'std'
+    if (key === this.outcomePalette) return
+    this.outcomePalette = key
+    for (const b of this.outcomeBtns) {
+      drawOutcomeGlyph(b.glyph, OUTCOME_STYLE[b.o].glyph, outcomeColor(b.o), 12)
+      b.btn.setAccent(outcomeColor(b.o))
+    }
   }
 
   private buildDisplay(): void {
@@ -453,6 +501,7 @@ export class SettingsPanel {
     this.current = i
     setPref('settings.tab', i)
     this.pages.forEach((p, idx) => (p.visible = idx === i))
+    this.drawOutcomeButtons()
     this.tabBtns.forEach((b, idx) => b.setActive(idx === i))
   }
 
@@ -483,6 +532,7 @@ export class SettingsPanel {
     this.segAuto.setValue(s.gameplay.autoStartWave ? s.gameplay.autoStartDelay : 0)
     this.segLang.setValue(getLang())
     this.segMode.setValue(getMode())
+    this.drawOutcomeButtons()
     const unlocked = this.cb.isModeUnlocked()
     this.segMode.setEnabled(unlocked)
     this.lblModeLock.text = unlocked ? '' : t('set.mode.locked', undefined, 'Unlocks after the tutorial')

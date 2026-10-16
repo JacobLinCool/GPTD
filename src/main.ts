@@ -1,9 +1,12 @@
-import { Application, TextureSource, type Container } from 'pixi.js'
+import { Application, CanvasTextMetrics, TextureSource, type Container } from 'pixi.js'
 import { COLORS, DESIGN_H, DESIGN_W } from './config'
 import { Game } from './game'
+import { installCjkWrap } from './ui/cjkWrap'
 
 // Crisp pixel art: nearest-neighbor by default for every texture source.
 TextureSource.defaultOptions.scaleMode = 'nearest'
+// zh-TW copy breaks between Han characters, not only at spaces
+installCjkWrap(CanvasTextMetrics)
 
 async function boot(): Promise<void> {
   const app = new Application()

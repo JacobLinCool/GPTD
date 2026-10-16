@@ -26,6 +26,7 @@ import { REQUEST_TYPES, WAVES } from './content'
 import { loadoutOf, rackOperatingCostPerSec } from './effects'
 import { LANE_COUNT, pathLength } from './pathing'
 import { ALL_HAZARDS } from './safety'
+import { surgeLaneOf } from './spawn'
 
 /** One archetype of the upcoming wave, resolved exactly as spawnRequest will spawn it. */
 export interface WavePreviewEntry {
@@ -175,9 +176,9 @@ export function previewNextWave(s: GameState): WavePreview | null {
   }
   for (const e of byType.values()) e.lanes.sort((a, b) => a - b)
 
-  // a single-entry surge: every burst pinned to one lane, or a concentrate incident narrowing the window to one
-  const surgeLane =
-    !unpinned && pinned.size === 1 ? [...pinned][0] : pinned.size === 0 ? surgeLaneFromWindow : null
+  // a single-entry surge: the sim's own rule (every burst funnels into one lane — pinned, or a
+  // concentrate incident narrowing the window to one), the lane `wave-start` will announce
+  const surgeLane = surgeLaneOf(def.groups, s.laneWindow) ?? null
   const lanes = [...new Set([...pinned, ...(unpinned ? windowLanes : [])])].sort((a, b) => a - b)
 
   return {

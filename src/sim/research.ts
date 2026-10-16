@@ -71,7 +71,6 @@ export function startResearch(s: GameState, id: string): boolean {
   s.data -= def.dataCost
   s.research[track] = { id, kind: track, progress: 0, compute: def.compute }
   s.events.push({ type: 'research-start', id, track })
-  s.events.push({ type: 'train' })
   return true
 }
 
@@ -152,7 +151,6 @@ export function startPostTrain(
     },
   }
   s.events.push({ type: 'research-start', id: s.research.posttrain.id, track: 'posttrain' })
-  s.events.push({ type: 'train' })
   return true
 }
 

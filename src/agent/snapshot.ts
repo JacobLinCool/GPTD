@@ -6,7 +6,6 @@
 import { GRID_COLS, GRID_ROWS } from '../config'
 import type { GameState, Outcome, SafetyHazard, TowerDef, WaveReport } from '../core/types'
 import { buildCost, hardwareUpgradeCost, isLastWave, nextHardware, towerValue } from '../sim/actions'
-import { CAMPAIGN_THEMES } from '../sim/campaign'
 import {
   BUILD_ORDER,
   HARDWARE_DEFS,
@@ -24,7 +23,7 @@ import { EFFORT_NOTCHES, postTrainDataCost, resolveModel } from '../sim/models'
 import { CORE_TILE, isBuildable, isPathTile } from '../sim/pathing'
 import { methodUnlocked, researchUnlocked } from '../sim/research'
 import { alignmentTax, categoryUnlocked, effRecall, overRefuse, overrefMul, redteamRecallBonus } from '../sim/safety'
-import { surgeLaneOf } from '../sim/spawn'
+import { previewNextWave } from '../sim/preview'
 
 export interface AgentTowerView {
   id: number
@@ -165,8 +164,25 @@ export interface AgentSnapshot {
         name: string
         brief: string
         clearBonus: number
+        /** requests the wave will spawn — the incident's volume multiplier already folded in. */
         totalRequests: number
-        mix: Array<{ typeId: string; count: number }>
+        /** per archetype: count, latency class, the judged axis and its difficulty, tokens, hazards. */
+        mix: Array<{
+          typeId: string
+          count: number
+          latClass: string
+          axis: string
+          difficulty: number
+          inputTokens: number
+          outputTokens: number
+          hazards: SafetyHazard[]
+        }>
+        /** the volume multiplier the telegraphed incident applies (1 = none). */
+        volumeMul: number
+        /** estimated board seconds until the last request has walked its lane. */
+        estDurationSec: number
+        /** the fleet's operating bill over that estimate (credits) — START warns when cash is below it. */
+        projectedBill: number
         boss: boolean
         /** the one ingress lane the whole wave funnels into (authored surge or incident), null = spread. */
         surgeLane: number | null
@@ -327,7 +343,8 @@ export function serializeState(s: GameState): AgentSnapshot {
       name: def.name,
       kind: def.kind,
       cost,
-      range: def.range,
+      // a rack reaches as far as its hardware tier (what it would have once placed)
+      range: def.kind === 'server' && def.hardwareId ? (HARDWARE_DEFS[def.hardwareId]?.range ?? def.range) : def.range,
       affordable: s.meters.cash >= cost,
       blockedReason,
       guardrail: guardrailView(s, def),
@@ -427,30 +444,33 @@ export function serializeState(s: GameState): AgentSnapshot {
       }
     : null
 
-  // startWave does waveIndex++ then plays WAVES[waveIndex], so the wave a build-phase
-  // startWave will launch next is WAVES[waveIndex + 1] (waveIndex starts at -1).
+  // the wave a build-phase startWave will launch next — the same read-only preview the
+  // in-game NEXT WAVE card shows (incident volume folded in, the sim's surge-lane rule)
   let nextWave: AgentSnapshot['nextWave'] = null
-  const upcomingIdx = s.waveIndex + 1
-  const upcoming = s.phase === 'build' && !s.endless && upcomingIdx < WAVES.length ? WAVES[upcomingIdx] : null
-  if (upcoming) {
-    const mixMap: Record<string, number> = {}
-    let total = 0
-    for (const g of upcoming.groups) {
-      mixMap[g.typeId] = (mixMap[g.typeId] ?? 0) + g.count
-      total += g.count
-    }
+  const p = s.phase === 'build' ? previewNextWave(s) : null
+  if (p && p.def) {
     nextWave = {
-      wave: upcomingIdx + 1,
-      name: upcoming.name,
-      brief: upcoming.brief,
-      clearBonus: upcoming.clearBonus,
-      totalRequests: total,
-      mix: Object.entries(mixMap)
-        .map(([typeId, count]) => ({ typeId, count }))
-        .sort((a, b) => b.count - a.count),
-      boss: CAMPAIGN_THEMES[upcomingIdx]?.boss ?? false,
-      surgeLane: surgeLaneOf(upcoming.groups, s.laneWindow) ?? null,
-      incidentId: s.pendingIncident?.id ?? null,
+      wave: p.index + 1,
+      name: p.def.name,
+      brief: p.def.brief,
+      clearBonus: p.clearBonus,
+      totalRequests: p.totalRequests,
+      mix: p.entries.map((e) => ({
+        typeId: e.typeId,
+        count: e.count,
+        latClass: e.latClass,
+        axis: e.axis,
+        difficulty: Math.round(e.difficulty * 10) / 10,
+        inputTokens: e.inputTokens,
+        outputTokens: e.outputTokens,
+        hazards: [...e.hazards],
+      })),
+      volumeMul: p.volumeMul,
+      estDurationSec: Math.round(p.estDurationSec * 10) / 10,
+      projectedBill: Math.round(p.projectedBill * 10) / 10,
+      boss: p.boss,
+      surgeLane: p.surgeLane,
+      incidentId: p.incident?.id ?? null,
     }
   }
 

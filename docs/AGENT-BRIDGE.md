@@ -132,11 +132,16 @@ guessing. Unknown actions are rejected the same way, never a crash.
   "flags":  { "hasLab": false, "hasLiquidLoop": false },
   "modifiers": { "buildCost": 1, "powerPrice": 1, "coolingCap": 1, "safetyDamage": 1, "volume": 1, "reward": 1 },
   "incident": null,            // {id,name,desc,good} when an incident is telegraphed for the next wave
-  "nextWave": { "wave": 1, "name": "…", "brief": "…", "clearBonus": 12, "totalRequests": 30,
-                "mix": [ { "typeId": "chat", "count": 30 } ],
+  "nextWave": { "wave": 1, "name": "…", "brief": "…", "clearBonus": 12,
+                "totalRequests": 30,     // incident volume already folded in
+                "mix": [ { "typeId": "chat", "count": 30, "latClass": "IN", "axis": "chat",
+                           "difficulty": 18, "inputTokens": 512, "outputTokens": 256, "hazards": [] } ],
+                "volumeMul": 1,          // the telegraphed incident's traffic multiplier
+                "estDurationSec": 52.4,  // board seconds until the last request has walked its lane
+                "projectedBill": 3.1,    // fleet operating cost over that estimate (START warns below it)
                 "boss": false,
                 "surgeLane": null,       // the one ingress lane the whole wave funnels into, or null
-                "incidentId": null },    // build phase only; preview the upcoming wave
+                "incidentId": null },    // build phase of a campaign wave; the same preview as the in-game NEXT WAVE card
   "lastReport": null,          // the last cleared wave's report (below), null before the first clear
   "board":  { "cols": 24, "rows": 11, "core": { "col": 11, "row": 5 },
               "freeTiles": [ { "col": 4, "row": 2, "nearLane": true }, … ] },

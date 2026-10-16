@@ -12,15 +12,10 @@
  * - continuous state → music scene + intensity + danger, the room-tone
  *   ambience, the low-Trust/SLA heartbeat, the bankruptcy clock tick, the
  *   pause muffle, and UI edges (speed, pause, panels opening/closing);
- * - power cues only on brownout TRANSITIONS, never while the board is frozen.
- *
- * Legacy fallback: until the sim emits the precise vocabulary (`outcome`,
- * `build`/`upgrade`, `deploy`/`research-start`, `posttrain-done`, `brownout`,
- * `incident`), the old `serve`/`leak`/`place`/`train` events and state edges
- * stand in. Legacy events are held to the end of the frame and dropped the
- * moment their precise twin is seen, so nothing ever plays twice.
+ * - power cues only on brownout TRANSITIONS (the sim's `brownout` event), never
+ *   while the board is frozen.
  */
-import type { GameEvent, GameState, IncidentDef, Outcome, RefusedBy } from '../core/types'
+import type { GameEvent, GameState, Outcome, RefusedBy } from '../core/types'
 import { OUTCOME_STYLE } from '../outcomes'
 import { CAMPAIGN_THEMES, MAX_TIER } from '../sim/campaign'
 import { HARDWARE_DEFS, HARDWARE_TIERS, INCIDENTS, TOWER_DEFS } from '../sim/content'
@@ -112,33 +107,13 @@ export function modelSize(paramsTotalB: number | undefined): number {
   return clamp01(Math.log10(paramsTotalB) / Math.log10(3000))
 }
 
-const LEGACY_SERVE: Record<'good' | 'bad' | 'unsafe' | 'over_refused', Outcome> = {
-  good: 'served',
-  bad: 'bad',
-  unsafe: 'unsafe',
-  over_refused: 'overRefused',
-}
-
-type Family = 'outcome' | 'place' | 'train' | 'posttrain' | 'brownout' | 'incident'
-
 export class AudioDirector {
   private run: GameState | null = null
-  /** precise-event families seen this session (their legacy twins are then ignored). */
-  private modern: Record<Family, boolean> = {
-    outcome: false,
-    place: false,
-    train: false,
-    posttrain: false,
-    brownout: false,
-    incident: false,
-  }
-  private legacy: GameEvent[] = []
   private streak = 0
   private lastMilestone = -Infinity
   /** power state as last announced (true = a rack is dark). */
   private power = false
   private pendingPower: boolean | null = null
-  private incidentRef: IncidentDef | null = null
   private bossIndex = -1
   private boss = false
   private intensity = 0
@@ -167,7 +142,6 @@ export class AudioDirector {
     this.streak = 0
     this.power = false
     this.pendingPower = null
-    this.incidentRef = s.pendingIncident
     this.bossIndex = -1
     this.boss = false
     this.intensity = 0
@@ -175,7 +149,6 @@ export class AudioDirector {
     this.heartbeat = false
     this.cashEma = 0
     this.lastCash = null
-    this.legacy.length = 0
   }
 
   onEvent(ev: GameEvent, s: GameState): void {
@@ -183,14 +156,7 @@ export class AudioDirector {
     const k = this.sink
     switch (ev.type) {
       case 'outcome':
-        this.modern.outcome = true
         this.outcome(ev.outcome, ev.x, ev.refusedBy)
-        break
-      case 'serve':
-      case 'leak':
-      case 'place':
-      case 'train':
-        this.legacy.push(ev)
         break
       case 'cache':
         k.cue('cache.hit', { x: ev.x })
@@ -203,12 +169,10 @@ export class AudioDirector {
         k.cue('model.selfHandle', { x: ev.x })
         break
       case 'build':
-        this.modern.place = true
         this.lastCash = null
         k.cue('build', { x: ev.x, rack: TOWER_DEFS[ev.defId]?.kind === 'server' })
         break
       case 'upgrade': {
-        this.modern.place = true
         this.lastCash = null
         const tier = HARDWARE_TIERS.indexOf(ev.hwId)
         k.cue('upgrade', {
@@ -219,12 +183,10 @@ export class AudioDirector {
         break
       }
       case 'deploy':
-        this.modern.train = true
         this.lastCash = null
         k.cue('deploy', { x: ev.x, size: modelSize(resolveModel(s, ev.modelId)?.paramsTotalB) })
         break
       case 'research-start':
-        this.modern.train = true
         k.cue('research.start', { posttrain: ev.track === 'posttrain' })
         break
       case 'sell':
@@ -232,12 +194,9 @@ export class AudioDirector {
         k.cue('sell', { x: ev.x })
         break
       case 'brownout':
-        this.modern.brownout = true
         this.powerEdge(ev.on ?? true, this.frozen)
         break
       case 'incident': {
-        this.modern.incident = true
-        this.incidentRef = s.pendingIncident
         const def = INCIDENTS.find((i) => i.id === ev.id) ?? s.pendingIncident
         k.cue(def?.good ? 'incident.good' : 'incident.bad')
         break
@@ -253,12 +212,10 @@ export class AudioDirector {
         k.cue('wave.clear', { goodput: ev.goodputPct ?? s.lastReport?.goodputPct })
         break
       case 'research-done':
-        // a Studio checkpoint finishing is "minted", not "researched"
-        if (s.derivedModels[ev.id]) this.legacy.push(ev)
-        else k.cue('research.done')
+        // a Studio checkpoint finishing is "minted" (its posttrain-done plays that), not "researched"
+        if (!s.derivedModels[ev.id]) k.cue('research.done')
         break
       case 'posttrain-done':
-        this.modern.posttrain = true
         k.cue('checkpoint.minted')
         break
       case 'win':
@@ -270,8 +227,6 @@ export class AudioDirector {
         k.cue('lose', { meter })
         break
       }
-      case 'fire':
-        break // beams are silent: the outcome is what matters
     }
   }
 
@@ -285,20 +240,10 @@ export class AudioDirector {
     const hub = HUB_PANELS.some((p) => panels[p])
     this.frozen = (s.phase === 'wave' && !v.running) || hub
 
-    this.flushLegacy(s)
-
-    // ---- state-edge fallbacks (until the sim announces them itself) ----
-    if (!this.modern.brownout && (s.phase === 'build' || s.phase === 'wave') && !this.frozen) {
-      const dark = isBrownout(s)
-      if (dark !== this.power) this.powerEdge(dark, false)
-    }
+    // a power transition that happened while the board was frozen sounds when it resumes
     if (this.pendingPower !== null && !this.frozen) {
       if (this.pendingPower === this.power) k.cue(this.power ? 'power.down' : 'power.up')
       this.pendingPower = null
-    }
-    if (!this.modern.incident && s.pendingIncident !== this.incidentRef) {
-      this.incidentRef = s.pendingIncident
-      if (this.incidentRef) k.cue(this.incidentRef.good ? 'incident.good' : 'incident.bad')
     }
 
     // ---- music + ambience ----
@@ -384,39 +329,6 @@ export class AudioDirector {
     }
     this.streak = 0
     this.sink.cue(cue, { x, by })
-  }
-
-  private flushLegacy(s: GameState): void {
-    if (!this.legacy.length) return
-    const k = this.sink
-    for (const ev of this.legacy) {
-      switch (ev.type) {
-        case 'serve':
-          if (!this.modern.outcome)
-            this.outcome(LEGACY_SERVE[ev.kind], ev.x, ev.kind === 'over_refused' ? 'model' : undefined)
-          break
-        case 'leak':
-          if (!this.modern.outcome) this.outcome(ev.unsafe ? 'unsafe' : 'leaked', ev.x)
-          break
-        case 'place':
-          if (!this.modern.place) {
-            this.lastCash = null
-            const t = s.towers.find((tw) => tw.x === ev.x && tw.y === ev.y)
-            k.cue('build', { x: ev.x, rack: !t || t.def.kind === 'server' })
-          }
-          break
-        case 'train':
-          if (!this.modern.train) {
-            this.lastCash = null
-            k.cue('research.start')
-          }
-          break
-        case 'research-done':
-          if (!this.modern.posttrain) k.cue('checkpoint.minted')
-          break
-      }
-    }
-    this.legacy.length = 0
   }
 
   /** A power-state transition; while frozen it waits for the board to resume. */

@@ -1,7 +1,8 @@
 /**
  * ui/notifications.ts — the ONE notification stack: research finished, a new
- * checkpoint minted, a wave cleared, an achievement unlocked, the first
- * brownout / throttle of a wave. Cards stack upward from just above the build
+ * checkpoint minted (with a one-click rollout between waves), an achievement
+ * unlocked, the first brownout / throttle of a wave. A cleared wave is told by
+ * the board's banner and the wave report, so it does not also take a card. Cards stack upward from just above the build
  * bar, left of the inspect column, so they never cover the incident banner,
  * the Codex bubble, the next-wave card or an open modal (while a modal is up
  * the stack hides and its timers pause). At most three show at once; hovering
@@ -10,9 +11,10 @@
 import { Container, Graphics } from 'pixi.js'
 import { BUILDBAR_H, COLORS, DESIGN_H, DESIGN_W } from '../config'
 import { prefersReducedMotion } from '../settings'
-import { drawPanel, label } from './theme'
+import { fitLabel, INSPECT_MARGIN, INSPECT_W } from './panelKit'
+import { drawPanel, label, UIButton } from './theme'
 
-export type NotifyKind = 'research' | 'checkpoint' | 'waveClear' | 'achievement' | 'power' | 'heat'
+export type NotifyKind = 'research' | 'checkpoint' | 'achievement' | 'power' | 'heat'
 
 export interface Notice {
   kind: NotifyKind
@@ -25,7 +27,9 @@ export interface Notice {
   icon?: (g: Graphics, color: number) => void
   /** what a click does (open the related panel). */
   onClick?: () => void
-  /** seconds on screen (default 3.5). */
+  /** a one-click follow-up on the card's right edge (e.g. "DEPLOY ×3" for a new checkpoint). */
+  action?: { label: string; run: () => void }
+  /** seconds on screen (default 3.5, 7 with an action). */
   ttl?: number
 }
 
@@ -33,9 +37,12 @@ const W = 300
 const H = 52
 const GAP = 8
 const MAX_VISIBLE = 3
-const RIGHT = DESIGN_W - 12 - 360 - 12 // left of the inspect-panel column
+const RIGHT = DESIGN_W - INSPECT_MARGIN - INSPECT_W - 12 // left of the inspect-panel column
 const BOTTOM = DESIGN_H - BUILDBAR_H - 12
 const SLIDE = 0.12
+/** the action button on the card's right edge */
+const ACT_W = 92
+const ACT_H = 26
 
 /** Default kind glyphs (vector, house pixel-neon style). */
 function kindIcon(g: Graphics, kind: NotifyKind, c: number): void {
@@ -48,10 +55,6 @@ function kindIcon(g: Graphics, kind: NotifyKind, c: number): void {
       g.roundRect(6, 7, 14, 14, 2).stroke({ width: 1.5, color: c })
       g.rect(10, 11, 6, 6).fill({ color: c })
       g.poly([23, 3, 24.5, 6.5, 28, 8, 24.5, 9.5, 23, 13, 21.5, 9.5, 18, 8, 21.5, 6.5]).fill({ color: c })
-      break
-    case 'waveClear': // check in a ring
-      g.circle(14, 14, 11).stroke({ width: 1.5, color: c, alpha: 0.8 })
-      g.moveTo(8, 14).lineTo(12.5, 18.5).lineTo(20, 9).stroke({ width: 2, color: c })
       break
     case 'power': // bolt
       g.poly([16, 3, 8, 14, 13, 14, 11, 25, 20, 11, 14, 11, 18, 3]).fill({ color: c })
@@ -73,6 +76,7 @@ class Card {
   private icon = new Graphics()
   private head = label('', 10, COLORS.textDim, 'bold')
   private title = label('', 13, COLORS.textBright, 'bold')
+  private actBtn: UIButton
   notice: Notice | null = null
   life = 0
   age = 0
@@ -86,26 +90,45 @@ class Card {
     this.head.y = 9
     this.title.x = 54
     this.title.y = 24
-    this.view.addChild(this.bg, this.icon, this.head, this.title)
+    this.actBtn = new UIButton({
+      w: ACT_W,
+      h: ACT_H,
+      accent: COLORS.trust,
+      onTap: () => {
+        const run = this.notice?.action?.run
+        this.release()
+        run?.()
+      },
+    })
+    this.actBtn.x = W - ACT_W - 10
+    this.actBtn.y = (H - ACT_H) / 2
+    this.actBtn.visible = false
+    this.view.addChild(this.bg, this.icon, this.head, this.title, this.actBtn)
     this.view.eventMode = 'static'
     this.view.cursor = 'pointer'
     this.view.hitArea = { contains: (x: number, y: number) => x >= 0 && x <= W && y >= 0 && y <= H }
     this.view.on('pointerover', () => (this.hovered = true))
     this.view.on('pointerout', () => (this.hovered = false))
-    this.view.on('pointertap', () => onClick(this))
+    this.view.on('pointertap', (e) => {
+      // the action button handles its own tap
+      if (this.actBtn.visible && e.target === this.actBtn) return
+      if (this.actBtn.visible && this.actBtn.hovered) return
+      onClick(this)
+    })
     this.view.visible = false
   }
 
   bind(n: Notice): void {
     this.notice = n
-    this.life = n.ttl ?? 3.5
+    this.life = n.ttl ?? (n.action ? 7 : 3.5)
     this.age = 0
     this.hovered = false
-    this.head.text = n.head
-    this.title.text = n.title
-    // keep the title on one line inside the card
-    this.title.style.fontSize = 13
-    if (this.title.width > W - 66) this.title.style.fontSize = Math.max(9, Math.floor((13 * (W - 66)) / this.title.width))
+    this.actBtn.visible = !!n.action
+    if (n.action) this.actBtn.setTitle(n.action.label).layout(0, 0, true)
+    // keep both lines on one line inside the card (left of the action button when there is one)
+    const maxW = W - 66 - (n.action ? ACT_W + 8 : 0)
+    fitLabel(this.head, n.head, maxW, 10, 8)
+    fitLabel(this.title, n.title, maxW, 13, 9)
     this.bg.clear()
     drawPanel(this.bg, 0, 0, W, H, { alpha: 0.96, edge: n.accent, radius: 10 })
     this.icon.clear()
