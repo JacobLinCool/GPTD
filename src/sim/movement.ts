@@ -1,18 +1,13 @@
 import type { GameState, Request } from '../core/types'
 import { pathLength, posAt } from './pathing'
-import { recordOutcome } from './telemetry'
+import { resolveOutcome } from './resolve'
 
-function clamp100(v: number): number {
-  return v < 0 ? 0 : v > 100 ? 100 : v
-}
-
-/** Advance requests along the lane and handle leaks into the Trust Core. */
+/** Advance requests along the lane and resolve the ones that reach the Trust Core unanswered. */
 export function updateMovement(s: GameState, dt: number): void {
   for (const r of s.requests) {
     if (!r.alive) continue
     if (r.hitFlash > 0) r.hitFlash -= dt
     if (r.cacheFlash > 0) r.cacheFlash -= dt
-    if (r.cacheCd > 0) r.cacheCd -= dt
     // NOTE: real-seconds latency (queue + prefill wall time) is accumulated in
     // combat where server range is known — lane transit is board-only (§0.4),
     // it must NOT inflate real TTFT.
@@ -27,19 +22,12 @@ export function updateMovement(s: GameState, dt: number): void {
   }
 }
 
+/**
+ * A request that reaches the core unanswered is a 504 (§2.5). It is `unservable` when a
+ * rack in its path rejected it on a hard capacity gate (context window / whole KV budget)
+ * and nothing else served it, otherwise a plain `leaked`. A hazardous request that was
+ * never answered is NOT a breach: no unsafe text was delivered (resolve.ts prices it).
+ */
 function leak(s: GameState, r: Request): void {
-  r.alive = false
-  const unsafe = r.safetyRisk > 0 && !r.safetyCleared
-  // unservable (§2.5): a request that was REJECTED on the hard context-window gate
-  // and never served — a distinct outcome from a plain capacity leak. (A safety
-  // breach still takes priority: an unsafe leak is unsafe, not merely unservable.)
-  const unservable = !unsafe && r.windowBlocked && r.work > 0
-  s.meters.sla = clamp100(s.meters.sla - r.slaPenalty)
-  const trustHit = unsafe ? r.trustPenalty * s.modifiers.safetyDamage : r.trustPenalty
-  s.meters.trust = clamp100(s.meters.trust - trustHit)
-  if (unsafe) s.stats.unsafe++
-  else if (unservable) s.stats.unservable++
-  else s.stats.leaked++
-  recordOutcome(s, r, unsafe ? 'unsafe' : unservable ? 'unservable' : 'leaked', 0)
-  s.events.push({ type: 'leak', x: r.x, y: r.y, unsafe })
+  resolveOutcome(s, r, r.windowBlocked ? 'unservable' : 'leaked')
 }

@@ -32,6 +32,7 @@ import {
   serverPrefillSpeed,
   serverTargets,
 } from '../sim/effects'
+import { goodputPctOf } from '../sim/telemetry'
 import { CREDIT_USD } from '../config'
 
 /** The five capability axes, in display order. `agentic` is the discriminative one (§6.4). */
@@ -271,7 +272,7 @@ export function coolingHeadroom(s: GameState): PowerHeadroom {
  * ------------------------------------------------------------------ */
 
 export interface FleetMetrics {
-  /** Goodput: % of answered requests within SLO this wave (the headline, §1.3). */
+  /** Goodput: % of this wave's resolved requests served correctly, safely and within SLO (the headline, §5.5). */
   goodputPct: number
   /** requests answered per second over the rolling window. */
   rps: number
@@ -300,7 +301,8 @@ function inServiceElapsedSec(r: Request): number {
 
 export function fleetMetrics(s: GameState): FleetMetrics {
   const ws = s.waveStats
-  const goodputPct = ws && ws.answered ? (100 * ws.goodput) / ws.answered : 100
+  // the ONE Goodput formula the wave report and the agent bridge also use (sim/telemetry)
+  const goodputPct = ws ? goodputPctOf(ws) : 100
   // rolling RPS over the telemetry window (matches sim/telemetry answersPerSec).
   const WINDOW = 5
   const rps = ws ? ws.recentServes.length / WINDOW : 0

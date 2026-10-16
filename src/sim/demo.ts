@@ -996,9 +996,11 @@ export function demoPlan(s: GameState, waveAbout: number): void {
     if (!buildRole(s, 'general', freeSlot(s, SLOTS.lane), waveAbout)) break
   }
   ensureSupport(s, 'router', waveAbout >= 8 ? 2 : waveAbout >= 2 ? 1 : 0, SLOTS.lane)
+  // Guardrails screen by LANE COVERAGE: one encoder beside the core covers all four
+  // lanes, and more copies of the same classifier add no recall. Llama Guard is left
+  // out: its two-ended latency on every covered lane breaks code completion's 200 ms TTFT.
   const guardSlots = SLOTS.core.length ? SLOTS.core : SLOTS.lane
-  ensureSupport(s, 'guard_encoder', waveAbout >= 14 ? 3 : waveAbout >= 10 ? 2 : waveAbout >= 4 ? 1 : 0, guardSlots, 20)
-  ensureSupport(s, 'guard_llm', waveAbout >= 14 ? 1 : 0, guardSlots, 30)
+  ensureSupport(s, 'guard_encoder', waveAbout >= 4 ? 1 : 0, guardSlots, 20)
   ensureSupport(s, 'cache', cacheTarget(s, waveAbout), SLOTS.lane, reserveOf(s) + 8, 20)
   ensureBigRacks(s, waveAbout, waveAbout >= 12 ? 3 : waveAbout >= 9 ? 2 : 1)
   ensurePodShowcase(s, waveAbout)

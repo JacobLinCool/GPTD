@@ -4,6 +4,7 @@ import { loadout } from '../src/sim/effects'
 import {
   dollarsPerMtoken,
   effectiveBatch,
+  fleetMetrics,
   fmtDollarsPerMtoken,
   fmtLatencyMs,
   fmtTokS,
@@ -14,6 +15,7 @@ import {
   vramOf,
 } from '../src/ui/metrics'
 import { decodeTokSb1, serverAggDecodeTokS, serverPerUserDecodeTokS, serverFitsMemory } from '../src/sim/effects'
+import { finalizeReport, goodputPctOf, newWaveStats } from '../src/sim/telemetry'
 
 /**
  * Bring s.infra to the modern serving era (continuous batching + paged KV + FP8)
@@ -140,5 +142,26 @@ describe('ui/metrics — formatting', () => {
     expect(fmtLatencyMs(2500)).toBe('2.50 s')
     expect(fmtDollarsPerMtoken(1.67)).toBe('$1.67')
     expect(fmtDollarsPerMtoken(0.05)).toBe('$0.050')
+  })
+})
+
+describe('ui/metrics — Goodput parity with the wave report', () => {
+  it('the live gauge and the settled report use the one honest formula (every outcome in the denominator)', () => {
+    const s = createState(5)
+    const ws = newWaveStats(0)
+    ws.served = 2
+    ws.goodput = 2
+    ws.leaked = 6
+    ws.overRefused = 1
+    ws.total = 9
+    ws.answered = 2
+    ws.answeredInSlo = 2
+    s.waveStats = ws
+    const live = fleetMetrics(s).goodputPct
+    expect(live).toBeCloseTo((2 / 9) * 100, 9) // 2 clean serves of 9 requests — not 100% of the 2 answered
+    expect(live).toBe(goodputPctOf(ws))
+    const rep = finalizeReport(s, 0)!
+    expect(rep.goodputPct).toBe(live)
+    expect(rep.sloAttainPct).toBe(100) // the secondary view: every ANSWERED request was on time
   })
 })

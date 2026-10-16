@@ -1,5 +1,5 @@
 import { CLEAR_BONUS_SCALE, SIM_DT } from '../config'
-import type { GameState, IncidentDef, ModifierTarget } from '../core/types'
+import type { GameState, IncidentDef, LoseMeter, ModifierTarget } from '../core/types'
 import { updateCombat } from './combat'
 import { INCIDENTS, WAVES, themedIncidentForWave } from './content'
 import { LANE_COUNT } from './pathing'
@@ -10,7 +10,7 @@ import {
   serverTargets,
 } from './effects'
 import { updateMovement } from './movement'
-import { updatePower } from './power'
+import { refreshPower } from './power'
 import { updateResearch } from './research'
 import { allSpawned, updateSpawns } from './spawn'
 import { defaultModifiers } from './state'
@@ -22,7 +22,7 @@ export function step(s: GameState, dt: number = SIM_DT): void {
   s.time += dt
   s.waveTime += dt
 
-  updatePower(s)
+  refreshPower(s)
   updateResearch(s, dt)
   updateSpawns(s, dt)
   updateCombat(s, dt)
@@ -86,10 +86,9 @@ function updateEconomy(s: GameState, dt: number): void {
 
 function lose(s: GameState): void {
   s.phase = 'lost'
-  if (s.meters.cash < 0) s.message = 'lose.bankrupt'
-  else if (s.meters.trust <= 0) s.message = 'lose.trust'
-  else s.message = 'lose.sla'
-  s.events.push({ type: 'lose' })
+  const meter: LoseMeter = s.meters.cash < 0 ? 'cash' : s.meters.trust <= 0 ? 'trust' : 'sla'
+  s.message = meter === 'cash' ? 'lose.bankrupt' : meter === 'trust' ? 'lose.trust' : 'lose.sla'
+  s.events.push({ type: 'lose', meter })
 }
 
 /** Clear bonus in the real credit economy: the authored value × CLEAR_BONUS_SCALE. */
@@ -112,7 +111,8 @@ function clearWave(s: GameState): void {
   // clear the spent wave's incident state; rollIncident re-applies the next one.
   s.modifiers = defaultModifiers()
   s.laneWindow = []
-  s.events.push({ type: 'wave-clear', index: s.waveIndex })
+  s.events.push({ type: 'wave-clear', index: s.waveIndex, goodputPct: s.lastReport?.goodputPct })
+  refreshPower(s)
 
   // The authored campaign ends at the boss; endless mode just keeps going.
   if (!s.endless && s.waveIndex >= WAVES.length - 1) {
@@ -122,6 +122,8 @@ function clearWave(s: GameState): void {
     return
   }
   rollIncident(s)
+  // a telegraphed cooling / power incident is live in the build phase: show its real kW now
+  refreshPower(s)
 }
 
 /**
@@ -160,6 +162,7 @@ function rollIncident(s: GameState): void {
   if (!inc) return
   s.pendingIncident = inc
   applyIncident(s, inc)
+  s.events.push({ type: 'incident', id: inc.id })
 }
 
 /** Apply a telegraphed incident's multipliers, lane concentration, and one-shot effect. */

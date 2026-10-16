@@ -48,6 +48,7 @@ export function explainRejection(s: GameState, fn: string, args: unknown[]): str
         const t = s.towers.find((x) => x.id === towerId)
         if (!t) return `no tower with id ${towerId}`
         if (t.def.kind !== 'server') return `tower ${towerId} (${t.def.name}) is not a server rack`
+        if (s.phase === 'wave') return `models can only be swapped between waves (phase "build"): loading new weights drains the rack`
         if (!inPlay(s)) return `cannot deploy during phase "${s.phase}"`
         const m = resolveModel(s, modelId)
         if (!m) return `unknown model "${modelId}" — pick an id from state.models`
@@ -64,6 +65,7 @@ export function explainRejection(s: GameState, fn: string, args: unknown[]): str
         const t = s.towers.find((x) => x.id === towerId)
         if (!t) return `no tower with id ${towerId}`
         if (t.def.kind !== 'server') return `tower ${towerId} (${t.def.name}) is not a server rack`
+        if (s.phase === 'wave') return `rack hardware can only be upgraded between waves (phase "build"): new GPUs mean reloading the model`
         if (!inPlay(s)) return `cannot upgrade during phase "${s.phase}"`
         const next = nextHardware(t)
         if (!next) return `rack ${towerId} is already at the top hardware tier`

@@ -50,7 +50,8 @@ cooling in real kW, token-priced revenue — is grounded in real hardware and pr
 - Prefill (prompt processing) is compute-bound; decode (token generation) is bandwidth-bound.
 - KV cache holds attention state; it is gated by GPU HBM and the model's context window.
 - Latency SLO classes: IN interactive (tight TTFT/TPOT), NR near-real-time (relaxed), TO throughput/offline (no hard latency SLO).
-- Two-layer safety: a high-safety model can self-handle a hazard (layer 1, no latency); otherwise an in-path guardrail must catch it (layer 2) or an unsafe answer reaches the core.`
+- Two-layer safety: a high-safety model can self-handle a hazard (layer 1, no latency); otherwise a guardrail covering the request's lane must catch it (layer 2, adding its latency to every request on that lane) or the unsafe answer is delivered.
+- Outcomes: served (paid in full), sloMiss (correct but late, paid half), bad (wrong, refunded), unsafe, overRefused (a benign request refused by the model or a guard), unservable (too long for the window or KV), leaked (a 504).`
 
 function buildingsSection(): string {
   const lines: string[] = ['## Buildings (towers you can place)']

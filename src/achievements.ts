@@ -12,6 +12,7 @@ import type { GameEvent, GameState, ModelDef, WaveReport } from './core/types'
 import { CAMPAIGN_THEMES } from './sim/campaign'
 import { BUILD_ORDER, WAVES } from './sim/content'
 import { resolveModel } from './sim/effects'
+import { isBrownout } from './sim/power'
 
 export type AchCategory =
   | 'progress'
@@ -242,15 +243,20 @@ export class AchievementTracker {
     this.grant('x_agent')
   }
 
-  onEvent(_s: GameState, ev: GameEvent): void {
-    if (ev.type === 'brownout') this.brownoutThisWave = true
-    else if (ev.type === 'wave-start') this.brownoutThisWave = false
-    else if (ev.type === 'win') this.grant('p_win')
+  onEvent(s: GameState, ev: GameEvent): void {
+    if (ev.type === 'brownout') {
+      if (ev.on !== false && s.phase === 'wave') this.brownoutThisWave = true
+    } else if (ev.type === 'wave-start') {
+      // a brownout carried in from the build phase strikes this wave too
+      this.brownoutThisWave = isBrownout(s)
+    } else if (ev.type === 'win') this.grant('p_win')
   }
 
   /** Per-frame state scan (cheap; reads live state). */
   tick(s: GameState): void {
     const m = s.meters
+    // any rack dark at any point of a wave counts (the event only fires on transitions)
+    if (s.phase === 'wave' && isBrownout(s)) this.brownoutThisWave = true
     // comeback: dropped under 10, recovered above 50
     if (m.trust < 10) this.comebackArmed = true
     if (this.comebackArmed && m.trust >= 50) this.grant('p_comeback')
@@ -343,8 +349,11 @@ export class AchievementTracker {
     }
 
     if (!report) return
-    const answered = report.served + report.bad
-    if (report.served > 0 && report.goodputPct >= 99.5) this.grant('s_flawless')
+    const answered = report.served + report.sloMiss + report.bad + report.unsafe
+    // Flawless = every request this wave was served cleanly (100% honest Goodput: no
+    // late, wrong, unsafe, refused, rejected or dropped request at all)
+    const total = report.total ?? report.served + report.sloMiss + report.bad + report.unservable + report.unsafe + report.overRefused + report.leaked
+    if (report.served > 0 && report.served === total) this.grant('s_flawless')
     if (report.cacheHits >= 100) this.grant('s_cache')
     if (answered > 20 && report.p95Ttft > 0 && report.p95Ttft <= 0.4) this.grant('s_speed')
 

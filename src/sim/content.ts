@@ -51,6 +51,7 @@ export const REQUEST_TYPES: Record<string, RequestTypeDef> = {
     difficulty: { general: 10 },
     context: 18,
     prefixShare: 0.3,
+    refusalExposure: 0, // an embedding generates no text: there is nothing to refuse
     safetyRisk: 0,
     reward: 1,
     pricePerMtokIn: 0.05,
@@ -75,6 +76,7 @@ export const REQUEST_TYPES: Record<string, RequestTypeDef> = {
     difficulty: { chat: 18 },
     context: 8,
     prefixShare: 0.4,
+    refusalExposure: 1, // open-ended chat carries the most borderline prompts: the full rate applies
     safetyRisk: 0,
     reward: 6,
     pricePerMtokIn: 0.3,
@@ -100,6 +102,7 @@ export const REQUEST_TYPES: Record<string, RequestTypeDef> = {
     difficulty: { coding: 56 },
     context: 26,
     prefixShare: 0.5,
+    refusalExposure: 0.1, // fill-in-the-middle code is almost never refused
     safetyRisk: 0,
     reward: 9,
     pricePerMtokIn: 1,
@@ -124,6 +127,7 @@ export const REQUEST_TYPES: Record<string, RequestTypeDef> = {
     difficulty: { general: 50, reasoning: 44 },
     context: 64,
     prefixShare: 0.6,
+    refusalExposure: 0.4,
     safetyRisk: 0,
     reward: 14,
     pricePerMtokIn: 1,
@@ -132,7 +136,7 @@ export const REQUEST_TYPES: Record<string, RequestTypeDef> = {
     slaPenalty: 6,
     data: 3,
     cacheable: true,
-    desc: 'Huge retrieved prompt. A Cache / KV Cache makes the prefill survivable; a small window rejects it outright.',
+    desc: 'Huge retrieved prompt. A prefix-cache hit skips its shared prefix, but the rest still prefills; a small window rejects it outright.',
   },
   summ: {
     id: 'summ',
@@ -148,6 +152,7 @@ export const REQUEST_TYPES: Record<string, RequestTypeDef> = {
     difficulty: { general: 44 },
     context: 76,
     prefixShare: 0.2,
+    refusalExposure: 0.3,
     safetyRisk: 0,
     reward: 13,
     pricePerMtokIn: 1,
@@ -172,6 +177,7 @@ export const REQUEST_TYPES: Record<string, RequestTypeDef> = {
     difficulty: { reasoning: 82 },
     context: 48,
     prefixShare: 0.1,
+    refusalExposure: 0.5,
     safetyRisk: 0,
     reward: 30,
     pricePerMtokIn: 1,
@@ -197,9 +203,13 @@ export const REQUEST_TYPES: Record<string, RequestTypeDef> = {
     difficulty: { agentic: 82, reasoning: 66 },
     context: 70,
     prefixShare: 0.7,
+    // n/a while it carries an injection hazard (a hazard carrier is never benign)
+    refusalExposure: 0.5,
     toolUse: true,
     // §3.4 agents are prompt-INJECTION targets: a malicious tool/document can hijack
-    // the loop. A moderate injection hazard — the hardest category to self-handle.
+    // the loop. A moderate injection hazard — the hardest category to self-handle. The
+    // agent is still a REAL user task (not adversarial): once the injection is cleared
+    // it is served and judged like any other request.
     hazards: { injection: 0.3 },
     safetyRisk: 0.3,
     reward: 46,
@@ -209,7 +219,7 @@ export const REQUEST_TYPES: Record<string, RequestTypeDef> = {
     slaPenalty: 11,
     data: 4,
     cacheable: true,
-    desc: 'Autonomous multi-step tool use (SWE-bench-grade). Benchmarks have not saturated — only a true frontier model, or one you trained yourself, closes the loop.',
+    desc: 'Autonomous multi-step tool use (SWE-bench-grade). Benchmarks have not saturated — only a true frontier model, or one you trained yourself, closes the loop. Its tool outputs can carry prompt injection: only the model itself resists it until Red-Team Eval lets a guardrail screen it.',
   },
   batch: {
     id: 'batch',
@@ -225,6 +235,7 @@ export const REQUEST_TYPES: Record<string, RequestTypeDef> = {
     difficulty: { general: 40 },
     context: 22,
     prefixShare: 0.1,
+    refusalExposure: 0.2,
     safetyRisk: 0,
     reward: 10,
     pricePerMtokIn: 0.5,
@@ -249,9 +260,12 @@ export const REQUEST_TYPES: Record<string, RequestTypeDef> = {
     difficulty: { general: 38 },
     context: 22,
     prefixShare: 0.1,
-    // §3.4 the adversarial hazard carrier: a severe jailbreak attempt. A high-safety
-    // model may self-handle it (layer 1); otherwise a guardrail must catch it (layer 2),
-    // or an unsafe answer reaches the core and wrecks Trust.
+    refusalExposure: 0, // n/a: an attack is never benign
+    // §3.4 the adversarial hazard carrier: a severe jailbreak attempt. An input guardrail
+    // can block it before any compute (layer 2); a high-safety model can refuse it or
+    // answer it safely (layer 1); otherwise the unsafe answer is delivered and wrecks Trust.
+    // Handled, it resolves `served`; dropped unanswered, it costs only SLA.
+    adversarial: true,
     hazards: { jailbreak: 0.9 },
     safetyRisk: 0.9,
     reward: 7,
@@ -1202,7 +1216,7 @@ export const RESEARCH_LIST = Object.values(RESEARCH_DEFS)
 /* ------------------------------------------------------------------ *
  *  TOWERS & BUILDINGS — you build neutral GPU racks; what a rack is   *
  *  good at comes from the model you deploy on it (inspect panel).     *
- *  Every new rack ships with the free Llama-3.1-8B starter preloaded. *
+ *  Every new rack ships with the free starter model preloaded.        *
  * ------------------------------------------------------------------ */
 
 export const TOWER_DEFS: Record<string, TowerDef> = {
@@ -1216,8 +1230,8 @@ export const TOWER_DEFS: Record<string, TowerDef> = {
     accent: HARDWARE_DEFS.hw_edge.accent,
     hardwareId: 'hw_edge',
     defaultModelId: DEFAULT_MODEL_ID,
-    tagline: 'Small rack · Llama-3.1-8B included',
-    desc: 'A low-power starter rack, Llama-3.1-8B preloaded. Upgrade the rack in place and deploy any bigger open model your VRAM (and unlocked methods) allow.',
+    tagline: 'Small rack · free starter model included',
+    desc: 'A low-power starter rack with the free starter model preloaded. Upgrade the rack in place and deploy any bigger open model your VRAM allows.',
   },
   srv_frontier: {
     id: 'srv_frontier',
@@ -1230,7 +1244,7 @@ export const TOWER_DEFS: Record<string, TowerDef> = {
     hardwareId: 'hw_frontier',
     defaultModelId: DEFAULT_MODEL_ID,
     tagline: 'Big rack · 70B-ready',
-    desc: 'A large accelerator rack that fits a 70B model unquantized. Ships with Llama-3.1-8B; deploy something worthy of it.',
+    desc: 'A large accelerator rack that fits a 70B model unquantized. Ships with the free starter model; deploy something worthy of it.',
   },
   router: {
     id: 'router',
@@ -1245,8 +1259,8 @@ export const TOWER_DEFS: Record<string, TowerDef> = {
     routeBonus: 0.45,
     powerDraw: 0.2,
     heat: 0.2,
-    tagline: 'Smart traffic assignment',
-    desc: 'Reads each request and steers it to the right server. Boosts matched servers and is the heart of a smart build.',
+    tagline: 'Capability-aware dispatch',
+    desc: 'Requests inside its range are dispatched to the in-range rack whose model is best at that request (ties go to the faster rack) instead of whichever rack grabs them first, so weak racks stop answering hard requests. With KV-Aware Routing researched, routed cacheable traffic also lands on the replica that holds its prefix: more prefix-cache hits.',
   },
   cache: {
     id: 'cache',
@@ -1259,8 +1273,8 @@ export const TOWER_DEFS: Record<string, TowerDef> = {
     cacheChance: 0.35,
     powerDraw: 0.2,
     heat: 0.2,
-    tagline: 'Buffs servers · skips prefill',
-    desc: 'Aura: gives Serving Towers in range a chance to serve a cached prompt prefix on cacheable traffic (Embedding, Chat, Code Completion, RAG, Agentic) — the first token is instant (no prefill), but the response still decodes on the model. Overlap it with your servers.',
+    tagline: 'Prefix cache · skips the shared prefix',
+    desc: 'Aura: racks in range can reuse a cached prompt PREFIX on cacheable traffic (Embedding, Chat, Code Completion, RAG, Agentic). A hit skips the shared-prefix part of the prefill (the unique rest still prefills): lower TTFT, less prefill contention. Each request gets one lookup, and overlapping caches do not stack: the best one counts, capped by how much traffic really shares a prefix.',
   },
   // §3.3 the three external guardrail families — the key real contrast: a BERT
   // encoder is milliseconds; a generative 12B guardrail is a full (shorter) inference
@@ -1283,8 +1297,8 @@ export const TOWER_DEFS: Record<string, TowerDef> = {
       runsOnRoofline: false,
       baseRecall: 0.975,
     },
-    tagline: 'Input-side · jailbreak + injection · 92 ms',
-    desc: 'A lightweight BERT encoder (Prompt Guard 86M): a single millisecond-scale forward pass on the INPUT. Catches jailbreak and prompt injection. Cheap — it does not occupy your racks.',
+    tagline: 'Input-side · jailbreak (+ injection after Red-Team) · 92 ms',
+    desc: 'A lightweight BERT encoder (Prompt Guard 86M): one millisecond-scale forward pass on the INPUT, before any rack computes. It screens every request on the lanes its range touches, wherever it sits: +92 ms TTFT and a small false-refusal rate on that traffic. Blocks jailbreaks outright; prompt-injection detection unlocks with Red-Team Eval. More encoders cover more lanes; they never re-screen the same request.',
   },
   guard_llm: {
     id: 'guard_llm',
@@ -1304,7 +1318,7 @@ export const TOWER_DEFS: Record<string, TowerDef> = {
       baseRecall: 0.92,
     },
     tagline: 'Both sides · all hazards · a real 12B inference',
-    desc: 'A generative 12B guardrail (Llama Guard 4) on its OWN H100 rack: each check is a full (shorter) LLM inference that draws real power and adds real latency — one to two orders slower than the encoder. Catches all four hazards, input and output.',
+    desc: 'A generative 12B guardrail (Llama Guard 4) on its own H100: each check is a full (shorter) LLM inference, so it adds real latency at BOTH ends (TTFT on the prompt, E2EL on the answer) for every request on the lanes it covers. Catches jailbreak and harmful content always, injection after Red-Team Eval and PII after Red-Team Eval II; its output check stops an unsafe answer before delivery.',
   },
   guard_mod: {
     id: 'guard_mod',
@@ -1325,7 +1339,7 @@ export const TOWER_DEFS: Record<string, TowerDef> = {
       baseRecall: 0.88,
     },
     tagline: 'Both sides · harmful + PII · vendor-hosted',
-    desc: 'A vendor-hosted moderation pass (OpenAI omni): a 120 ms extra model call on someone else’s racks. Catches harmful content and PII leakage on input and output — but not jailbreaks.',
+    desc: 'A vendor-hosted moderation pass (OpenAI omni): a 120 ms extra model call on someone else’s racks, on the input and again on the output of every request on the lanes it covers. Catches harmful content always and PII leakage after Red-Team Eval II — but not jailbreaks.',
   },
   power: {
     id: 'power',

@@ -1,5 +1,5 @@
 import { LANE_SPEED, TILE } from '../config'
-import type { GameState, Request, SafetyProfile } from '../core/types'
+import type { GameState, Request, SafetyProfile, SpawnGroup } from '../core/types'
 import { REQUEST_TYPES } from './content'
 import { maxSeverity } from './safety'
 import { LANE_COUNT, posAt } from './pathing'
@@ -46,8 +46,11 @@ export function spawnRequest(
     tokensOut: outputTokens,
     contextLen: inputTokens,
     queueSec: 0,
+    guardInSec: 0,
+    guardOutSec: 0,
     ttftReal: 0,
     e2elReal: 0,
+    decodeSec: 0,
     sloViolated: false,
     windowBlocked: false,
     speed: def.speed * speedMul * TILE * LANE_SPEED,
@@ -65,18 +68,32 @@ export function spawnRequest(
     slaPenalty: def.slaPenalty,
     data: def.data,
     bestQuality: -999,
+    qualTokSum: 0,
+    qualTokW: 0,
     bornAt: s.time,
     safetyCleared: risk <= 0,
     overRefused: false,
     selfHandled: false,
+    screened: false,
     guardsSeen: new Set<number>(),
+    attackHandled: false,
     routed: false,
-    cacheCd: 0,
+    routedTo: null,
+    cacheLooked: false,
+    cachedTokens: 0,
+    tokBy: {},
     x: p.x,
     y: p.y,
     hitFlash: 0,
     cacheFlash: 0,
     alive: true,
+    // display-only, latched later (declared up front: one object shape for every request)
+    prefillDoneAt: undefined,
+    sloCause: undefined,
+    refusedBy: undefined,
+    thinkTokens: undefined,
+    answeredBy: undefined,
+    answeredModelId: undefined,
   }
   s.requests.push(r)
   return r
@@ -84,6 +101,22 @@ export function spawnRequest(
 
 /** Every ingress lane id [0..LANE_COUNT) — the default spread when no concentration is active. */
 const ALL_LANES = Array.from({ length: LANE_COUNT }, (_, i) => i)
+
+/**
+ * The single ingress lane a wave's whole traffic is funnelled into, if any: every burst
+ * pinned to one lane (an authored single-entry surge), or a concentration incident that
+ * narrowed the lane window to one lane. undefined = the traffic is spread.
+ */
+export function surgeLaneOf(groups: SpawnGroup[], laneWindow: number[]): number | undefined {
+  const spread = laneWindow.length ? laneWindow : ALL_LANES
+  const lanes = new Set<number>()
+  for (const g of groups) {
+    if (g.lane !== undefined) lanes.add(((g.lane % LANE_COUNT) + LANE_COUNT) % LANE_COUNT)
+    else for (const l of spread) lanes.add(l)
+    if (lanes.size > 1) return undefined
+  }
+  return lanes.size === 1 ? [...lanes][0] : undefined
+}
 
 /** Advance the active wave's spawn groups. */
 export function updateSpawns(s: GameState, dt: number): void {

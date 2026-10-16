@@ -70,6 +70,7 @@ export function startResearch(s: GameState, id: string): boolean {
   if (s.data < def.dataCost) return false
   s.data -= def.dataCost
   s.research[track] = { id, kind: track, progress: 0, compute: def.compute }
+  s.events.push({ type: 'research-start', id, track })
   s.events.push({ type: 'train' })
   return true
 }
@@ -150,6 +151,7 @@ export function startPostTrain(
       startWave: s.waveIndex,
     },
   }
+  s.events.push({ type: 'research-start', id: s.research.posttrain.id, track: 'posttrain' })
   s.events.push({ type: 'train' })
   return true
 }
@@ -270,7 +272,10 @@ function completeResearch(s: GameState, track: ResearchTrack): void {
     // §1 a Post-Training Studio run: snapshot the derived model (writes
     // s.derivedModels[id] + s.models[id]) and emit research-done with its id.
     const derived = deriveModel(s, slot.meta)
-    if (derived) s.events.push({ type: 'research-done', id: derived.id })
+    if (derived) {
+      s.events.push({ type: 'posttrain-done', modelId: derived.id })
+      s.events.push({ type: 'research-done', id: derived.id })
+    }
   } else {
     const def = slot ? RESEARCH_DEFS[slot.id] : null
     if (def) {
