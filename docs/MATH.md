@@ -118,7 +118,7 @@ Units: *real s* is the datacenter clock every latency, token rate and SLO is jud
 | `CONTRACT_BASE` / `CONTRACT_PER_TIER` / `CONTRACT_BOSS_PREMIUM` | 160 / 40 / 320 | SLA contract value per wave |
 | `RESEARCH_DATA_SCALE` / `RESEARCH_COMPUTE_SCALE` | 4 / 12 | Multipliers on every authored research node's Data and compute |
 | `POSTTRAIN_COMPUTE_SCALE` | 2 | Multiplier on every Studio compute bill |
-| `RESEARCH_MAX_SHARE` | 0.45 | Most of the fleet's BF16 TFLOPS research may lend |
+| `RESEARCH_MAX_SHARE` | 0.45 | Most of the online fleet's BF16 TFLOPS research may lend |
 | `RESEARCH_TARGET_SECONDS` | 60 | Board seconds per "wave" in the research time preview |
 | `POWER_USD_PER_KWH` | 0.10 | All-in industrial electricity price |
 | `PUE_AIR` / `PUE_LIQUID` | 1.4 / 1.15 | Facility power usage effectiveness by cooling class |
@@ -263,9 +263,9 @@ Every SLA penalty is multiplied by `s.modifiers.slaDamage`. `served` and `bad` a
 | `hw_frontier` (H200) | 1 | 989 / 1979 / — | 141 GB | 4.8 | 700 | air | $60K → 60 | 3.2 | 3.3 |
 | `hw_pod` (DGX H200) | 8 | 989 / 1979 / — | 141 GB | 4.8 | 700 | air | $320K → 320 | 25.6 | 3.4 |
 | `hw_superpod` (DGX B200) | 8 | 2250 / 4500 / 9000 | 192 GB | 8.0 | 1000 | air | $500K → 500 | 40 | 3.5 |
-| `hw_giga` (GB200 NVL72) | 72 | 2250 / 4500 / 9000 | 192 GB | 8.0 | 1000 | liquid | $3M → 3000 | 360 | 3.6 |
+| `hw_giga` (GB200 NVL72) | 72 | 2250 / 4500 / 9000 | 192 GB | 8.0 | 1200 | liquid | $3M → 3000 | 360 | 3.6 |
 
-Support buildings: Router 24 credits, range 3.6, 0.2 kW · Cache 20, range 3.0, 0.2 kW · Prompt Guard 14 · Llama Guard 40 · Moderation 18 · Power Plant 18 (+8 kW) · Cooling Tower 18 (+8 kW air) · Liquid Cooling Loop 90 (+60 kW liquid) · Training Lab 36. Selling refunds 60% of the current hardware's cost.
+Support buildings: Router 24 credits, range 3.6, 0.2 kW · Cache 20, range 3.0, 0.2 kW · Prompt Guard 14 · Llama Guard 40 · Moderation 18 · Power Plant 18 (+8 kW) · Cooling Tower 18 (+8 kW air) · Liquid Cooling Loop 90 (+75 kW liquid) · Training Lab 36. Selling refunds 60% of the current hardware's cost.
 
 ### 2.11 Post-training (`models.ts`, `METHOD_RECIPES`)
 | Constant | Value | What it sets |
@@ -274,10 +274,11 @@ Support buildings: Router 24 credits, range 3.6, 0.2 kW · Cache 20, range 3.0, 
 | `forgetDepthMul` | `1 + 0.5·max(0, depth − 1)` | Forgetting growth with chain depth |
 | `CAPACITY_MARGIN` / `CAPACITY_PEER_SIZE` | 6 / 2 | Body ceiling: best base ≤ 2× its size, + 6 |
 | size / data / sparsity / depth factors | `(activeB/8)^0.7` · `max(1, (totalB/8)^0.45)` · `1 + 0.12·√(total/active − 1)` · `1 + 0.6·baseDepth` | Run cost (floors 0.1 B on sizes) |
-| `EFFORT_NOTCHES` | 0.25 · 0.5 · 1.0 · 1.5 · 2.0 | Effort slider |
+| `EFFORT_NOTCHES` | 0.25 · 0.5 · 1.0 · 1.5 · 2.0 | The only efforts a run may start at |
 | alignment tax factor | rlhf 1 · cai 0.6 · other 0.8 | General-axis tax weight |
-| safety gain | rlhf 28 · cai 26 · safety-target DPO 18 (× √effort, cap 100) | `alignment.safety` |
-| over-refusal | CAI −0.04·√effort (→ safe-completion) · RLHF and safety-target DPO +0.05·√effort (none → hard-refusal) | `alignment.overRefusal` |
+| alignment damp | `1 / (1 + 0.15·baseDepth)` | Safety gain and CAI cut decay down a chain (the first run lands in full) |
+| safety gain | rlhf 28 · cai 26 · safety-target DPO 18 (× √effort × alignment damp, cap 100) | `alignment.safety` |
+| over-refusal | CAI −0.04·√effort × alignment damp, floored at `OVERREF_FLOOR` 0.02 (→ safe-completion) · RLHF and safety-target DPO +0.05·√effort (none → hard-refusal) | `alignment.overRefusal` |
 | SFT | `instructFollow += 8·√effort` (cap 100) | — |
 | QAT / distill | release precision 0.5 and −2 on every axis / cap `min(teacher, student + 18)` | — |
 
@@ -302,7 +303,7 @@ Support buildings: Router 24 credits, range 3.6, 0.2 kW · Cache 20, range 3.0, 
 | `MAX_TIER` | 12 | Tier of the last authored waves |
 | `VOLUME_FACTOR` | trickle 0.6 · steady 1.0 · heavy 1.55 · flood 2.3 · extreme 3.2 | Budget and cadence |
 | `BOSS_BUDGET_MUL` | 1.25 | Boss budget over a regular wave |
-| `STEP_CAP` / `BOSS_STEP_CAP` | 1.6 / 1.8 | Largest budget step over the previous wave |
+| `STEP_CAP` / `BOSS_STEP_CAP` | 1.6 / 1.8 | Largest step of the load a wave brings (budget × its forced incident's volume) over the previous wave's |
 | `BASE_INTERVAL` | embed 0.32 · chat 0.72 · comp 0.95 · rag 1.2 · summ 1.25 · reason 1.2 · agent 1.8 · batch 1.35 · jailbreak 0.95 | Seconds between spawns at steady volume |
 
 `ERA_TOKEN_GROWTH` (prompt × / answer × by tier 12; an unlisted archetype uses 3 / 1.5), with the tier-12 sizes it produces:
@@ -327,13 +328,14 @@ Support buildings: Router 24 credits, range 3.6, 0.2 kW · Cache 20, range 3.0, 
 | `inc_grid_curtailment` | powerCap ×0.85, powerPrice ×1.5 |
 | `inc_interconnect_queue` | powerBuild 0 (no new Power Plant), powerPrice ×1.3 |
 | `inc_nuclear_ppa` (good) | powerPrice ×0.6 |
-| `inc_cooling_failure` / `inc_water_drought` | coolingCap ×0.55 / ×0.65 |
+| `inc_cooling_failure` | liquidCoolingCap ×0.55 (the Liquid Cooling Loops only) |
+| `inc_water_drought` | coolingCap ×0.65 (both pools) |
 | `inc_h100_shortage` / `inc_hbm_soldout` / `inc_export_ban` | buildCost ×1.8 / ×1.6 / ×2.0 |
 | `inc_lead_times_ease` (good) | buildCost ×0.7 |
 | `inc_price_war` / `inc_market_shock` | reward ×0.6 / ×0.7 |
 | `inc_regulatory_audit` / `inc_jailbreak_storm` | safetyDamage ×1.6 / ×1.8 |
 | `inc_data_poisoning` / `inc_contamination` | instant: Data × 0.5 / × 0.6 (floored) |
-| `inc_viral_ghibli` | volume ×1.4, reward ×1.2 |
+| `inc_viral_ghibli` (good) | volume ×1.4, reward ×1.2 |
 | `inc_enterprise_demo` (good) | reward ×1.5, slaDamage ×1.8 |
 | `inc_demand_lull` (good) | volume ×0.7 |
 
@@ -651,12 +653,12 @@ serverPower = tdpWatts / 1000 × 0.8 × (fp8 ? 0.85 : 4-bit ? 0.85·0.95 : 1) ×
 towerPowerKw = server: serverPower · Llama Guard: its H100's serverPower · support: powerDraw
 powerCap = (6 + Σ Power Plant 8) × modifiers.powerCap
 air pool    = (6 + Σ Cooling Tower 8) × coolingCap   → cools every rack that is not liquid-cooled
-liquid pool = (Σ Liquid Loop 60) × coolingCap        → cools liquid racks only
+liquid pool = (Σ Liquid Loop 75) × coolingCap × liquidCoolingCap   → cools liquid racks only
 liquid rack without a Loop: offline (and cannot be placed or upgraded into)
 brownout: while Σ draw > powerCap, switch off servers by descending kW, then support buildings
 throttle(pool) = heat ≤ cap ? 1 : max(0.2, cap / heat)
 ```
-A rack's kW is its nameplate serving draw (RACK_UTILIZATION 0.8): an H100 rack 0.56 kW (0.48 FP8), a DGX H200 4.48 kW, an NVL72 57.6 kW.
+A rack's kW is its nameplate serving draw (RACK_UTILIZATION 0.8): an H100 rack 0.56 kW (0.48 FP8), a DGX H200 4.48 kW, an NVL72 69.1 kW (74.6 kW with speculative decoding, the most one 75 kW loop holds).
 
 ### 3.8 Economy (`effects.ts`, `resolve.ts`, `sim.ts`)
 ```
@@ -699,7 +701,7 @@ utilization: inst = Σ roof × load / Σ roof (roof = aggregate tok/s at full sl
 ### 3.10 Research compute (`research.ts`)
 ```
 research dataCost = round(authored × 4) ;  compute = round(authored × 12)     # infra, method unlocks, red-team
-fleetFlops = Σ server racks' BF16 TFLOPS ;  cap = 0.45 × fleetFlops
+onlineFlops = Σ lit server racks' BF16 TFLOPS (browned-out / liquid-gated racks excluded) ;  cap = 0.45 × onlineFlops
 requisitionPick: online racks by BF16 TFLOPS desc, each taken iff taken + its TFLOPS ≤ cap;
                  none fit and ≥ 2 online → the weakest; never the last online rack
 rate = Σ lent TFLOPS × throttle ;  each active track gets rate / activeTracks
@@ -707,12 +709,13 @@ slot.progress += perTrackRate × dt (board s, waves only) ;  done at progress �
 applyInfraEffects: utilization / prefixHitCeil / specLevel / loraSlots / engineTier take the max ;
                    kvQuantBytes the min ; multiStep / offloadGb / flash add ; the rest set switches
 researchUnlocked = not owned ∧ prerequisites ∧ no researched conflict ∧ (NVFP4: a Blackwell rack on the board)
-preview: seconds = compute / (lent / (running tracks + 1)) ;  waves = seconds / waveSeconds
+preview: seconds = compute / (lent / (running tracks + 1)) ;  waves = seconds / waveSeconds ;  servingLoss = lent / onlineFlops
 ```
 
 ### 3.11 Post-training (Studio, `models.ts`)
 ```
-depth (new) = base depth + 1
+baseDepth = base depth (a merge: max of the two parents' depths, so the order never matters) ;  depth (new) = baseDepth + 1
+effort ∈ EFFORT_NOTCHES (startPostTrain rejects any other value)
 uncappedGain = min(gainScale × √effort / (1 + 0.15·depth),  gainCap × max(0, (130 − base[axis]) / 130))
 ceiling(body, axis) = min(130, 6 + max qualityBy[axis] over roster bases with paramsTotalB ≤ 2 × body)
 gain = distill ? uncappedGain : max(0, min(uncappedGain, ceiling − base[axis]))      # safety target: 0
@@ -738,7 +741,8 @@ tier: peak ≥ 95 or totalB ≥ 100 → frontier ; coding ≥ reasoning ∧ codi
 ### 3.12 Campaign scaling (`campaign.ts`, `sim.ts`, `actions.ts`)
 ```
 waveBudget(tier, volume, boss) = round((11 + 4·tier) × VOLUME_FACTOR[volume] × (boss ? 1.25 : 1))
-budget[i] = min(waveBudget, ⌈budget[i−1] × (boss ? 1.8 : 1.6)⌉)                 # campaignBudgets
+v[i] = volume of the incident wave i forces (1 if none) ;  eff[i] = budget[i] × v[i]    # campaignBudgets
+budget[i] = min(waveBudget, ⌊⌈eff[i−1] × (boss ? 1.8 : 1.6)⌉ / v[i]⌋)
 group: count = max(1, round(budget × weight / Σweight)) ;  interval = BASE_INTERVAL / √VOLUME_FACTOR
        delay = i × max(3, 7 − 0.25·tier)
 ramp   = ((tier − 1) / 11)^1.5
@@ -753,14 +757,14 @@ novelShare = clamp(0.05·(tier − 2), 0, 0.5) ;  the k-th hazardous request of 
              ⌊(k + 1)·share⌋ > ⌊k·share⌋                                       (no RNG draw)
 single-lane surge: every burst pinned to lane hash(realEvent + name) mod 4
 ```
-The authored curve these produce: W1 9 requests (tier 1); late bosses W60 204, W70 219, W80 225, W90 235, W100 237 (the per-group rounding makes the sum differ slightly from the band budget). Tier 12 begins at W80; hazard pressure reaches ×1.429 and the novel share 0.5 there.
+The authored curve these produce, counted as spawned (the forced incident's volume included): W1 9 requests (tier 1); late bosses W60 204, W70 219, W80 226 (its edge-outage retry storm on top), W90 235, W100 237 (the per-group rounding makes the sum differ slightly from the band budget). The steepest realized step is the W20 boss, ×1.85 after rounding. Tier 12 begins at W80; hazard pressure reaches ×1.429 and the novel share 0.5 there.
 
 **Incidents** (rolled at every wave clear for the next wave, index `next`):
 ```
 next < 2 → none
 theme.incident ?? themedIncidentId(special) → forced
 else boss, or (next + 1) % 10 = 0, or every 10th endless surge → a random hard (non-good) incident
-     (a boss never gets a lane funnel on top)
+     (a boss never gets a lane funnel or a volume surge on top)
 else 60% → a random incident from the whole table
 apply: modifiers[k] *= mods[k] ; concentrate → laneWindow = 1 random lane ; instant(s) now
 startWave: count = max(1, round(count × volume)) ;  rewardMul × reward
@@ -773,7 +777,7 @@ d = max(1, waveIndex − 99)
 count      = 1 + 0.05·d          work = 1 + 0.035·d
 complexity = 1.22 + 0.01·max(0, d − 2)
 hazardMul  = 1.429 × (1 + 0.01·d)            novelShare = min(0.65, 0.5 + 0.005·d)
-contract   = 640 + 40·d
+contract   = 960 + 40·d                     # wave 100's boss contract, + 40 a surge
 bursts: 3–5 templates (weights chat 3, embed 2, comp 2, rag 2, reason 2, summ 1, batch 1, jailbreak 1, agent 1),
         at least one reason or agent
 budget = 236 (wave 100's boss budget) × count

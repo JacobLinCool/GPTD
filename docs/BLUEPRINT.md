@@ -191,11 +191,12 @@ dataCost       = round(costData × effort × depthSurcharge × dataSizeFactor)  
 ```
 > **worked example（LoRA agentic on Qwen3.5 35B A3B：active 3B、total 35B、effort 1.0、baseDepth 0）**：`sizeFactor = (3/8)^0.7 ≈ 0.50`；`sparsityFactor = 1 + 0.12×√(11.67−1) ≈ 1.39`；`computeCost ≈ 1 × 0.50 × 1000 × 2 × 1.39 ≈ 1,400 TFLOPS·s`；`dataCost = round(5 × 1 × 1 × (35/8)^0.45) = round(9.7) = 10`。同 base 的 CPT 是 60× 的 compute（§2.1）。
 
-**`effort` 滑桿**：離散五檔 `{0.25, 0.5, 1.0, 1.5, 2.0}`（Studio，§5.2 S9）。`effort` 同時抬 `gain(√effort)`、`computeCost(×effort)`、`dataCost(×effort)`；√ 的報酬遞減讓高 effort 不是無腦最優。
+**`effort` 滑桿**：離散五檔 `{0.25, 0.5, 1.0, 1.5, 2.0}`（Studio，§5.2 S9）；`startPostTrain` 只接受這五檔（負值、0、極小值或非數字的 effort 一律拒絕，agent bridge 會回報原因）。`effort` 同時抬 `gain(√effort)`、`computeCost(×effort)`、`dataCost(×effort)`；√ 的報酬遞減讓高 effort 不是無腦最優。
 
 **`deriveQuality` 與容量天花板**：
 ```
-depth        = base.depth + 1
+baseDepth    = base.depth（merge：兩個 parent 中較深者，與列出順序無關）
+depth        = baseDepth + 1
 rawGain      = gainScale × √effort / (1 + 0.15 × depth)
 headroom     = max(0, (130 − base[axis]) / 130)
 uncapped     = min(rawGain, gainCap × headroom)
@@ -209,7 +210,7 @@ hybrid 的 instant 向量：每軸套用同一個 delta
 Studio 預覽在天花板截斷增益時標示出來（`StudioPreview.ceiling`），讓玩家知道增益為何變小。
 
 **內生狀態更新**：
-- `safety` target / `rlhf` / `cai` → `alignment.safety += {rlhf 28, cai 26, 其他 18} × √effort`（上限 100）；`cai` 同時 `overRefusal −= 0.04·√effort` 並轉為 `safe-completion`；`rlhf` 與 safety-target 的 `dpo` 則 `overRefusal += 0.05·√effort`（§2.4 張力；`none` 轉為 `hard-refusal`）。
+- `safety` target / `rlhf` / `cai` → `alignment.safety += {rlhf 28, cai 26, 其他 18} × √effort × alignDamp`（上限 100；`alignDamp = 1/(1 + 0.15·baseDepth)`，第一次訓練拿到完整效果，疊在 derived 上的每一次遞減）；`cai` 同時 `overRefusal −= 0.04·√effort × alignDamp`，下限 `OVERREF_FLOOR = 0.02`（XSTest / OR-Bench 從未量到 0 誤拒；本來就低於下限的不會被拉高），並轉為 `safe-completion`；`rlhf` 與 safety-target 的 `dpo` 則 `overRefusal += 0.05·√effort`（§2.4 張力；`none` 轉為 `hard-refusal`）。
 - `sft` → `instructFollow += 8·√effort`（上限 100）。
 - 推理訓練（`grpo`，或任何 method 的 `reasoning` target）讓 `never` 模型變成 `always` 思考者（DeepSeek-R1 從 V3 長出的路線）；hybrid 保留它的開關，thinker 維持 thinker。變成思考者而 `thinkTokens = 0` 的模型得到 1500。
 - `merge`：兩個 parent 的 safety、overRefusal、instructFollow 取平均；refusalStyle 兩者相同才保留，否則 `hard-refusal`；thinking 支援相同才保留，否則 `hybrid`（instant 向量取兩個 parent instant 路徑的平均）；thinkTokens 取較大者。
@@ -313,7 +314,7 @@ requests 子系統**只提供 token，不定 serving 速率**。prefill 超線�
 > **價格與懲罰**：前緣工作（`agent` $3/$12、`reason` $1/$5）單價最高，`embed`/`chat` 最便宜；每型另有 `trustPenalty`/`slaPenalty`/`data` yield（`jailbreak` 的 Trust 懲罰最重：9）。`reason` 的 `thinkMul = 0`：它的長 CoT 輸出本身就是推理。`summ` 的 6 s TTFT 引用 MLPerf v5.0 長 context 405B 的 p99 TTFT bound（§1.3）。`agent` 是真實使用者任務：它的 tool output 帶 prompt injection，hazard 清掉之後照一般請求判品質；`jailbreak` 是 `adversarial`：正確答案是擋下或拒答。
 > **latClass 規則**：`IN` 400 ms / 40 ms、`NR` 2000 ms / 200 ms、`TO` 沒有延遲 SLO；per-type 覆寫收緊或放寬各自的 bound（§6.4）。`embed`（OSL 0）不套 TPOT、不會被誤拒、不會思考。
 
-**campaign 與平衡 gate**：waves 由 **100 波真實歷史 campaign** 驅動（`campaign-data.ts` 的 `WaveTheme` 主題表 → `campaign.ts` 的 `buildCampaign` 展開成 `WaveDef`；難度曲線集中在 `campaign.ts` 的旋鈕：`waveBudget`、`STEP_CAP/BOSS_STEP_CAP`、`ERA_TOKEN_GROWTH` + `eraTokenRamp`、`tierComplexity`、`hazardMulOf`、`novelShareOf`、SLA 合約常數）。每一波是一個真實事件：需求轉移（聊天熱潮、RAG 與寫程式助手、推理洪流、agent 成為多數）或營運衝擊（H100 短缺、海纜中斷、電網緊急、出口管制、EU AI Act、價格戰、服務中斷、agent 攻擊）；模型與晶片發表不是 wave，那是玩家的工具。tier 1→12 單調不減，wave 100（*BOSS: The Always-On Agent Era*）是頂點，之後接 endless。這是一場淘汰賽：多數 run 在中途結束，結束的原因是累積的壓力——量、組合、品質線、攻擊與事件一起上升——而不是某一波突然塞進物理上服務不了的請求。平衡 gate（`tests/playthrough.test.ts`）檢查的是**深度 + 系統使用**而非勝利：production demo（`sim/demo.ts`）在四個 gate seed 上都要達到 `GAUNTLET_FLOOR = 45` 且在 wave 100 之前被淘汰、答出的請求八成以上乾淨、誤拒少於 served 的一成，並用到完整的 serving stack；只蓋便宜 rack 加起手模型的 naive build 必須撐過開場教學波、在 wave 6–14 之間倒下；一支能打 wave 100 的艦隊必須以 80% 以上 Goodput 清掉前三個 endless surge（每個的量不低於 wave 100 的 95%）。本版實測：demo 到達 W69–W84、naive 在 W10（第一個 boss）倒下、endless 前三個 surge 的 Goodput 95–97%。
+**campaign 與平衡 gate**：waves 由 **100 波真實歷史 campaign** 驅動（`campaign-data.ts` 的 `WaveTheme` 主題表 → `campaign.ts` 的 `buildCampaign` 展開成 `WaveDef`；難度曲線集中在 `campaign.ts` 的旋鈕：`waveBudget`、`STEP_CAP/BOSS_STEP_CAP`（每波實際帶來的量——預算 × 它強制事件的量倍率——最多是上一波的 1.6 倍，boss 1.8 倍）、`ERA_TOKEN_GROWTH` + `eraTokenRamp`、`tierComplexity`、`hazardMulOf`、`novelShareOf`、SLA 合約常數）。每一波是一個真實事件：需求轉移（聊天熱潮、RAG 與寫程式助手、推理洪流、agent 成為多數）或營運衝擊（H100 短缺、海纜中斷、電網緊急、出口管制、EU AI Act、價格戰、服務中斷、agent 攻擊）；模型與晶片發表不是 wave，那是玩家的工具。tier 1→12 單調不減，wave 100（*BOSS: The Always-On Agent Era*）是頂點，之後接 endless。這是一場淘汰賽：多數 run 在中途結束，結束的原因是累積的壓力——量、組合、品質線、攻擊與事件一起上升——而不是某一波突然塞進物理上服務不了的請求。平衡 gate（`tests/playthrough.test.ts`）檢查的是**深度 + 系統使用**而非勝利：production demo（`sim/demo.ts`）在四個 gate seed 上都要達到 `GAUNTLET_FLOOR = 45` 且在 wave 100 之前被淘汰、答出的請求八成以上乾淨、誤拒少於 served 的一成，並用到完整的 serving stack；只蓋便宜 rack 加起手模型的 naive build 必須撐過開場教學波、在 wave 6–14 之間倒下；一支能打 wave 100 的艦隊必須以 80% 以上 Goodput 清掉前三個 endless surge（每個的量不低於 wave 100 的 95%）。本版實測：demo 到達 W64–W91、naive 在 W8–W10（最晚在第一個 boss）倒下、endless 前三個 surge 的 Goodput 95–97%。
 
 ### 2.5 七終局（統一 movement + combat + safety，`sim/resolve.ts`）
 
@@ -445,7 +446,7 @@ refusal  = 1 − (1 − overRefusal × exposure) × Π_family (1 − overRefuse 
 
 ### 3.5 第一層取得：RLHF / CAI / safety DPO 進 finetune（§1 method）
 
-由 §1 的 method 寫入 `AlignmentProfile`：RLHF → safety +28·√effort、誤拒上升、最高稅；CAI → safety +26·√effort、**safe-completion**、誤拒 −0.04·√effort、低稅；safety-target DPO → safety +18·√effort、誤拒上升。玩家做 RLHF 得高安全、高誤拒、高能力稅；做 CAI 得 Pareto 改善（教 §2.4 + §3.1）：一次 effort 2 的 CAI 把 Qwen 家族的 overRefusal 從 0.12 降到約 0.063、safety 從 58 升到約 95，模型造成的誤拒大約減半，這在每波的 SLA 帳上看得見。
+由 §1 的 method 寫入 `AlignmentProfile`：RLHF → safety +28·√effort、誤拒上升、最高稅；CAI → safety +26·√effort、**safe-completion**、誤拒 −0.04·√effort（疊加時依深度遞減，最低到 0.02）、低稅；safety-target DPO → safety +18·√effort、誤拒上升。玩家做 RLHF 得高安全、高誤拒、高能力稅；做 CAI 得 Pareto 改善（教 §2.4 + §3.1）：一次 effort 2 的 CAI 把 Qwen 家族的 overRefusal 從 0.12 降到約 0.063、safety 從 58 升到約 95，模型造成的誤拒大約減半，這在每波的 SLA 帳上看得見。
 
 ### 3.6 dev-time red-teaming 與時代的攻擊壓力（§3.5/§3.6）
 
@@ -504,12 +505,12 @@ s.research: { infra: ResearchSlot | null; posttrain: ResearchSlot | null; eval: 
 ```
 開始研究需要 build phase、一座 Training Lab，並先付 Data。研究**只在 wave 進行中推進**：三軌共用一個借用池——
 ```
-cap  = RESEARCH_MAX_SHARE (0.45) × 艦隊所有 server rack 的 BF16 TFLOPS
+cap  = RESEARCH_MAX_SHARE (0.45) × 目前有電的 server rack 的 BF16 TFLOPS（brownout 或缺液冷而斷線的 rack 不服務，也不計入）
 pick = online rack 依 TFLOPS 由強到弱，加入後不超過 cap 才借（整座 rack，往下取整）；
        一座都放不下且至少兩座 online → 借最弱的一座；永遠不借最後一座 online rack
 rate = Σ 借出 rack 的 TFLOPS × throttle；每條進行中的軌平分 rate（沒有浪費）
 ```
-借出的 rack 在 wave 中訓練而不服務（照付帳單、能源以滿載計）。純函式 `requisitionPreview(s, compute)` 給 Training Lab 與 Studio 預覽：會借哪幾座、損失多少服務算力、需要多少 wave 秒。post-train 軌完成即釋放、可立刻排下一個；`effort` 滑桿（§1.4）是 post-train 的 runtime 參數。
+借出的 rack 在 wave 中訓練而不服務（照付帳單、能源以滿載計）。純函式 `requisitionPreview(s, compute)` 給 Training Lab 與 Studio 預覽：會借哪幾座、損失多少線上服務算力（`servingLoss` = 借出 ÷ 有電艦隊）、需要多少 wave 秒。post-train 軌完成即釋放、可立刻排下一個；`effort` 滑桿（§1.4）是 post-train 的 runtime 參數。
 
 ---
 
@@ -615,7 +616,7 @@ k = 該群組剩餘 KV 放得下的串流數（≤ 28）；k < 28 的 cohort 輪
 | `hw_frontier` | H200 | 1 | 989 / 1979 / — | 141 GB | 4.8 | 700 | air | $60K → 60 | 3.2 | 3.3 |
 | `hw_pod` | DGX H200 | 8 | 989 / 1979 / — | 141 GB | 4.8 | 700 | air | $320K → 320 | 25.6 | 3.4 |
 | `hw_superpod` | DGX B200 | 8 | 2250 / 4500 / 9000 | 192 GB | 8.0 | 1000 | air | $500K → 500 | 40 | 3.5 |
-| `hw_giga` | GB200 NVL72 | 72 | 2250 / 4500 / 9000 | 192 GB | 8.0 | 1000 | **liquid** | $3M → 3000 | 360 | 3.6 |
+| `hw_giga` | GB200 NVL72 | 72 | 2250 / 4500 / 9000 | 192 GB | 8.0 | 1200 | **liquid** | $3M → 3000 | 360 | 3.6 |
 
 單 GPU tier 用部署節點的 capex（卡 + 機箱 / CPU / NIC），不是裸晶片價。`ModelDef` 的 serving 欄位是 `paramsTotalB/paramsActiveB/isMoE/kvBytesPerToken/kvStateMbPerReq/nativeWeightBytes/contextWindowK/layers`（`layers` 用於 all-reduce 成本）；`kvLayers/kvHeads/headDim/attn` 是顯示欄位。
 
@@ -639,9 +640,9 @@ TTFT 在第一個 token 判；TTFAT 在 hidden tokens 結束時判；E2EL 在 de
 serverPower = tdpWatts/1000 × RACK_UTILIZATION(0.8) × (FP8 0.85 | 4-bit 0.85 × 0.95 | BF16 1) × (spec ? 1.08 : 1)
 powerCap    = (6 kW 基礎 + 每座 Power Plant 8 kW) × powerCap 修飾
 air pool    = (6 kW 基礎 chiller + 每座 Cooling Tower 8 kW) × coolingCap → 冷卻所有非液冷的 rack 與建築
-liquid pool = 每座 Liquid Cooling Loop 60 kW × coolingCap → 只冷卻液冷 rack
+liquid pool = 每座 Liquid Cooling Loop 75 kW × coolingCap × liquidCoolingCap → 只冷卻液冷 rack
 ```
-**液冷 gate**：`cooling: 'liquid'` 的 rack（GB200 NVL72，rack 級高密度設計，§5.5）沒有 Liquid Cooling Loop 時無法放置、無法升級進去、既有的會直接斷線；8 卡 DGX H200 / B200 是氣冷。Loop 的 kW 只能冷卻液冷 rack（接在 cold plate 上的冷卻液迴路冷不了氣冷機箱），所以 Cooling Tower 對氣冷 rack 永遠必要。**brownout**：總用電 > powerCap 時，依 kW 由大到小關掉 server，仍超出才關支援建築（generative guard 的 rack 歸支援，最後才關），在狀態轉換時發出 `brownout` 事件。**熱節流**：每個 pool 只節流它冷卻的 rack：`heat ≤ cap ? 1 : max(THROTTLE_FLOOR 0.2, cap/heat)`；prefill 與 compute-bound decode 全額受影響，memory-bound decode 保留少許優勢（§6.2）。power / cooling 在每個 build-phase 動作之後與每個 wave step 重算，HUD 永遠是即時 kW。
+**液冷 gate**：`cooling: 'liquid'` 的 rack（GB200 NVL72，每卡 1200 W，超過 §5.5 約 1000 W 的氣冷上限）沒有 Liquid Cooling Loop 時無法放置、無法升級進去、既有的會直接斷線；8 卡 DGX H200（700 W/卡）與 DGX B200（1000 W/卡）是氣冷。一座 Loop（75 kW）剛好撐住一座滿載的 NVL72（BF16 69 kW，加 speculative decoding 約 75 kW）。Loop 的 kW 只能冷卻液冷 rack（接在 cold plate 上的冷卻液迴路冷不了氣冷機箱），所以 Cooling Tower 對氣冷 rack 永遠必要。**brownout**：總用電 > powerCap 時，依 kW 由大到小關掉 server，仍超出才關支援建築（generative guard 的 rack 歸支援，最後才關），在狀態轉換時發出 `brownout` 事件。**熱節流**：每個 pool 只節流它冷卻的 rack：`heat ≤ cap ? 1 : max(THROTTLE_FLOOR 0.2, cap/heat)`；prefill 與 compute-bound decode 全額受影響，memory-bound decode 保留少許優勢（§6.2）。power / cooling 在每個 build-phase 動作之後與每個 wave step 重算，HUD 永遠是即時 kW。
 
 ### 6.6 經濟（真實 $/Mtoken，§5.8）
 
@@ -673,9 +674,9 @@ contract = round(tierBonus × CLEAR_BONUS_SCALE(0.12) × Goodput/100)
 
 **勝負**：lose = `cash < 0`（破產）/ `trust ≤ 0` / `sla ≤ 0`，wave 中每個 step 檢查；清掉 wave 100 即勝利，之後可接 endless。
 
-**endless**（`endless.ts`）：surge 從 wave 100 的負載接續——相同的 per-request 縮放（`groupMuls(MAX_TIER)`）、wave 100 的 boss 預算、tier 12 的節奏與攻擊壓力；合約從 tier 12 的一般合約（640）起算、每個 surge +40——然後每個 surge 量 +5%、工作量 +3.5%，前兩個 surge 之後品質線每 surge +0.01，攻擊嚴重度與新型比例也持續上升；每 10 個 surge 一次強制的困難事件，其他 surge 60% 機率抽事件。模型樹的頂端是 roster 最大的 open checkpoint，而難度沒有頂端，所以每場 endless 終會結束；分數是走得多深。
+**endless**（`endless.ts`）：surge 從 wave 100 的負載接續——相同的 per-request 縮放（`groupMuls(MAX_TIER)`）、wave 100 的 boss 預算、tier 12 的節奏與攻擊壓力；合約從 wave 100 的 boss 合約（960）起算、每個 surge +40——然後每個 surge 量 +5%、工作量 +3.5%，前兩個 surge 之後品質線每 surge +0.01，攻擊嚴重度與新型比例也持續上升；每 10 個 surge 一次強制的困難事件，其他 surge 60% 機率抽事件。模型樹的頂端是 roster 最大的 open checkpoint，而難度沒有頂端，所以每場 endless 終會結束；分數是走得多深。
 
-**事件**（`sim.ts rollIncident`）：每次清場為下一波抽一個事件：前兩波沒有；主題指定的招牌事件優先（47 個 wave 強制自己的事件）；否則 boss 波與每第 10 波保證一個困難事件（boss 自帶量的尖峰，所以它的困難事件不會是單一入口匯流）；其他 60% 機率隨機。事件效果在 build phase 就生效並即時反映（`buildCost`、`powerBuild` 打在玩家即將擺放的東西上，`powerPrice`、`powerCap`、`coolingCap`、`safetyDamage`、`slaDamage`、`volume`、`reward` 在 wave 中生效），下一次清場重設。
+**事件**（`sim.ts rollIncident`）：每次清場為下一波抽一個事件：前兩波沒有；主題指定的招牌事件優先（47 個 wave 強制自己的事件）；否則 boss 波與每第 10 波保證一個困難事件（boss 自帶量的尖峰，所以它的困難事件不會是單一入口匯流，也不會是量的暴增；病毒式爆量算好運事件）；其他 60% 機率隨機。事件效果在 build phase 就生效並即時反映（`buildCost`、`powerBuild` 打在玩家即將擺放的東西上，`powerPrice`、`powerCap`、`coolingCap`、`liquidCoolingCap`、`safetyDamage`、`slaDamage`、`volume`、`reward` 在 wave 中生效；`coolingCap` 打兩個冷卻 pool，`liquidCoolingCap`（液冷迴路故障）只打 Liquid Loop 的 pool），下一次清場重設。
 
 ### 6.7 統一 step() 順序（`sim.ts`，只在 wave phase 執行）
 
@@ -886,7 +887,7 @@ export interface SpawnGroup {
 }
 export interface WaveDef { name: string; brief: string; teaches: string; clearBonus: number; groups: SpawnGroup[] }
 export type ModifierTarget = 'powerPrice' | 'coolingCap' | 'buildCost' | 'safetyDamage' | 'volume' | 'reward'
-  | 'powerCap' | 'powerBuild' | 'slaDamage'
+  | 'powerCap' | 'powerBuild' | 'slaDamage' | 'liquidCoolingCap'
 
 // ---- 研究多軌 (§4.5) ----
 export interface ResearchSlot { id: string; kind: 'infra' | 'posttrain' | 'eval'; progress: number; compute: number; meta?: PostTrainMeta }

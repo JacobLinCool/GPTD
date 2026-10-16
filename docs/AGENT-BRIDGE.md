@@ -107,7 +107,7 @@ re-posts its snapshot every second, so `GET /state` stays live mid-wave.
 | `cycleRackRole` | `[towerId]` | cycle the P/D disaggregation role auto → prefill → decode — **build phase only**, needs `inf_disagg` |
 | `buyUpgrade` | `[upgradeId]` | buy a cash upgrade listed in `upgrades[]` (needs a Lab; the list is empty in the current tech tree) |
 | `research` | `[researchId]` | start a research project (from `research.options`) — build phase only, needs a Lab |
-| `postTrain` | `[baseIds[], method, target, effort]` | derive a checkpoint in the Studio (see `studio`) — build phase only, needs a Lab; over GET use `args=baseId,method,target,effort` (single base) — `merge` (2 bases) needs the POST JSON form and two DIFFERENT checkpoints of the same base model with one shared architecture |
+| `postTrain` | `[baseIds[], method, target, effort]` | derive a checkpoint in the Studio (see `studio`) — build phase only, needs a Lab; `effort` must be one of `studio.effortNotches` (any other value is rejected with that reason); over GET use `args=baseId,method,target,effort` (single base) — `merge` (2 bases) needs the POST JSON form and two DIFFERENT checkpoints of the same base model with one shared architecture |
 | `startWave` | `[]` | begin the next wave (build phase only) |
 | `continueEndless` | `[]` | after a win, enter endless mode |
 | `select` | `[towerId]` | highlight a rack in the inspect panel (visibility) |
@@ -144,7 +144,8 @@ guessing. Unknown actions are rejected the same way, never a crash.
   "modifiers": { "buildCost": 1, "powerPrice": 1, "coolingCap": 1, "safetyDamage": 1, "volume": 1, "reward": 1,
                  "powerCap": 1,      // usable share of the power feed (a grid curtailment order cuts it)
                  "powerBuild": 1,    // 0 = no new Power Plant can be connected (interconnection freeze)
-                 "slaDamage": 1 },   // multiplier on every SLA penalty (an enterprise pilot)
+                 "slaDamage": 1,     // multiplier on every SLA penalty (an enterprise pilot)
+                 "liquidCoolingCap": 1 }, // the Liquid Cooling Loops' capacity alone (a loop fault); coolingCap scales both pools
   "incident": null,            // {id,name,desc,good} when an incident is telegraphed for the next wave
   "nextWave": { "wave": 1, "name": "The Chatbot Boom", "brief": "…",
                 "clearBonus": 24,        // the SLA contract in credits at 100% Goodput; it pays × the wave's Goodput
@@ -189,8 +190,9 @@ guessing. Unknown actions are rejected the same way, never a crash.
   "research": { "infra": null, "posttrain": null, "eval": null,
                 "options": [ { "id": "inf_batching", "kind": "tech", "name": "Continuous Batching", "desc": "…",
                                "dataCost": 32, "compute": 7200, "requires": [] } ],
-                // what one more project would lend now: the strongest racks that fit under the 45% cap
-                // (blocked = fewer than two online racks: research waits and every rack keeps serving)
+                // what one more project would lend now: the strongest racks that fit under the 45% cap of the
+                // ONLINE fleet (dark racks never count; servingLossPct = lent ÷ online FLOPS;
+                // blocked = fewer than two online racks: research waits and every rack keeps serving)
                 "requisition": { "rackIds": [ 1 ], "lentTflops": 121, "capTflops": 218, "servingLossPct": 25, "blocked": false } },
   "studio": { "available": false, "baseModelIds": [ "…" ], "targets": [ "chat", "coding", … ],
               "effortNotches": [ 0.25, 0.5, 1, 1.5, 2 ],

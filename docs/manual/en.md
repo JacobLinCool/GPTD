@@ -205,7 +205,7 @@ The build bar sells two racks — **Edge** (the cheap starter) and **Frontier** 
 | Frontier GPU Rack (buildable) | H200-class | 1 | 141 GB | 4.8 TB/s | 700 W | air | $60 | 3.3 |
 | DGX H200 | 8× H200 | 8 | 1.1 TB | 4.8 TB/s | 700 W | air | $320 | 3.4 |
 | DGX B200 | 8× B200 | 8 | 1.5 TB | 8 TB/s | 1000 W | air | $500 | 3.5 |
-| GB200 NVL72 | 72× B200 | 72 | 13.8 TB | 8 TB/s | 1000 W | **liquid** | $3000 | 3.6 |
+| GB200 NVL72 | 72× B200 | 72 | 13.8 TB | 8 TB/s | 1200 W | **liquid** | $3000 | 3.6 |
 
 Prices are real capex divided by 1000. Three facts from real serving shape every choice:
 
@@ -285,7 +285,7 @@ What matters is how guards combine on a lane:
 
 Red-Team Eval adds a little recall to every guard and cuts wrongful blocks by 30%. The rates are scaled by each archetype's exposure (the table under Request Archetypes).
 
-**Over-refusal and Constitutional AI.** A refusal of a harmless request is an outcome of its own (`over_refused`): no pay, a light Trust and SLA hit. It comes from two places, the model and the guards, and the wave report says which. Hard-refusal models turn away roughly one chat request in ten; a gpt-oss-style model about one in thirty. In the Studio, **Constitutional AI** is the Pareto move: it raises a model's safety *and* lowers its over-refusal, switching it to safe-completion. RLHF raises safety more but makes the model refuse more and pays the steepest quality tax.
+**Over-refusal and Constitutional AI.** A refusal of a harmless request is an outcome of its own (`over_refused`): no pay, a light Trust and SLA hit. It comes from two places, the model and the guards, and the wave report says which. Hard-refusal models turn away roughly one chat request in ten; a gpt-oss-style model about one in thirty. In the Studio, **Constitutional AI** is the Pareto move: it raises a model's safety *and* lowers its over-refusal, switching it to safe-completion. Repeating it on the same chain helps less each time, and no checkpoint gets below about one wrongful refusal in fifty. RLHF raises safety more but makes the model refuse more and pays the steepest quality tax.
 
 ## Research: the Training Lab
 
@@ -297,7 +297,7 @@ Build a **Training Lab** to open research (TRAIN on the build bar, or L, between
 | **Eval** | Red-Team Eval and Red-Team Eval II |
 | **Post-training** | your Studio runs |
 
-Each track runs one project at a time. A project pays its **Data** up front when you start it (between waves), then needs real GPU compute, which it **requisitions from your racks during waves**: whole racks, strongest first, as many as fit under 45% of your fleet's compute, never your last online rack (if no rack fits under the cap, the weakest one is lent). Lent racks stop serving and keep billing at full load until the work is done, and the tracks share what is lent equally, so running all three at once slows each. The Infra tab previews what a project would borrow ("Lends 2 rack(s) to training: −40% serving compute · ≈18 s of wave time"), its cards name any missing prerequisite, and an AVAILABLE NOW filter hides the rest. Plan research around the wave schedule: a big project during a boss wave can cost you the wave.
+Each track runs one project at a time. A project pays its **Data** up front when you start it (between waves), then needs real GPU compute, which it **requisitions from your racks during waves**: whole racks, strongest first, as many as fit under 45% of the compute your lit racks have (a browned-out rack serves nothing and never counts), never your last online rack (if no rack fits under the cap, the weakest one is lent). Lent racks stop serving and keep billing at full load until the work is done, and the tracks share what is lent equally, so running all three at once slows each. The Infra tab previews what a project would borrow ("Lends 2 rack(s) to training: −40% serving compute · ≈18 s of wave time"), its cards name any missing prerequisite, and an AVAILABLE NOW filter hides the rest. Plan research around the wave schedule: a big project during a boss wave can cost you the wave.
 
 The infra tree is serving infrastructure only; it never changes model weights.
 
@@ -331,7 +331,7 @@ There is no free infinite-quality loop:
 
 - **Ceilings.** Post-training cannot push a body past what models of its size reach: on each axis the ceiling is the best base model up to twice its size, plus a small margin. The preview says when the ceiling binds. Distillation is bounded by its student instead.
 - **Depth.** Each run on an already-derived checkpoint gains less, costs more, and forgets more of the other axes than the run before it.
-- **Merges.** A merge needs two *different* checkpoints derived from the *same* base model with an identical architecture; anything else has no shared weights to average. The merged model lands at the average of its parents, safety and refusal rate included, and a thinker merged with its instruct sibling becomes a hybrid. A merge costs a little Data for the evaluation pass.
+- **Merges.** A merge needs two *different* checkpoints derived from the *same* base model with an identical architecture; anything else has no shared weights to average. The merged model lands at the average of its parents, safety and refusal rate included, and a thinker merged with its instruct sibling becomes a hybrid. It sits one level deeper than the deeper of its two parents, whichever you pick first, so its cost and what later runs on it forget do not depend on the order. A merge costs a little Data for the evaluation pass.
 
 The run produces a new checkpoint with a recorded lineage (base, method, target, effort, depth), shown in Expert Mode's Lineage Graph. Runs finish while a wave is under way: the new checkpoint is announced at once, and when the wave ends a notification offers it with a DEPLOY ×N button that rolls it out to every rack it fits. A GRPO-agentic run on a strong base is your agent specialist, and deep, carefully chosen chains are how you keep pace in endless mode.
 
@@ -344,9 +344,9 @@ Racks draw real kilowatts and turn them into heat. The HUD's POWER and HEAT bars
 | (the site itself) | 6 kW of power and 6 kW of air cooling before you build anything | — |
 | **Power Plant** | +8 kW of power | $18 |
 | **Cooling Tower** | +8 kW of air cooling | $18 |
-| **Liquid Cooling Loop** | +60 kW of liquid cooling, for liquid racks only; required for any NVL72 | $90 |
+| **Liquid Cooling Loop** | +75 kW of liquid cooling (one NVL72 at full load), for liquid racks only; required for any NVL72 | $90 |
 
-A single-GPU H100 or H200 rack draws about half a kilowatt, an 8-GPU DGX several kilowatts, and an NVL72 close to sixty. Lower-precision weights draw less; speculative decoding draws more; Llama Guard's own GPU draws too.
+A single-GPU H100 or H200 rack draws about half a kilowatt, an 8-GPU DGX several kilowatts, and an NVL72 about seventy. Lower-precision weights draw less; speculative decoding draws more; Llama Guard's own GPU draws too.
 
 - **Over the power limit, racks brown out.** The most power-hungry racks go dark first (support buildings last). A dark rack serves nothing and bills nothing.
 - **Over the cooling limit, racks throttle.** There are two cooling pools: Cooling Towers and the site's chillers cool air racks and buildings; Liquid Cooling Loops cool only liquid racks. Each pool throttles only its own racks, down to a 20% floor, and a throttled rack decodes and prefills more slowly.
@@ -399,19 +399,19 @@ Most waves arrive with an **incident**. It is telegraphed in a banner during the
 | Single-entry surges | Undersea Cable Severed · Edge Provider Outage · Global IT Meltdown | every request funnels through one ingress lane, with 15–30% more volume |
 | Power-price spikes | Capacity Auction Shock · On-Site Fuel Spike | energy costs 1.6–1.9× |
 | Grid shocks | Grid Curtailment Order · Interconnection Freeze | curtailment cuts 15% of your power capacity (racks beyond it go dark) and raises energy prices 1.5×; a freeze blocks any new Power Plant and raises energy prices 1.3× |
-| Cooling shortfalls | Liquid Loop Fault · Water-Use Restriction | cooling capacity drops 35–45% |
+| Cooling shortfalls | Liquid Loop Fault · Water-Use Restriction | the Liquid Cooling Loops lose 45% (only liquid racks feel it) · all cooling drops 35% |
 | Supply shocks | H100 Allocation Crunch · HBM Sold Out · Chip Export Ban | new builds and upgrades cost 1.6–2.0× |
 | Price wars | Token Price War · DeepSeek Market Shock | revenue per request drops 30–40% |
 | Safety pressure | Regulatory Audit · Adversarial Suffix Storm | every unsafe answer costs 1.6–1.8× Trust |
 | Data integrity | Training-Data Poisoning · Eval Set Contamination | you lose 40–50% of your stored Data |
-| Demand spikes | Viral Demand Surge | 40% more requests, each clean serve pays 20% more |
+| Demand spikes (good fortune) | Viral Demand Surge | 40% more requests, each clean serve pays 20% more |
 | Good fortune | Firm Nuclear PPA · Lead Times Ease · Off-Peak Demand Lull · Enterprise Demo Day | cheaper energy · cheaper builds · 30% less volume · clean serves pay 50% more, but every SLA penalty is 1.8× |
 
-Real-event waves force their signature incident: a drought wave restricts water, a regulator's wave brings the audit, a price-cut wave starts a price war. Boss waves and every tenth wave carry a guaranteed hard incident; other waves roll one at random more often than not, starting with wave 3. Add cooling before a cooling fault, guardrails before an audit or a jailbreak storm, buy before a shortage, keep power headroom before a curtailment, and concentrate capacity on the surge lane for a cable cut.
+Real-event waves force their signature incident: a drought wave restricts water, a regulator's wave brings the audit, a price-cut wave starts a price war, the nuclear-deal wave signs you a cheap firm-power contract. Boss waves and every tenth wave carry a guaranteed hard incident (for a boss, never a lane funnel or a demand spike on top of its own); other waves roll one at random more often than not, starting with wave 3. Add cooling before a cooling fault, guardrails before an audit or a jailbreak storm, buy before a shortage, keep power headroom before a curtailment, and concentrate capacity on the surge lane for a cable cut.
 
 ## The Campaign
 
-The campaign is 100 waves of real history, from the chatbot boom of early 2023 to late 2026. Waves are **demand shifts** (people start using AI for something new, en masse) and **operating shocks** (cable cuts, shortages, grid emergencies, outages, regulators, attacks); model and chip launches are not waves, because those are your tools. The difficulty tier rises steadily from 1 to 12: more requests, longer prompts and answers, a higher quality line, sharper and more novel attacks, and harder incidents, while no single wave suddenly multiplies the load a fleet just proved it could carry.
+The campaign is 100 waves of real history, from the chatbot boom of early 2023 to late 2026. Waves are **demand shifts** (people start using AI for something new, en masse) and **operating shocks** (cable cuts, shortages, grid emergencies, outages, regulators, attacks); model and chip launches are not waves, because those are your tools. The difficulty tier rises steadily from 1 to 12: more requests, longer prompts and answers, a higher quality line, sharper and more novel attacks, and harder incidents, while no single wave suddenly multiplies the load a fleet just proved it could carry, counting the demand spike or retry storm it forces.
 
 | Era | Waves | What it drills |
 | --- | ----- | -------------- |
@@ -433,7 +433,7 @@ Twelve **boss waves** (10, 13, 20, 30, 38, 40, 50, 60, 70, 80, 90 and 100) carry
 
 ## Endless Mode
 
-Clearing wave 100 unlocks **∞ CONTINUE — ENDLESS MODE**. Procedural surges resume at wave 100's load and keep climbing: every surge brings more requests and longer work, after the first two the quality line hardens a little each time, attacks grow sharper and more often novel, and the contract grows with them. Every surge carries at least one hard lane (reasoning or agents); every tenth brings a guaranteed hard incident, and the rest roll one at random. Your roster tops out at the real open-weight frontier, but your Studio does not: careful finetune chains are how you stay ahead for a while. Your score is the wave you reach.
+Clearing wave 100 unlocks **∞ CONTINUE — ENDLESS MODE**. Procedural surges resume at wave 100's load and keep climbing: every surge brings more requests and longer work, after the first two the quality line hardens a little each time, attacks grow sharper and more often novel, and the contract, starting from wave 100's, grows with them. Every surge carries at least one hard lane (reasoning or agents); every tenth brings a guaranteed hard incident, and the rest roll one at random. Your roster tops out at the real open-weight frontier, but your Studio does not: careful finetune chains are how you stay ahead for a while. Your score is the wave you reach.
 
 ## Opening Advice
 

@@ -131,6 +131,23 @@ export function forgetDepthMul(depth: number): number {
   return 1 + 0.5 * Math.max(0, depth - 1)
 }
 
+/**
+ * The lineage depth a run starts from: the base's, or for a merge the DEEPER of the two
+ * parents — the averaged weights carry the longer chain's history whichever parent is
+ * listed first, so a merge's depth, cost and later forgetting never depend on the order.
+ */
+export function runBaseDepth(base: ModelDef, other: ModelDef | null): number {
+  return Math.max(base.lineage?.depth ?? 0, other?.lineage?.depth ?? 0)
+}
+
+/**
+ * The lowest wrongful-refusal rate safety post-training can reach (§2.4). Even the
+ * safe-completion leaders still refuse a few borderline prompts (XSTest / OR-Bench never
+ * measure zero; the roster's best is the gpt-oss tier at ~0.03), so Constitutional AI can
+ * cut over-refusal toward this floor but never below it.
+ */
+export const OVERREF_FLOOR = 0.02
+
 /** §1.4 alignment-tax weight by method (rlhf is the crudest → highest tax). */
 function alignmentTaxFactor(method: PostTrainMethod): number {
   if (method === 'rlhf') return 1
@@ -156,8 +173,9 @@ export function postTrainSizeFactor(activeB: number): number {
  * already-derived checkpoint costs progressively MORE (×(1 + 0.6·baseDepth)). `deriveQuality`
  * already DAMPS the gain with depth (1/(1+0.15·depth)); pairing a rising cost with the
  * falling gain makes a 2nd/3rd stacked GRPO a real diminishing-returns INVESTMENT (data +
- * compute), not a free way to climb past a capability wall. baseDepth = the base's lineage
- * depth (0 for an original base, 1 for a once-derived checkpoint, …).
+ * compute), not a free way to climb past a capability wall. baseDepth = runBaseDepth: the
+ * base's lineage depth (0 for an original base, 1 for a once-derived checkpoint, …), or the
+ * deeper parent's for a merge.
  */
 function depthSurcharge(baseDepth: number): number {
   return 1 + 0.6 * Math.max(0, baseDepth)
@@ -210,6 +228,16 @@ export function postTrainDataCost(recipe: MethodRecipe, effort: number, baseDept
 
 /** The 5 discrete effort notches (§1.4 [fix M9]); 1.0 is the default. */
 export const EFFORT_NOTCHES = [0.25, 0.5, 1.0, 1.5, 2.0] as const
+
+/**
+ * The Data a run on these bases costs up front (a merge partner's depth counts too) — the
+ * one rule startPostTrain charges and the UI / bridge rejection reasons quote.
+ */
+export function postTrainRunDataCost(s: GameState, baseIds: string[], recipe: MethodRecipe, effort: number): number {
+  const base = resolveModel(s, baseIds[0] ?? '')
+  const other = recipe.id === 'merge' ? resolveModel(s, baseIds[1] ?? '') : null
+  return postTrainDataCost(recipe, effort, base ? runBaseDepth(base, other) : 0, base?.paramsTotalB ?? 8)
+}
 
 /** A short base label for the derived display name (drops the developer prefix where obvious). */
 function baseShort(m: ModelDef): string {
@@ -273,7 +301,7 @@ export interface DerivedFields {
   alignment: AlignmentProfile
   instructFollow: number
   desc: string
-  /** the resulting lineage depth (base depth + 1). */
+  /** the resulting lineage depth (runBaseDepth + 1: the base's, or a merge's deeper parent's, + 1). */
   depth: number
 }
 
@@ -310,7 +338,8 @@ export function computeDerivedFields(
   const method = recipe.id
   // the quality axis the gain lands on (null for safety — its gain is alignment.safety).
   const axis = gainAxis(target)
-  const depth = (base.lineage?.depth ?? 0) + 1
+  const baseDepth = runBaseDepth(base, method === 'merge' ? other : null)
+  const depth = baseDepth + 1
 
   // --- qualityBy (snapshot) ---
   const qualityBy: Record<CapabilityAxis, number> = { ...base.qualityBy }
@@ -367,11 +396,16 @@ export function computeDerivedFields(
       base.alignment.refusalStyle === other.alignment.refusalStyle ? base.alignment.refusalStyle : 'hard-refusal'
     instructFollow = (base.instructFollow + other.instructFollow) / 2
   } else if (target === 'safety' || method === 'rlhf' || method === 'cai') {
-    const safetyGain = (method === 'rlhf' ? 28 : method === 'cai' ? 26 : 18) * Math.sqrt(effort)
+    // diminishing returns down a chain, like the quality gain: the first run on a checkpoint
+    // lands the full effect, each further stacked safety run less (1 / (1 + 0.15 × base depth))
+    const alignDamp = 1 / (1 + 0.15 * baseDepth)
+    const safetyGain = (method === 'rlhf' ? 28 : method === 'cai' ? 26 : 18) * Math.sqrt(effort) * alignDamp
     alignment.safety = Math.min(100, alignment.safety + safetyGain)
     if (method === 'cai') {
-      // CAI is a safe-completion Pareto gain: REDUCES over-refusal (§2.4).
-      alignment.overRefusal = Math.max(0, alignment.overRefusal - 0.04 * Math.sqrt(effort))
+      // CAI is a safe-completion Pareto gain: REDUCES over-refusal (§2.4) — toward the
+      // realistic floor, never below it (and never raising a base already under it).
+      const cut = 0.04 * Math.sqrt(effort) * alignDamp
+      alignment.overRefusal = Math.max(Math.min(OVERREF_FLOOR, alignment.overRefusal), alignment.overRefusal - cut)
       alignment.refusalStyle = 'safe-completion'
     } else {
       // crude RLHF / safety-SFT raises over-refusal (§2.4 tension).
@@ -553,6 +587,7 @@ export function deriveModel(s: GameState, meta: PostTrainMeta): ModelDef | null 
   if (meta.method === 'merge' && (!other || !mergeCompatible(s, meta.baseIds[0], meta.baseIds[1]))) return null
 
   const { method, target, effort } = meta
+  if (!Number.isFinite(effort) || effort <= 0) return null // startPostTrain admits only the effort notches
   const f = computeDerivedFields(base, recipe, target, effort, other)
 
   const lineage: Lineage = {
@@ -564,7 +599,7 @@ export function deriveModel(s: GameState, meta: PostTrainMeta): ModelDef | null 
     spent: {
       data: meta.dataSpent,
       compute: Math.round(
-        postTrainComputeCost(recipe, base.paramsActiveB, effort, base.lineage?.depth ?? 0, base.paramsTotalB),
+        postTrainComputeCost(recipe, base.paramsActiveB, effort, runBaseDepth(base, other), base.paramsTotalB),
       ),
       waves: 0,
     },
@@ -675,7 +710,7 @@ export function studioPreview(
   const delta = {} as Record<CapabilityAxis, number>
   for (const a of CAP_AXES) delta[a] = fields.qualityBy[a] - before[a]
 
-  const previewDepth = base.lineage?.depth ?? 0
+  const previewDepth = runBaseDepth(base, other)
   const dataCost = postTrainDataCost(recipe, effort, previewDepth, base.paramsTotalB)
   const computeCost = Math.max(1, postTrainComputeCost(recipe, base.paramsActiveB, effort, previewDepth, base.paramsTotalB))
   const estWaves = requisitionPerWave > 0 ? Math.max(1, Math.ceil(computeCost / requisitionPerWave)) : 0

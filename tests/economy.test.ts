@@ -4,7 +4,7 @@
  * pressure, the incident mapping, boss teeth, and the endless seam.
  */
 import { describe, expect, it } from 'vitest'
-import { CLEAR_BONUS_SCALE, SIM_DT, START } from '../src/config'
+import { CLEAR_BONUS_SCALE, GRID_COLS, GRID_ROWS, SIM_DT, START } from '../src/config'
 import type {
   GameState,
   Lineage,
@@ -13,7 +13,7 @@ import type {
   PostTrainTarget,
   Request,
 } from '../src/core/types'
-import { continueEndless, startGame, tryBuild, upgradeHardware } from '../src/sim/actions'
+import { canPlaceAt, continueEndless, startGame, startWave, tryBuild, upgradeHardware } from '../src/sim/actions'
 import { explainRejection } from '../src/agent/diagnose'
 import { serializeState } from '../src/agent/snapshot'
 import {
@@ -32,16 +32,20 @@ import {
   waveBudget,
 } from '../src/sim/campaign'
 import {
+  DEFAULT_MODEL_ID,
+  forcedIncidentVolume,
   HARDWARE_DEFS,
   INCIDENTS,
   INFRA_NODES,
   METHOD_RECIPES,
   MODEL_DEFS,
   MODEL_LIST,
+  RESEARCH_MAX_SHARE,
+  TOWER_DEFS,
   WAVES,
   themedIncidentForWave,
 } from '../src/sim/content'
-import { rackGpuCostPerSec } from '../src/sim/effects'
+import { loadout, rackGpuCostPerSec, serverPower } from '../src/sim/effects'
 import { endlessScaling, generateEndlessWave } from '../src/sim/endless'
 import { laneGuardStages, screenInput } from '../src/sim/guards'
 import {
@@ -51,8 +55,11 @@ import {
   computeDerivedFields,
   type DerivedFields,
   deriveModel,
+  EFFORT_NOTCHES,
   mergeBlock,
+  OVERREF_FLOOR,
   resolveModel,
+  runBaseDepth,
   studioPreview,
 } from '../src/sim/models'
 import { coolingPools, isThrottling, powerBuildOpen, towerPowerKw, updatePower } from '../src/sim/power'
@@ -65,6 +72,7 @@ import {
   startPostTrain,
   startResearch,
   updateResearch,
+  validEffort,
 } from '../src/sim/research'
 import { resolveOutcome } from '../src/sim/resolve'
 import { NOVEL_RECALL_MUL } from '../src/sim/safety'
@@ -106,6 +114,14 @@ function deeper(m: ModelDef, f: DerivedFields, method: PostTrainMethod, target: 
     createdAtWave: 0,
   }
   return { ...m, ...f, origin: 'derived', lineage }
+}
+
+/** The first `n` free buildable tiles (row-major), for tests that need many buildings. */
+function freeTiles(s: GameState, n: number): { col: number; row: number }[] {
+  const out: { col: number; row: number }[] = []
+  for (let row = 0; row < GRID_ROWS && out.length < n; row++)
+    for (let col = 0; col < GRID_COLS && out.length < n; col++) if (canPlaceAt(s, col, row)) out.push({ col, row })
+  return out
 }
 
 const flopsOf = (s: GameState, ids: number[]): number =>
@@ -226,6 +242,45 @@ describe('research requisition respects RESEARCH_MAX_SHARE', () => {
         pick.map((t) => t.id),
       ),
     ).toBeLessThanOrEqual(total * CAP + 1e-6)
+  })
+
+  it('lends from the ONLINE fleet only: browned-out racks never count, and a lit rack always keeps serving', () => {
+    // probe 1: two DGX B200s beside two H200s on the base feed — brownout darkens both B200s
+    const s = rich(16)
+    for (const c of [3, 8, 14, 20]) expect(tryBuild(s, 'srv_frontier', c, 2)).toBe(true)
+    for (const t of s.towers.slice(0, 2)) {
+      expect(upgradeHardware(s, t.id)).toBe(true)
+      expect(upgradeHardware(s, t.id)).toBe(true) // → DGX B200 (air)
+    }
+    expect(tryBuild(s, 'lab', 2, 4)).toBe(true)
+    updatePower(s)
+    const online = s.towers.filter((t) => t.def.kind === 'server' && t.online)
+    expect(online.map((t) => t.hwId)).toEqual(['hw_frontier', 'hw_frontier'])
+    const pick = requisitionPick(s)
+    expect(pick.length).toBeLessThanOrEqual(online.length - 1)
+    const rq = requisitionPreview(s, 1000)
+    expect(rq.capTflops).toBeCloseTo(rq.onlineTflops * RESEARCH_MAX_SHARE, 6)
+    expect(rq.onlineTflops).toBeLessThan(rq.fleetTflops)
+    // two equal lit racks: nothing fits under the cap, so the weaker one is lent — half of LIVE serving
+    expect(rq.servingLoss).toBeCloseTo(0.5, 9)
+    expect(startResearch(s, 'r_eval_redteam_v1')).toBe(true)
+    s.phase = 'wave'
+    updateResearch(s, SIM_DT)
+    expect(s.towers.filter((t) => t.def.kind === 'server' && t.online && !t.training).length).toBeGreaterThanOrEqual(1)
+
+    // probe 2: one B200 + one H200 under a curtailment order — the B200 goes dark, the H200 is the
+    // last lit rack, so research waits and serving continues
+    const c = rich(17)
+    expect(tryBuild(c, 'srv_frontier', 3, 2)).toBe(true)
+    expect(upgradeHardware(c, c.towers[0].id)).toBe(true)
+    expect(upgradeHardware(c, c.towers[0].id)).toBe(true)
+    expect(tryBuild(c, 'srv_frontier', 8, 2)).toBe(true)
+    c.modifiers.powerCap = INCIDENTS.find((i) => i.id === 'inc_grid_curtailment')!.mods.powerCap!
+    updatePower(c)
+    expect(c.towers.filter((t) => t.def.kind === 'server' && t.online).length).toBe(1)
+    expect(requisitionPick(c)).toEqual([])
+    expect(requisitionPreview(c, 1000).blocked).toBe(true)
+    expect(requisitionPreview(c, 1000).servingLoss).toBe(0)
   })
 
   it('progress is credited at exactly the lent rate (nothing lent is wasted), split across tracks', () => {
@@ -389,6 +444,115 @@ describe('Studio: capacity ceiling by body size, forgetting with depth, same-bas
 
 /* ------------------------------------------------------------------ */
 
+describe('Studio: merge depth, stacked-safety floor, effort notches', () => {
+  /** A derived snapshot with an explicit id, registered as owned in `s`. */
+  function own(s: GameState, m: ModelDef, f: DerivedFields, id: string, method: PostTrainMethod, target: PostTrainTarget): ModelDef {
+    const d: ModelDef = { ...deeper(m, f, method, target), id }
+    s.derivedModels[id] = d
+    s.models[id] = true
+    return d
+  }
+
+  it('a merge is as deep as its deeper parent, whichever is listed first (same depth, cost and next-run cost)', () => {
+    const s = rich(24)
+    tryBuild(s, 'lab', 2, 4)
+    s.upgrades.pt_rl = 1
+    s.upgrades.pt_merge = 1
+    const grpo = METHOD_RECIPES.grpo
+    const root = MODEL_DEFS.qwen35_122b ?? MODEL_LIST[MODEL_LIST.length - 1]
+    const a = own(s, root, computeDerivedFields(root, grpo, 'agentic', 1, null), 'drv_a', 'grpo', 'agentic')
+    const b = own(s, a, computeDerivedFields(a, grpo, 'agentic', 1, null), 'drv_b', 'grpo', 'agentic')
+    expect([a.lineage!.depth, b.lineage!.depth]).toEqual([1, 2])
+    expect(mergeBlock(s, a.id, b.id)).toBeNull()
+    expect(runBaseDepth(a, b)).toBe(2)
+    expect(runBaseDepth(b, a)).toBe(2)
+    const merge = METHOD_RECIPES.merge
+    expect(computeDerivedFields(a, merge, 'general', 1, b).depth).toBe(3)
+    expect(computeDerivedFields(b, merge, 'general', 1, a).depth).toBe(3)
+    const ab = studioPreview(s, a.id, 'merge', 'general', 1, 0, b.id)!
+    const ba = studioPreview(s, b.id, 'merge', 'general', 1, 0, a.id)!
+    expect(ab.dataCost).toBe(ba.dataCost)
+    expect(ab.computeCost).toBeCloseTo(ba.computeCost, 9)
+    const meta = (ids: string[]) =>
+      ({ baseIds: ids, method: 'merge', target: 'general', effort: 1, dataSpent: 0, startWave: 0 }) as never
+    const mAB = deriveModel(s, meta([a.id, b.id]))!
+    const mBA = deriveModel(s, meta([b.id, a.id]))!
+    expect(mAB.lineage!.depth).toBe(mBA.lineage!.depth)
+    expect(mAB.lineage!.spent.compute).toBe(mBA.lineage!.spent.compute)
+    // the next run on either merge costs the same and forgets the same
+    const nextAB = studioPreview(s, mAB.id, 'grpo', 'agentic', 1, 0)!
+    const nextBA = studioPreview(s, mBA.id, 'grpo', 'agentic', 1, 0)!
+    expect(nextAB.dataCost).toBe(nextBA.dataCost)
+    expect(nextAB.computeCost).toBeCloseTo(nextBA.computeCost, 9)
+    expect(nextAB.fields.qualityBy.coding).toBeCloseTo(nextBA.fields.qualityBy.coding, 9)
+    // and the charge startPostTrain takes for the merge matches the preview in both orders
+    for (const ids of [[a.id, b.id], [b.id, a.id]]) {
+      const d0 = s.data
+      expect(startPostTrain(s, ids, 'merge', 'general', 1)).toBe(true)
+      expect(d0 - s.data).toBe(ab.dataCost)
+      s.research.posttrain = null
+    }
+  })
+
+  it('stacked Constitutional AI approaches a realistic over-refusal floor with diminishing returns, never zero', () => {
+    const cai = METHOD_RECIPES.cai
+    const hard = MODEL_LIST.filter((m) => m.alignment.refusalStyle === 'hard-refusal').sort(
+      (x, y) => y.alignment.overRefusal - x.alignment.overRefusal,
+    )[0]
+    const lowest = MODEL_LIST.slice().sort((x, y) => x.alignment.overRefusal - y.alignment.overRefusal)[0]
+    expect(hard.alignment.overRefusal).toBeGreaterThan(OVERREF_FLOOR + 0.04 + 0.04 / 1.15)
+    const below = { ...lowest, alignment: { ...lowest.alignment, overRefusal: OVERREF_FLOOR / 2 } }
+    for (const start of [hard, lowest, below]) {
+      let m: ModelDef = start
+      let prev = start.alignment.overRefusal
+      for (let i = 0; i < 6; i++) {
+        const f = computeDerivedFields(m, cai, 'safety', 2, null)
+        m = deeper(m, f, 'cai', 'safety')
+        expect(m.alignment.overRefusal).toBeGreaterThanOrEqual(Math.min(OVERREF_FLOOR, start.alignment.overRefusal) - 1e-12)
+        expect(m.alignment.overRefusal).toBeLessThanOrEqual(prev + 1e-12) // CAI never raises it
+        prev = m.alignment.overRefusal
+      }
+      expect(prev).toBeCloseTo(Math.min(OVERREF_FLOOR, start.alignment.overRefusal), 9)
+    }
+    // the first run on a checkpoint lands the full cut; a stacked run cuts less (the depth damp)
+    const f1 = computeDerivedFields(hard, cai, 'safety', 1, null)
+    expect(hard.alignment.overRefusal - f1.alignment.overRefusal).toBeCloseTo(0.04, 9)
+    const d1 = deeper(hard, f1, 'cai', 'safety')
+    const f2 = computeDerivedFields(d1, cai, 'safety', 1, null)
+    expect(d1.alignment.overRefusal - f2.alignment.overRefusal).toBeCloseTo(0.04 / 1.15, 9)
+    // the safety gain is damped the same way (while it is below the 100 cap)
+    const unsafeBase = { ...hard, alignment: { ...hard.alignment, safety: 20 } }
+    const g1 = computeDerivedFields(unsafeBase, cai, 'safety', 1, null)
+    expect(g1.alignment.safety - 20).toBeCloseTo(26, 9)
+    const g2 = computeDerivedFields(deeper(unsafeBase, g1, 'cai', 'safety'), cai, 'safety', 1, null)
+    expect(g2.alignment.safety - g1.alignment.safety).toBeCloseTo(26 / 1.15, 9)
+  })
+
+  it('a post-training run starts only at an effort notch: no negative, zero, tiny, huge or non-numeric effort', () => {
+    const s = rich(25)
+    tryBuild(s, 'lab', 2, 4)
+    for (const c of [3, 8]) tryBuild(s, 'srv_frontier', c, 2)
+    s.upgrades.pt_cai = 1
+    const base = DEFAULT_MODEL_ID
+    for (const effort of [-1, 0, 0.01, 0.3, 3, 100, Number.NaN, Infinity, 'x' as unknown as number]) {
+      const d0 = s.data
+      expect(validEffort(effort)).toBe(false)
+      expect(startPostTrain(s, [base], 'cai', 'safety', effort)).toBe(false)
+      expect(s.data).toBe(d0)
+      expect(s.research.posttrain).toBeNull()
+      expect(explainRejection(s, 'postTrain', [[base], 'cai', 'safety', effort])).toMatch(/effort must be one of/)
+    }
+    // a run that never went through startPostTrain cannot mint a checkpoint at a bad effort either
+    expect(
+      deriveModel(s, { baseIds: [base], method: 'cai', target: 'safety', effort: -1, dataSpent: 0, startWave: 0 } as never),
+    ).toBeNull()
+    for (const e of EFFORT_NOTCHES) expect(validEffort(e)).toBe(true)
+    expect(startPostTrain(s, [base], 'cai', 'safety', 1)).toBe(true)
+  })
+})
+
+/* ------------------------------------------------------------------ */
+
 describe('power and cooling: generative guards draw kW, two cooling pools, grid incidents', () => {
   it("Llama Guard's own GPU rack shows on the power and cooling budget", () => {
     const s = rich(31)
@@ -406,6 +570,11 @@ describe('power and cooling: generative guards draw kW, two cooling pools, grid 
     expect(HARDWARE_DEFS.hw_pod.cooling).toBe('air')
     expect(HARDWARE_DEFS.hw_superpod.cooling).toBe('air')
     expect(HARDWARE_DEFS.hw_giga.cooling).toBe('liquid')
+    // the cooling class follows the per-GPU TDP (REFERENCE-DOSSIER §5.5): B200 air 1000 W, GB200 1200 W
+    expect(HARDWARE_DEFS.hw_superpod.tdpWattsPerGpu).toBe(1000)
+    expect(HARDWARE_DEFS.hw_giga.tdpWattsPerGpu).toBe(1200)
+    for (const hw of Object.values(HARDWARE_DEFS))
+      expect(hw.cooling === 'liquid').toBe(hw.tdpWattsPerGpu > 1000)
     const s = rich(32)
     for (const c of [2, 4, 6]) expect(tryBuild(s, 'power', c, 4)).toBe(true)
     const dgx = (col: number) => {
@@ -432,6 +601,64 @@ describe('power and cooling: generative guards draw kW, two cooling pools, grid 
     expect(coolingPools(s).air.cap).toBeGreaterThanOrEqual(coolingPools(s).air.used)
     expect(t.throttle).toBe(1)
     expect(coolingPools(s).liquid.used).toBe(0)
+  })
+
+  it('one Liquid Cooling Loop holds one fully loaded NVL72, even in BF16 with speculative decoding', () => {
+    const s = rich(36)
+    infraOn(s, 'inf_spec')
+    const loop = TOWER_DEFS.cooling_liquid.cooling!
+    const worst = serverPower(s, loadout(s, 'hw_giga', DEFAULT_MODEL_ID, 'bf16'))
+    expect(worst).toBeGreaterThan(60) // 72 GPUs × 1200 W × 0.8 × 1.08 ≈ 75 kW of heat
+    expect(worst).toBeLessThanOrEqual(loop)
+    expect(serverPower(s, loadout(s, 'hw_giga', DEFAULT_MODEL_ID, 'bf16')) * 2).toBeGreaterThan(loop) // a second NVL72 needs a second loop
+  })
+
+  it("W34's Liquid Loop Fault cuts only the liquid pool: an air fleet never throttles from it, a liquid rack does", () => {
+    expect(themedIncidentForWave(33)).toBe('inc_cooling_failure')
+    const fault = INCIDENTS.find((i) => i.id === 'inc_cooling_failure')!
+    expect(fault.mods.coolingCap).toBeUndefined()
+    expect(fault.mods.liquidCoolingCap).toBeLessThan(1)
+    // an NVL72 on its loop, beside air racks filling the house chillers
+    const s = rich(37)
+    const tiles = freeTiles(s, 14)
+    for (const p of tiles.slice(0, 9)) expect(tryBuild(s, 'power', p.col, p.row)).toBe(true)
+    expect(tryBuild(s, 'cooling_liquid', tiles[9].col, tiles[9].row)).toBe(true)
+    expect(tryBuild(s, 'srv_frontier', tiles[10].col, tiles[10].row)).toBe(true)
+    const giga = lastTower(s)
+    for (let k = 0; k < 3; k++) expect(upgradeHardware(s, giga.id)).toBe(true)
+    expect(giga.hwId).toBe('hw_giga')
+    for (const p of tiles.slice(11, 14)) expect(tryBuild(s, 'srv_frontier', p.col, p.row)).toBe(true)
+    updatePower(s)
+    const air = s.towers.filter((t) => t.def.kind === 'server' && t !== giga)
+    expect(giga.online).toBe(true)
+    expect(giga.throttle).toBe(1)
+    expect(air.every((t) => t.online && t.throttle === 1)).toBe(true)
+    const airCap0 = coolingPools(s).air.cap
+    const liquidCap0 = coolingPools(s).liquid.cap
+    // the fault lands: the loop loses capacity, the air pool does not
+    s.modifiers.liquidCoolingCap = fault.mods.liquidCoolingCap!
+    updatePower(s)
+    expect(coolingPools(s).air.cap).toBeCloseTo(airCap0, 6)
+    expect(coolingPools(s).liquid.cap).toBeCloseTo(liquidCap0 * fault.mods.liquidCoolingCap!, 6)
+    expect(giga.throttle).toBeLessThan(1)
+    expect(air.every((t) => t.throttle === 1)).toBe(true)
+    // a water restriction is site-wide: it cuts both pools
+    const drought = INCIDENTS.find((i) => i.id === 'inc_water_drought')!
+    expect(drought.mods.coolingCap).toBeLessThan(1)
+  })
+
+  it('W44 (the nuclear deal) forces the firm-power PPA, not a price spike', () => {
+    expect(CAMPAIGN_THEMES[43].name).toMatch(/Nuclear/)
+    expect(themedIncidentForWave(43)).toBe('inc_nuclear_ppa')
+    const ppa = INCIDENTS.find((i) => i.id === 'inc_nuclear_ppa')!
+    expect(ppa.good).toBe(true)
+    expect(ppa.mods.powerPrice).toBeLessThan(1)
+    const s = createState(38)
+    startGame(s)
+    s.waveIndex = 42
+    rollIncident(s)
+    expect(s.pendingIncident?.id).toBe('inc_nuclear_ppa')
+    expect(s.modifiers.powerPrice).toBeLessThan(1)
   })
 
   it('a grid curtailment order cuts usable power (racks brown out); a freeze blocks new Power Plants', () => {
@@ -603,7 +830,9 @@ describe('campaign: verified late waves, incident mapping, boss teeth', () => {
     const want: Record<number, string> = {
       13: 'inc_water_drought', // W14 Phoenix
       14: 'inc_grid_curtailment', // W15 Texas heatwave
+      33: 'inc_cooling_failure', // W34 Liquid-Cooling-or-Bust (a liquid-loop fault)
       34: 'inc_interconnect_queue', // W35 Interconnection Wall
+      43: 'inc_nuclear_ppa', // W44 The Nuclear Power Scramble (a firm-power deal)
       37: 'inc_crowdstrike', // W38 CrowdStrike (still a surge)
       45: 'inc_interconnect_queue', // W46 Power, Not Chips
       79: 'inc_cloudflare_outage', // W80 Cloudflare (still a surge)
@@ -640,31 +869,50 @@ describe('campaign: verified late waves, incident mapping, boss teeth', () => {
     )
     expect(unthemedBosses.length).toBeGreaterThan(0)
     for (const { i } of unthemedBosses) {
-      for (const seed of [1, 2, 3]) {
+      for (let seed = 1; seed <= 40; seed++) {
         const s = createState(seed)
         s.waveIndex = i - 1
         rollIncident(s)
         expect(s.pendingIncident).not.toBeNull()
         expect(s.pendingIncident!.good ?? false).toBe(false)
         expect(s.pendingIncident!.concentrate).toBeUndefined()
+        // an operating shock, never a second volume spike on top of the boss's own step
+        expect(s.pendingIncident!.mods.volume ?? 1).toBeLessThanOrEqual(1)
       }
     }
+    // the viral surge is good fortune (it pays more per clean serve), never a forced hard shock
+    expect(INCIDENTS.find((x) => x.id === 'inc_viral_ghibli')!.good).toBe(true)
   })
 
-  it('the load climbs in steps a fleet can follow: no wave more than STEP_CAP (a boss BOSS_STEP_CAP) over the one before', () => {
-    const totals = WAVES.map((w) => w.groups.reduce((n, g) => n + g.count, 0))
-    const budgets = campaignBudgets(CAMPAIGN_THEMES)
-    for (let i = 1; i < totals.length; i++) {
+  it('the load climbs in steps a fleet can follow: no wave brings more than STEP_CAP (a boss BOSS_STEP_CAP) × the one before, its forced incident included', () => {
+    const vol = CAMPAIGN_THEMES.map(forcedIncidentVolume)
+    // what each wave actually spawns once its forced incident's volume is applied (startWave's rounding)
+    const eff = WAVES.map((w, i) => w.groups.reduce((n, g) => n + Math.max(1, Math.round(g.count * vol[i])), 0))
+    const budgets = campaignBudgets(CAMPAIGN_THEMES, forcedIncidentVolume)
+    for (let i = 1; i < eff.length; i++) {
       const cap = CAMPAIGN_THEMES[i].boss ? BOSS_STEP_CAP : STEP_CAP
-      expect(budgets[i]).toBeLessThanOrEqual(Math.ceil(budgets[i - 1] * cap))
-      // per-burst rounding adds at most one request a burst
-      expect(totals[i]).toBeLessThanOrEqual(Math.ceil(totals[i - 1] * cap) + WAVES[i].groups.length)
+      expect(budgets[i] * vol[i]).toBeLessThanOrEqual(Math.ceil(budgets[i - 1] * vol[i - 1] * cap) + 1e-9)
+      // per-burst rounding (at the build and again at the incident's volume) adds a little a burst
+      expect(eff[i]).toBeLessThanOrEqual(Math.ceil(eff[i - 1] * cap) + 2 * WAVES[i].groups.length)
+    }
+    // the realized spawn count of a forced-surge wave matches: startWave after the real roll
+    for (const i of [6, 58, 75, 79]) {
+      expect(vol[i]).toBeGreaterThan(1)
+      const s = createState(1)
+      startGame(s)
+      s.waveIndex = i - 1
+      rollIncident(s)
+      expect(startWave(s)).toBe(true)
+      const realized = s.spawns.reduce((n, g) => n + g.count, 0)
+      expect(realized).toBe(eff[i])
+      const cap = CAMPAIGN_THEMES[i].boss ? BOSS_STEP_CAP : STEP_CAP
+      expect(realized / eff[i - 1]).toBeLessThanOrEqual(cap + 0.15)
     }
     // every boss still outweighs the wave before it, and the extreme band ramps: each decade's boss
     // is at least as heavy as the last, so the run ends from accumulated pressure, not one cliff
     const bosses = CAMPAIGN_THEMES.map((th, i) => ({ th, i })).filter((x) => x.th.boss)
-    for (const { i } of bosses) expect(totals[i]).toBeGreaterThan(totals[i - 1])
-    const late = bosses.filter((x) => x.th.tier >= 10).map((x) => totals[x.i])
+    for (const { i } of bosses) expect(eff[i]).toBeGreaterThan(eff[i - 1])
+    const late = bosses.filter((x) => x.th.tier >= 10).map((x) => eff[x.i])
     expect(late.length).toBeGreaterThanOrEqual(4)
     for (let k = 1; k < late.length; k++) expect(late[k]).toBeGreaterThanOrEqual(late[k - 1])
   })
@@ -724,8 +972,11 @@ describe('endless resumes at the wave-100 load', () => {
       }
       expect(w.groups.reduce((n, g) => n + g.count, 0)).toBeGreaterThanOrEqual(Math.round(total100 * 0.95))
       expect(w.groups.some((g) => g.typeId === 'reason' || g.typeId === 'agent')).toBe(true)
-      expect(w.clearBonus).toBeGreaterThanOrEqual(tierBonus(MAX_TIER, false))
+      // surge 1 carries wave 100's boss-sized load, so its contract never pays less than wave 100's
+      expect(w.clearBonus).toBeGreaterThanOrEqual(WAVES[WAVES.length - 1].clearBonus)
     }
+    for (let d = 1; d < 30; d++)
+      expect(endlessScaling(WAVES.length - 1 + d + 1).clearBonus).toBeGreaterThan(endlessScaling(WAVES.length - 1 + d).clearBonus)
   })
 
   it('every generated surge is well-formed and carries a hard lane (reason or agent)', () => {

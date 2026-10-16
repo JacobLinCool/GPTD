@@ -131,8 +131,9 @@ export interface AlignmentProfile {
 /**
  * Static hardware profile for a server rack — now REAL accelerator specs.
  * A board tile represents `gpus` GPUs; aggregate fields (bf16Tflops, hbmGb, …)
- * are `perGpu × gpus`, filled at load (§6.3). powerDraw / heat stay ABSTRACT
- * for the existing power system this phase (real watts is a later phase).
+ * are `perGpu × gpus`, filled at load (§6.3). Power and heat are real kW from
+ * `tdpWatts` (effects.ts serverPower / serverHeat); the legacy `powerDraw` / `heat`
+ * fields below are authored data nothing reads.
  */
 export interface ServerHardwareDef {
   id: string
@@ -510,7 +511,7 @@ export type TowerKind =
   | 'guardrail'
   | 'power'
   | 'cooling'
-  /** §6.5 Liquid Cooling Loop: enables liquid-cooled racks (pod/superpod/giga) and adds large kW. */
+  /** §6.5 Liquid Cooling Loop: enables liquid-cooled racks (the GB200 NVL72) and is their own heat-rejection pool. */
   | 'cooling_liquid'
   | 'lab'
 
@@ -947,6 +948,8 @@ export type ModifierTarget =
   | 'powerBuild'
   /** SLA cost of every non-served outcome (an enterprise pilot: strict penalties). */
   | 'slaDamage'
+  /** the Liquid Cooling Loops' capacity alone (a coolant-distribution fault); `coolingCap` scales both pools. */
+  | 'liquidCoolingCap'
 
 export interface IncidentDef {
   id: string
@@ -1214,6 +1217,7 @@ export interface ActiveModifiers {
   powerCap: number
   powerBuild: number
   slaDamage: number
+  liquidCoolingCap: number
 }
 
 export interface GameState {
@@ -1273,7 +1277,7 @@ export interface GameState {
   utilization: number
   /** total real capex (USD) of the deployed rack fleet — telemetry (§6.6). */
   fleetCapexUsd: number
-  /** past wave 20: procedural waves with climbing difficulty, no wave cap */
+  /** past wave 100: procedural surges resuming at the wave-100 load and climbing, no wave cap */
   endless: boolean
   /** the wave currently being played (authored or procedurally generated) */
   currentWave: WaveDef | null

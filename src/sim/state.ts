@@ -14,6 +14,7 @@ export function defaultModifiers(): ActiveModifiers {
     powerCap: 1,
     powerBuild: 1,
     slaDamage: 1,
+    liquidCoolingCap: 1,
   }
 }
 

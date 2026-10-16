@@ -156,7 +156,7 @@ const HELP = {
     cycleRackRole: '[towerId]  — cycle P/D disaggregation role (needs inf_disagg research)',
     buyUpgrade: '[upgradeId]  — needs a Lab',
     research: '[researchId]  — from state.research.options',
-    postTrain: '[baseIds[], method, target, effort]  — derive a checkpoint in the Studio (see state.studio). Over GET, args=baseId,method,target,effort works for a SINGLE base; merge (2 bases) needs the POST JSON form with a nested array, and two DIFFERENT checkpoints of the same base with one shared architecture.',
+    postTrain: '[baseIds[], method, target, effort]  — derive a checkpoint in the Studio (see state.studio); effort must be one of state.studio.effortNotches. Over GET, args=baseId,method,target,effort works for a SINGLE base; merge (2 bases) needs the POST JSON form with a nested array, and two DIFFERENT checkpoints of the same base with one shared architecture.',
     startWave: '[]  — build phase only',
     continueEndless: '[]  — after a win',
     select: '[towerId]  — highlight a rack in the inspect panel',
@@ -165,7 +165,7 @@ const HELP = {
   onReject: 'A rejected /do returns {ok:false, error:"<why>"} — read error; it explains the exact gate that failed (cash, VRAM fit, phase, liquid loop, lab, prereqs, …).',
   stateKeys: [
     'phase, wave, totalWaves, isLastWave, waveActive, endless',
-    'meters{cash,trust,sla,data}, power{used,cap}, cooling{used,cap}, coolingLiquid{used,cap} (live kW in every phase), flags{hasLab,hasLiquidLoop}, modifiers{buildCost,powerPrice,coolingCap,safetyDamage,volume,reward,powerCap,powerBuild,slaDamage}',
+    'meters{cash,trust,sla,data}, power{used,cap}, cooling{used,cap}, coolingLiquid{used,cap} (live kW in every phase), flags{hasLab,hasLiquidLoop}, modifiers{buildCost,powerPrice,coolingCap,safetyDamage,volume,reward,powerCap,powerBuild,slaDamage,liquidCoolingCap}',
     'incident{id,name,desc,good} | null, nextWave{wave,name,brief,clearBonus (SLA contract at 100% Goodput),totalRequests,mix[{typeId,count,latClass,axis,difficulty,inputTokens,outputTokens,hazards}],volumeMul,estDurationSec,projectedBill,boss,surgeLane,incidentId} | null (build phase)',
     'lastReport{wave,served,sloMiss,bad,unservable,unsafe,overRefused,leaked,total,goodputPct,sloAttainPct,trustLostBy,slaLostBy,sloCauses,overRefusedBy,guardCaught,selfHandled,byType,…} | null',
     'board{cols,rows,core,freeTiles[{col,row,nearLane}]}, towers[{id,defId,col,row,online,range,coversLanes(guards),hwId,modelId,role,sellValue,nextHwId,upgradeCost,deployableModelIds}]',

@@ -42,7 +42,7 @@ export function tryBuild(s: GameState, defId: string, col: number, row: number):
   const def = TOWER_DEFS[defId]
   if (!def) return false
   if (!canPlaceAt(s, col, row)) return false
-  // §6.5 hard gate (OQ-G8): a liquid-cooled rack (>1000 W/GPU) cannot be PLACED
+  // §6.5 hard gate (OQ-G8): a liquid-cooled rack (the 1200 W/GPU NVL72) cannot be PLACED
   // without a Liquid Cooling Loop — an air-cooled rack never needs one.
   if (def.kind === 'server' && def.hardwareId && hwNeedsLiquid(HARDWARE_DEFS[def.hardwareId]) && !hasLiquidLoop(s))
     return false
