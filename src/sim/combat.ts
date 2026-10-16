@@ -44,6 +44,7 @@ import {
   schedGroups,
   serverQualityVs,
   specTokensFor,
+  specYield,
   spritesPerLane,
   towerRangeTiles,
 } from './effects'
@@ -171,6 +172,17 @@ class Host {
     return hiddenTokensFor(this.model, r.def)
   }
 
+  /** the prompt-phase gain of the rack's P/D role (a dedicated prefill pool is tuned for it). */
+  get prefillGain(): number {
+    return this.t.role === 'prefill' ? DISAGG_POOL_GAIN : 1
+  }
+
+  /** real lane-seconds of prefill compute the request's remaining prompt (one stream) costs on this rack. */
+  promptSec(r: Request): number {
+    const rate = prefillRateOn(this.s, this.lo, this.plan, ingestLen(r)) * this.prefillGain * this.t.throttle
+    return rate > 0 ? Math.max(0, r.prefill) / rate : 1e9
+  }
+
   /**
    * Real seconds this rack would take to finish the request from here: the tokens it still
    * has to generate — plus, before its first token, the hidden reasoning this model would
@@ -218,15 +230,64 @@ function servingHosts(s: GameState): Host[] {
 }
 
 /**
- * Could this rack ever take the request in its current phase? The P/D role must match (a
- * decode pool only takes KV its own model produced), and the full sequence must fit the
+ * Could this rack ever take the request in its current phase? The P/D role must match, the
+ * KV the request already holds (a partly ingested prompt, or its whole context once it
+ * decodes) must be its model's — KV tensors belong to one model's layers and projections,
+ * so another model would have to re-prefill (`handOff`) — and the full sequence must fit the
  * model window and one model copy's KV. (A full rack or a KV budget busy with other
  * requests is honest queueing — still a host.)
  */
 function canHost(h: Host, r: Request): boolean {
   if (r.prefill > 0 ? h.t.role === 'decode' : h.t.role === 'prefill') return false
-  if (h.t.role === 'decode' && r.kvModelId !== h.model.id) return false
+  if (r.kvModelId !== undefined && r.kvModelId !== h.model.id) return false
   return h.feasible(r)
+}
+
+/**
+ * KV ownership across racks. Racks running the SAME model may share a request (several racks
+ * in range co-decode it — the board's "several towers work one enemy"; its latency is still
+ * accounted per token, so they never make its tokens faster). A rack running ANOTHER model
+ * cannot read that KV: once no rack of the request's KV model is in reach any more (it walked
+ * on), a rack of another model in reach takes it over only by ingesting its whole sequence
+ * again — a partly ingested prompt starts over (its TTFT clock still running); an answer
+ * already streaming re-prefills its prompt plus every token so far (recompute preemption): its
+ * first token stands, and the re-ingest is a stall inside its decode (E2EL and TPOT).
+ */
+function handOff(s: GameState, hosts: Host[]): void {
+  for (const r of s.requests) {
+    if (!r.alive || r.overRefused || r.kvModelId === undefined) continue
+    if (r.prefill <= 0 && r.work <= 0) continue
+    let home = false
+    let taker = false
+    for (const h of hosts) {
+      if (!within(h.t, r, h.r2)) continue
+      if (h.model.id === r.kvModelId) {
+        const phaseOk = r.prefill > 0 ? h.t.role !== 'decode' : h.t.role !== 'prefill'
+        if (phaseOk && h.feasible(r)) {
+          home = true
+          break
+        }
+      } else if (h.t.role !== 'decode' && h.feasible(r)) taker = true
+    }
+    if (home || !taker) continue
+    if (r.prefillDoneAt === undefined) {
+      // its prompt starts over on the new model (the cached prefix was the old model's KV too)
+      r.prefill = Math.max(1, r.tokensIn)
+      r.cachedTokens = 0
+    } else {
+      r.prefill = Math.max(1, r.contextLen)
+      r.recompute = true
+    }
+    r.kvModelId = undefined
+    r.kvTowerId = undefined
+    r.homeTowerId = undefined
+    r.kvTransferSec = 0
+  }
+}
+
+/** The tokens a prompt job ingests in one pass: its prompt, or its whole sequence when it is re-prefilled. */
+function ingestLen(r: Request): number {
+  return r.recompute ? r.contextLen : r.tokensIn
 }
 
 /**
@@ -252,10 +313,12 @@ function checkE2el(r: Request): void {
 /**
  * The core combat tick (§0.2 serving spine):
  *   1. routers tag the requests in range; caches give each rack its best hit chance;
- *   2. FIRST HARDWARE CONTACT — a request in range of a rack that could prefill it starts
+ *   2. KV ownership: a request whose KV model is out of reach is taken over by re-prefilling;
+ *   3. FIRST HARDWARE CONTACT — a request in range of a rack that could prefill it starts
  *      its TTFT clock, and is screened once by the guardrails covering its lane;
- *   3. Router dispatch reserves each routed request for its best-fit rack;
- *   4. every rack admits cohorts, prefills and decodes;
+ *   4. admission, requests nearest the core first: each prompt goes to ONE rack — the one
+ *      that can start it soonest, or a router's capability pick — and every rack running the
+ *      request's model admits its decode; then every rack prefills and decodes;
  *   5. finished requests are screened on output and resolved into an outcome.
  */
 export function updateCombat(s: GameState, dt: number): void {
@@ -279,16 +342,18 @@ export function updateCombat(s: GameState, dt: number): void {
     clearRackDisplay(t)
   }
   const hosts = servingHosts(s)
+  handOff(s, hosts)
 
   // --- first hardware contact: TTFT eligibility + one guardrail screening per request ---
   // the per-lane guard stages, built the first time a request is screened this tick
   let stages: LaneGuardStage[][] | null = null
   const stagesOf = (laneId: number): LaneGuardStage[] => (stages ??= laneGuardStages(s))[laneId] ?? []
   const waiting: Request[] = []
+  const resuming: Request[] = []
   for (const r of s.requests) {
     if (!r.alive || r.overRefused) continue
-    // already screened and past its first token: nothing left to decide here
-    if (r.screened && r.prefillDoneAt !== undefined) continue
+    // already screened and streaming (not being re-prefilled): nothing left to decide here
+    if (r.screened && r.prefillDoneAt !== undefined && r.prefill <= 0) continue
     let contact = false
     for (const h of hosts) {
       if (within(h.t, r, h.r2) && canHost(h, r)) {
@@ -297,7 +362,7 @@ export function updateCombat(s: GameState, dt: number): void {
       }
     }
     if (!contact) continue
-    if (r.prefillDoneAt === undefined && r.prefill > 0) waiting.push(r)
+    if (r.prefill > 0) (r.prefillDoneAt === undefined ? waiting : resuming).push(r)
     if (r.screened) continue
     screenInput(s, r, stagesOf(r.laneId))
     if (r.overRefused) {
@@ -309,11 +374,8 @@ export function updateCombat(s: GameState, dt: number): void {
     }
   }
 
-  if (routers.length) dispatch(s, hosts)
-
   // every rack admits its cohorts first, so expert parallelism and the displays see the whole tick
-  const prefillClaims = new Set<number>()
-  const racks = hosts.map((h) => admit(s, h, prefillClaims))
+  const racks = admitAll(s, hosts)
   const hostOf = new Map<number, Host>()
   for (const h of hosts) hostOf.set(h.t.id, h)
   const generated = new Map<number, number>()
@@ -328,8 +390,16 @@ export function updateCombat(s: GameState, dt: number): void {
     checkE2el(r)
   }
 
-  // §0.4 queue wait: a request still waiting for its first token at an eligible rack
+  // §0.4 queue wait: a request still waiting for its first token at an eligible rack — a full
+  // rack or a busy KV budget is queueing too, even if another rack serves it later
   for (const r of waiting) if (r.alive && r.prefillDoneAt === undefined) r.queueSec += realDt
+  // an answer being re-prefilled on another model waits inside its decode
+  for (const r of resuming) {
+    if (!r.alive || r.prefill <= 0) continue
+    r.e2elReal += realDt
+    r.decodeSec += realDt
+    checkE2el(r)
+  }
 
   // --- resolve: refusals now, finished answers after their output screening ---
   for (const r of s.requests) {
@@ -351,50 +421,6 @@ function clearRackDisplay(t: Tower): void {
   t.streams = 0
   t.tokS = 0
   if (t.decodeIds) t.decodeIds.length = 0
-}
-
-/**
- * §4.10 Router = capability-aware dispatch (RouteLLM / model gateways): every request in a
- * router's range is reserved for an in-range rack with a free slot. Among the racks whose
- * model answers it CORRECTLY (quality margin ≥ 0, in the mode that model answers it in) it
- * takes the one that would finish it soonest — its answer, plus the hidden reasoning a model
- * in thinking mode spends first, at that rack's per-user speed (ties → the larger margin) — so
- * easy traffic goes to fast small models and a strong thinker is kept for what needs it. When no rack in range answers it
- * correctly it takes the best margin (ties → the sooner answer). A request no rack in range
- * can take stays unreserved (any rack may serve it) — routing never strands traffic.
- * Without a router, racks serve the requests nearest the core first.
- */
-function dispatch(s: GameState, hosts: Host[]): void {
-  const load = new Map<Host, number>()
-  const routed = s.requests
-    .filter((r) => r.alive && r.routed && !r.overRefused && (r.work > 0 || r.prefill > 0))
-    .sort((a, b) => remainingPath(a.laneId, a.dist) - remainingPath(b.laneId, b.dist) || a.id - b.id)
-  for (const r of routed) {
-    let best: Host | null = null
-    let bestMargin = -Infinity
-    let bestEta = Infinity
-    for (const h of hosts) {
-      if ((load.get(h) ?? 0) >= h.slots) continue
-      if (!within(h.t, r, h.r2) || !canHost(h, r)) continue
-      const m = marginOn(s, h, r)
-      const eta = h.answerEta(r)
-      const better = !best
-        ? true
-        : m >= 0 && bestMargin >= 0
-          ? eta < bestEta - 1e-9 || (Math.abs(eta - bestEta) <= 1e-9 && m > bestMargin + 1e-9)
-          : m >= 0 !== bestMargin >= 0
-            ? m >= 0
-            : m > bestMargin + 1e-9 || (Math.abs(m - bestMargin) <= 1e-9 && eta < bestEta - 1e-9)
-      if (better) {
-        best = h
-        bestMargin = m
-        bestEta = eta
-      }
-    }
-    if (!best) continue
-    r.routedTo = best.t.id
-    load.set(best, (load.get(best) ?? 0) + 1)
-  }
 }
 
 /**
@@ -461,6 +487,10 @@ function scoreQuality(s: GameState, r: Request, h: Host, tokens: number): void {
  * in instant mode (§1.4: a hybrid answers interactive traffic with thinking switched off).
  */
 function firstToken(s: GameState, r: Request, h: Host, tDone: number): void {
+  if (r.prefillDoneAt !== undefined) {
+    resumeAfterRecompute(s, r, h, tDone)
+    return
+  }
   r.prefill = 0
   r.prefillDoneAt = s.time
   r.thinkingMode = h.mode(r)
@@ -469,6 +499,7 @@ function firstToken(s: GameState, r: Request, h: Host, tDone: number): void {
   r.ttfatReal = r.ttftReal
   r.kvModelId = h.model.id
   r.kvTowerId = h.t.id
+  r.homeTowerId = h.t.role === 'prefill' ? undefined : h.t.id
   // a prefill pool hands its KV to a decode pool over the network (DistServe / Mooncake)
   r.kvTransferSec = h.t.role === 'prefill' ? kvPerReqGb(s, h.model, r.contextLen) / KV_TRANSFER_GBPS : 0
   // §1.3 a per-type TTFT override (comp's strict 200 ms) tightens the class bound
@@ -493,6 +524,23 @@ function firstToken(s: GameState, r: Request, h: Host, tDone: number): void {
     r.hiddenTokens = hidden
     r.thinkTokens = hidden
   }
+}
+
+/**
+ * A streaming answer re-prefilled on another model (`handOff`) holds its KV again: the new
+ * rack's model continues it. Its first token, layer-1 roll and thinking plan stand; the
+ * re-ingest's wall time this tick is a stall inside its decode (E2EL and TPOT).
+ */
+function resumeAfterRecompute(s: GameState, r: Request, h: Host, tDone: number): void {
+  r.prefill = 0
+  r.recompute = false
+  r.kvModelId = h.model.id
+  r.kvTowerId = h.t.id
+  r.homeTowerId = h.t.role === 'prefill' ? undefined : h.t.id
+  r.kvTransferSec = h.t.role === 'prefill' ? kvPerReqGb(s, h.model, r.contextLen) / KV_TRANSFER_GBPS : 0
+  r.e2elReal += tDone
+  r.decodeSec += tDone
+  checkE2el(r)
 }
 
 /**
@@ -563,18 +611,15 @@ interface Group {
 interface Admitted {
   h: Host
   groups: Group[]
+  /** the first request in its range this tick (null = an idle rack). */
   first: Request | null
+  /** request sprites admitted so far (≤ the rack's slots). */
+  used: number
+  /** prompt compute seconds queued on its lanes this tick (with the prompts a prefill pool owes first). */
+  queuedSec: number
 }
 
-/**
- * Admission for one rack: the requests in its range (a router's reservation first, then the
- * ones closest to the core), each gated by the model window and one copy's KV at its FULL
- * sequence (unservable otherwise), the P/D role, and a free slot. A request lands on the
- * group with the most free KV and brings as much of its cohort as that KV holds: each
- * stream reserves its current sequence's KV, the shared prefix stored once.
- */
-function admit(s: GameState, h: Host, prefillClaims: Set<number>): Admitted {
-  const t = h.t
+function newAdmitted(s: GameState, h: Host): Admitted {
   const sg = schedGroups(s, h.plan)
   const groups: Group[] = Array.from({ length: sg.count }, () => ({
     lanes: sg.lanes,
@@ -585,74 +630,185 @@ function admit(s: GameState, h: Host, prefillClaims: Set<number>): Admitted {
     prefill: [],
     decode: [],
   }))
-  const cands: Request[] = []
-  for (const r of s.requests) {
-    if (!r.alive || r.overRefused || (r.work <= 0 && r.prefill <= 0)) continue
-    if (r.routedTo !== null && r.routedTo !== t.id) continue
-    if (within(t, r, h.r2)) cands.push(r)
-  }
-  if (!cands.length) return { h, groups, first: null }
-  cands.sort((a, b) => {
-    const ar = a.routedTo === t.id ? 1 : 0
-    const br = b.routedTo === t.id ? 1 : 0
-    if (ar !== br) return br - ar // requests a router reserved for this rack first
-    return remainingPath(a.laneId, a.dist) - remainingPath(b.laneId, b.dist) // then closest to the core
-  })
-
-  let used = 0
-  for (const r of cands) {
-    if (used >= h.slots) break
-    // hard capacity gates at the FULL sequence: longer than the model window, or one
-    // stream's KV larger than a whole model copy can hold → never servable here (§2.5)
-    if (!h.feasible(r)) {
-      r.windowBlocked = true
-      continue
-    }
-    // P/D disaggregation: a role-pinned rack only takes its phase, a decode pool only its model's KV
-    if (t.role === 'decode' && (r.prefill > 0 || r.kvModelId !== h.model.id)) continue
-    if (t.role === 'prefill' && r.prefill <= 0) continue
-    // one prompt is ingested by ONE rack: a rack already holding it in its prefill queue keeps it
-    if (r.prefill > 0 && prefillClaims.has(r.id)) continue
-    const kvOne = kvPerReqGb(s, h.model, r.contextLen)
-    let gi = -1
-    let free = -1
-    for (let i = 0; i < groups.length; i++) {
-      const g = groups[i]
-      const f = g.kvCap - g.kvUsed
-      if (g.sprites < g.slots && f >= kvOne && f > free + 1e-12) {
-        gi = i
-        free = f
-      }
-    }
-    if (gi < 0) continue // every copy is full: it waits in the queue
-    if (r.prefill > 0 && !r.cacheLooked && r.def.cacheable && h.cacheBest > 0) {
-      lookupPrefix(s, r, h)
-      if (r.prefill <= 0) {
-        firstToken(s, r, h, 0)
-        if (r.overRefused) continue
-      }
-    }
-    const shared = expectedSharedTokens(s, h, r)
-    const k = cohortFit(s, h.model, r.contextLen, free, shared)
-    const kvGb = cohortKvGb(s, h.model, r.contextLen, k, shared)
-    const g = groups[gi]
-    g.sprites++
-    g.kvUsed += kvGb
-    used++
-    const job: Job = { r, k, kvGb, shared }
-    if (r.prefill > 0) {
-      g.prefill.push(job)
-      prefillClaims.add(r.id)
-    } else if (r.work > 0) g.decode.push(job)
-  }
-  return { h, groups, first: cands[0] }
+  return { h, groups, first: null, used: 0, queuedSec: h.t.prefillDebtSec }
 }
 
 /**
- * PREFILL without chunked prefill — one prompt per lane at the compute roof, run EXCLUSIVELY: the
- * lane's decodes stall for its busy time (Sarathi-Serve / DistServe, OSDI'24). A prompt that
- * finishes joins the batch at once (continuous batching admits it into the very next iteration).
- * Returns the share of the tick the group's decodes keep (in decode steps of any length).
+ * The group of a rack that takes one more request now: a free slot and room for one stream's
+ * KV at its current sequence, the most free KV first (−1 = the rack is full: it waits).
+ */
+function roomFor(s: GameState, a: Admitted, r: Request): number {
+  if (a.used >= a.h.slots) return -1
+  const kvOne = kvPerReqGb(s, a.h.model, r.contextLen)
+  let gi = -1
+  let free = -1
+  for (let i = 0; i < a.groups.length; i++) {
+    const g = a.groups[i]
+    const f = g.kvCap - g.kvUsed
+    if (g.sprites < g.slots && f >= kvOne && f > free + 1e-12) {
+      gi = i
+      free = f
+    }
+  }
+  return gi
+}
+
+/**
+ * Admission, requests nearest the core first (they have the least lane left). For every
+ * request in a rack's range: the hard capacity gates at its FULL sequence first (longer than
+ * the model window, or one stream's KV larger than a whole model copy → never servable on
+ * that rack, §2.5; `fitSeen` once some rack in range could hold it), then the P/D role and KV
+ * ownership (`canHost`), then a free slot and KV. Three passes, the way an engine keeps the
+ * requests it is already running before it admits new ones:
+ *   1. every streaming answer on its HOME rack (the one that produced its first token; once it
+ *      walks out of that rack's reach, the least busy rack of its model in reach takes it over);
+ *   2. every PROMPT on ONE rack: the one that can start it soonest — the least prompt work
+ *      already queued per lane this tick (ties → the lower tower id) — or, in a router's range,
+ *      the router's capability pick (`placePrompt`);
+ *   3. spare capacity: the other racks of an answer's model in reach help decode it (same-model
+ *      co-decoding; routed or not, the same rule).
+ * A request lands on the group with the most free KV and brings as much of its cohort as that
+ * KV holds: each stream reserves its current sequence's KV, the shared prefix stored once.
+ */
+function admitAll(s: GameState, hosts: Host[]): Admitted[] {
+  const adm = hosts.map((h) => newAdmitted(s, h))
+  if (!adm.length) return adm
+  const cands = s.requests.filter((r) => r.alive && !r.overRefused && (r.work > 0 || r.prefill > 0))
+  cands.sort((a, b) => remainingPath(a.laneId, a.dist) - remainingPath(b.laneId, b.dist) || a.id - b.id)
+  // the racks in reach that could take each request in its current phase
+  const nearOf: Admitted[][] = cands.map((r) => {
+    const near: Admitted[] = []
+    for (const a of adm) {
+      if (!within(a.h.t, r, a.h.r2)) continue
+      a.first ??= r
+      if (!a.h.feasible(r)) {
+        r.windowBlocked = true
+        continue
+      }
+      r.fitSeen = true
+      if (canHost(a.h, r)) near.push(a)
+    }
+    return near
+  })
+  // 1. every streaming answer on its home rack (the engine running it keeps it)
+  cands.forEach((r, i) => {
+    const near = nearOf[i]
+    if (r.prefill > 0 || !near.length) return
+    let home = r.homeTowerId !== undefined ? near.find((a) => a.h.t.id === r.homeTowerId) : undefined
+    if (!home) {
+      // its home rack is out of reach: the least busy rack of its model in reach takes it over
+      let best: Admitted | null = null
+      for (const a of near) if (roomFor(s, a, r) >= 0 && (!best || a.used / a.h.slots < best.used / best.h.slots)) best = a
+      home = best ?? undefined
+      if (home) r.homeTowerId = home.h.t.id
+    }
+    if (!home) return
+    const gi = roomFor(s, home, r)
+    if (gi >= 0) admitJob(s, home, gi, r)
+  })
+  // 2. prompts: each to the one rack that can start it soonest (or a router's pick)
+  cands.forEach((r, i) => {
+    if (r.prefill > 0 && nearOf[i].length) placePrompt(s, nearOf[i], r)
+  })
+  // 3. spare capacity: the other racks of a streaming answer's model in reach help decode it
+  cands.forEach((r, i) => {
+    if (r.prefill > 0 || r.work <= 0) return
+    for (const a of nearOf[i]) {
+      if (a.h.t.id === r.homeTowerId) continue
+      const gi = roomFor(s, a, r)
+      if (gi >= 0) admitJob(s, a, gi, r)
+    }
+  })
+  return adm
+}
+
+/**
+ * Where one prompt is ingested, among the in-range racks with room for it now (a rack whose
+ * slots or KV are full is skipped — it would only strand the prompt):
+ *   · no router: the rack that can START it soonest — the least prompt work queued per lane
+ *     this tick (ties → the lower tower id) — so a burst spreads over the racks in reach;
+ *   · §4.10 a Router (RouteLLM / model gateways) dispatches by capability: among the racks
+ *     whose model answers it CORRECTLY (quality margin ≥ 0, in the mode that model answers it
+ *     in) the one that would finish it soonest — the wait for its lane, its prefill, then its
+ *     answer plus the hidden reasoning a thinking model spends first, at that rack's per-user
+ *     speed (ties → the larger margin) — so easy traffic goes to fast small models and a strong
+ *     thinker is kept for what needs it; when no rack in range answers it correctly, the best
+ *     margin (ties → the sooner answer).
+ * The rack that ingests the prompt holds its KV, so its model writes the answer.
+ */
+function placePrompt(s: GameState, near: Admitted[], r: Request): void {
+  let best: Admitted | null = null
+  let bestGi = -1
+  let bestStart = Infinity
+  let bestMargin = -Infinity
+  let bestEta = Infinity
+  for (const a of near) {
+    const gi = roomFor(s, a, r)
+    if (gi < 0) continue
+    const start = a.queuedSec / Math.max(1, a.h.plan.lanes)
+    let better: boolean
+    let m = 0
+    let eta = 0
+    if (!r.routed) {
+      better = !best || start < bestStart - 1e-12
+    } else {
+      m = marginOn(s, a.h, r)
+      eta = start + a.h.promptSec(r) + a.h.answerEta(r)
+      better = !best
+        ? true
+        : m >= 0 && bestMargin >= 0
+          ? eta < bestEta - 1e-9 || (Math.abs(eta - bestEta) <= 1e-9 && m > bestMargin + 1e-9)
+          : m >= 0 !== bestMargin >= 0
+            ? m >= 0
+            : m > bestMargin + 1e-9 || (Math.abs(m - bestMargin) <= 1e-9 && eta < bestEta - 1e-9)
+    }
+    if (better) {
+      best = a
+      bestGi = gi
+      bestStart = start
+      bestMargin = m
+      bestEta = eta
+    }
+  }
+  if (!best) return
+  if (r.routed) r.routedTo = best.h.t.id
+  admitJob(s, best, bestGi, r)
+}
+
+/** Admit one request sprite onto a rack's group: its prefix-cache lookup, its cohort and the KV it reserves. */
+function admitJob(s: GameState, a: Admitted, gi: number, r: Request): void {
+  const h = a.h
+  if (r.prefill > 0 && !r.cacheLooked && r.def.cacheable && h.cacheBest > 0) {
+    lookupPrefix(s, r, h)
+    if (r.prefill <= 0) {
+      firstToken(s, r, h, 0)
+      if (r.overRefused) return
+    }
+  }
+  const g = a.groups[gi]
+  const free = g.kvCap - g.kvUsed
+  const shared = expectedSharedTokens(s, h, r)
+  const k = cohortFit(s, h.model, r.contextLen, free, shared)
+  const kvGb = cohortKvGb(s, h.model, r.contextLen, k, shared)
+  g.sprites++
+  g.kvUsed += kvGb
+  a.used++
+  const job: Job = { r, k, kvGb, shared }
+  if (r.prefill > 0) {
+    g.prefill.push(job)
+    // an embedding's cohort is all prompt: its sprite ingests every stream's prompt
+    a.queuedSec += h.promptSec(r) * (r.maxWork <= 0 ? k : 1)
+  } else if (r.work > 0) g.decode.push(job)
+}
+
+/**
+ * PREFILL without chunked prefill — prompts run back to back on each lane at the compute roof,
+ * EXCLUSIVELY: the lane's decodes stall for its busy time (Sarathi-Serve / DistServe, OSDI'24).
+ * First come first served, each prompt takes the lane with the most of its tick left, so a burst
+ * of short prompts queues by their prefill times, never a whole tick per prompt; a prompt the
+ * lanes cannot start this tick waits (its TTFT clock running). A prompt that finishes joins the
+ * batch at once (continuous batching admits it into the very next iteration). Returns the share
+ * of the tick the group's decodes keep (in decode steps of any length).
  */
 function exclusivePrefill(
   s: GameState,
@@ -660,7 +816,6 @@ function exclusivePrefill(
   g: Group,
   realDt: number,
   debtShare: number,
-  prefillGain: number,
   shown: (r: Request) => void,
 ): (stepSec: number) => number {
   const t = h.t
@@ -668,26 +823,34 @@ function exclusivePrefill(
   const thr = t.throttle
   const cap = 1 - debtShare
   const lanes = Math.max(1, g.lanes)
+  const used: number[] = new Array(lanes).fill(0)
   let busy = 0
-  for (const j of g.prefill.slice(0, lanes)) {
+  for (const j of g.prefill) {
     const r = j.r
     shown(r)
     if (cap <= 1e-9) continue // the lane spent the tick on owed prompts: this one waits
+    let l = 0
+    for (let i = 1; i < lanes; i++) if (used[i] < used[l]) l = i
+    const left = cap * realDt - used[l]
+    if (left <= 1e-9) break // every lane's tick is spent: the rest wait
     // an embedding's cohort is all prompt: its sprite ingests every stream's prompt here
     const streamsIngesting = r.maxWork <= 0 ? j.k : 1
-    const rate = (prefillRateOn(s, h.lo, p, r.tokensIn) * prefillGain * thr) / streamsIngesting
+    const rate = (prefillRateOn(s, h.lo, p, ingestLen(r)) * h.prefillGain * thr) / streamsIngesting
     if (rate <= 0) continue
     const need = r.prefill / rate
-    const b = Math.min(need, cap * realDt)
+    const start = used[l]
+    const b = Math.min(need, left)
+    used[l] = start + b
     busy += b
     if (b >= need) {
-      // the fractional completing tick counts: wall time = busy / share (sharing the lane with owed prompts)
-      firstToken(s, r, h, b / cap)
+      // the fractional completing tick counts: wall time = (wait + run) / share (owed prompts share the lane)
+      firstToken(s, r, h, (start + b) / cap)
       // its decode starts in the rest of this tick — unless this rack is a prefill pool
       // (the KV moves on to a decode pool) or the first token ended it (refusal, embedding)
       if (t.role !== 'prefill' && r.alive && !r.overRefused && r.work > 0) g.decode.push(j)
     } else {
       r.prefill -= rate * b
+      r.kvModelId = h.model.id // the part ingested so far is this model's KV
     }
   }
   const share = Math.max(0, 1 - busy / (lanes * realDt) - debtShare)
@@ -713,7 +876,6 @@ function chunkedPrefill(
   realDt: number,
   debtShare: number,
   rackStreams: number,
-  prefillGain: number,
   shown: (r: Request) => void,
 ): (stepSec: number) => number {
   const t = h.t
@@ -734,7 +896,7 @@ function chunkedPrefill(
     if (left <= 1e-9) break // every lane's tick is spent: the rest wait
     // an embedding's cohort is all prompt: its sprite ingests every stream's prompt here
     const ingest = r.maxWork <= 0 ? j.k : 1
-    const rate = prefillRateOn(s, h.lo, p, r.tokensIn) * prefillGain
+    const rate = prefillRateOn(s, h.lo, p, ingestLen(r)) * h.prefillGain
     if (!(rate > 0)) continue
     const tokens = r.prefill * ingest
     const occ = promptOccupancy(s, h.lo, p, tokens, rate, pre, budget)
@@ -750,6 +912,7 @@ function chunkedPrefill(
       used[l] = avail
       steps[l] += ridden
       r.prefill = Math.max(1e-6, r.prefill - (ridden * budget) / ingest)
+      r.kvModelId = h.model.id // the chunks ingested so far are this model's KV
     }
   }
   // each lane's tick: its chunk-carrying steps, then decode-only steps (of `stepSec`) in the time
@@ -786,14 +949,15 @@ function decodeLoad(s: GameState, h: Host, g: Group, lanes: number, rackStreams:
 }
 
 /**
- * One rack's tick (§5.7): every group ingests its prompts — one per lane, exclusively, or as
- * token-budget chunks fused into the decode steps with chunked prefill — then decodes its
- * cohorts at the step time of its lanes — weights (an MoE: the experts its batch touches) and
- * every stream's KV re-read each step, the cohorts' other prompts ingested in the background
- * (added to the step, or fused into it with chunked prefill), speculative decoding while it
- * still pays. Latency is accounted per token at that physical
- * rate, so several racks working one request never make its tokens faster; a KV-limited
- * cohort's sprite waits for its streams (E2EL), not its TPOT.
+ * One rack's tick (§5.7): every group ingests its prompts — back to back on each lane,
+ * exclusively, or as token-budget chunks fused into the decode steps with chunked prefill —
+ * then decodes its cohorts at the step time of its lanes — weights (an MoE: the experts its
+ * batch touches) and every stream's KV re-read each step, the cohorts' other prompts ingested
+ * in the background (added to the step, or fused into it with chunked prefill), speculative
+ * decoding while it still pays. Latency is accounted per token at that physical rate: racks
+ * of the same model co-decoding one request (only the model that holds its KV may) finish it
+ * in fewer board ticks but never make its tokens faster — its E2EL is the serial per-token
+ * sum; a KV-limited cohort's sprite waits for its streams (E2EL), not its TPOT.
  *
  * P/D disaggregation: a decode pool ingests no prompts — the cohort's other prompts are owed
  * to the prefill pool that produced the request's KV (`prefillDebtSec`, paid out of that
@@ -822,7 +986,6 @@ function serveRack(
   }
   const loraMul = t.loraHot && h.model.lineage?.relation === 'adapter' ? LORA_UNMERGED_SPEED : 1
   const decodeGain = (t.role === 'decode' ? DISAGG_POOL_GAIN : 1) * loraMul
-  const prefillGain = t.role === 'prefill' ? DISAGG_POOL_GAIN : 1
   const overlap = s.infra.scheduling.chunked
   // the share of every lane's tick the owed prompts took (spread evenly over the lanes)
   const debtShare = laneSec > 0 ? debtPaid / laneSec : 0
@@ -846,10 +1009,10 @@ function serveRack(
 
     const lanes = Math.max(1, g.lanes)
     const shareOf = overlap
-      ? chunkedPrefill(s, h, g, realDt, debtShare, rackStreams, prefillGain, (r) => {
+      ? chunkedPrefill(s, h, g, realDt, debtShare, rackStreams, (r) => {
           if (prefillShown === null) prefillShown = r.id
         })
-      : exclusivePrefill(s, h, g, realDt, debtShare, prefillGain, (r) => {
+      : exclusivePrefill(s, h, g, realDt, debtShare, (r) => {
           if (prefillShown === null) prefillShown = r.id
         })
     for (const j of g.prefill) if (j.r.prefill > 0) streamsShown += j.k
@@ -890,7 +1053,7 @@ function serveRack(
       const r = j.r
       if (!r.alive || r.overRefused || r.work <= 0) continue
       ids.push(r.id)
-      const rate = ((step.specOn ? specTokensFor(s, r.def.primaryAxis) : 1) / step.stepSec) * decodeGain
+      const rate = (specYield(specTokensFor(s, r.def.primaryAxis), step) / step.stepSec) * decodeGain
       if (!(rate > 0) || share <= 1e-9) {
         stalled.add(r)
         continue

@@ -13,6 +13,7 @@ import {
   FLASH_KV_READ_GAIN,
   FLASH_PREFILL_GAIN,
   FRAMEWORK_GB,
+  GUARD_SERVICE_MS,
   IDLE_POWER_FRAC,
   LONGCTX_FILL_FREE,
   LONGCTX_MAX_PENALTY,
@@ -21,6 +22,7 @@ import {
   MBU_DECODE,
   MFU_DECODE,
   MFU_PREFILL,
+  MOE_LAYER_OVERHEAD_US,
   MOE_SHARED_FRAC,
   MULTISTEP_STEPS,
   OFFLOAD_HIT_BONUS,
@@ -38,6 +40,8 @@ import {
   SIM_TIME_SCALE,
   SPEC_DRAFT_TOKENS,
   SPEC_DRAFT_VRAM_FRAC,
+  SPEC_FADE_END_STREAMS,
+  SPEC_FADE_START_STREAMS,
   SPEC_DRAFT_VRAM_MIN_GB,
   STEP_OVERHEAD_MS,
   TP_EFFICIENCY,
@@ -709,6 +713,8 @@ export interface LaneStep {
   stepSec: number
   /** speculative decoding runs this step (the engine turns it off once it stops paying). */
   specOn: boolean
+  /** the share of a stream's speculative gain the batch keeps (1 at a small batch, 0 once it is gone; `specFade`). */
+  specFade: number
   /** the step's compute (the batch's GEMMs, verified drafts included) outlasts its HBM reads. */
   computeBound: boolean
   /** the step's HBM time (weights + KV reads, throttle applied). */
@@ -731,9 +737,26 @@ const SPEC_TOKENS: Record<CapabilityAxis, number> = {
   reasoning: 1.7,
 }
 
-/** Tokens a speculative step yields on this axis (1 = speculative decoding not researched). */
+/** Tokens a speculative step yields on this axis at a small batch (1 = speculative decoding not researched). */
 export function specTokensFor(s: GameState, axis: CapabilityAxis): number {
   return s.infra.spec.enabled ? SPEC_TOKENS[axis] : 1
+}
+
+/**
+ * §4.4 the share of the speculative gain a lane of `streams` concurrent streams keeps: all of it up
+ * to SPEC_FADE_START_STREAMS, none from SPEC_FADE_END_STREAMS (log-linear in between) — at a big
+ * batch the verify step is compute-bound and the engine shrinks each stream's drafts.
+ */
+export function specFade(streams: number): number {
+  const b = Math.max(1, streams)
+  if (b <= SPEC_FADE_START_STREAMS) return 1
+  if (b >= SPEC_FADE_END_STREAMS) return 0
+  return Math.log(SPEC_FADE_END_STREAMS / b) / Math.log(SPEC_FADE_END_STREAMS / SPEC_FADE_START_STREAMS)
+}
+
+/** Tokens one decode step yields a stream whose axis accepts `axisTokens` drafts at a small batch, on this step. */
+export function specYield(axisTokens: number, step: Pick<LaneStep, 'specOn' | 'specFade'>): number {
+  return step.specOn ? 1 + (axisTokens - 1) * step.specFade : 1
 }
 
 /**
@@ -781,9 +804,13 @@ function weightsReadGb(
   return (shared + union(streams)) * bytes
 }
 
-/** Fixed per-step time (s): TP all-reduces, wide-EP all-to-alls, pipeline hops and the scheduler overhead. */
+/**
+ * Fixed per-step time (s): TP all-reduces, an MoE's per-layer routing kernels, wide-EP
+ * all-to-alls, pipeline hops and the scheduler overhead.
+ */
 function stepFixedSec(s: GameState, m: ModelDef, p: ParallelPlan): number {
   let t = STEP_OVERHEAD_MS / (s.infra.scheduling.multiStep > 0 ? MULTISTEP_STEPS : 1) / 1000
+  if (m.isMoE && m.paramsTotalB > m.paramsActiveB) t += m.layers * MOE_LAYER_OVERHEAD_US * 1e-6
   if (p.tpDeg > 1) t += 2 * m.layers * ALLREDUCE_US * 1e-6
   if (wideEp(s, m, p)) t += 2 * m.layers * ALLTOALL_US * 1e-6
   if (p.stages > 1) t += (p.stages - 1) * PP_HOP_US * 1e-6
@@ -795,7 +822,15 @@ export function laneStep(s: GameState, lo: Loadout, p: ParallelPlan, load: LaneL
   const m = lo.model
   const hw = lo.hw
   if (!m || !hw || !p.fits)
-    return { stepSec: Infinity, specOn: false, computeBound: false, memSec: Infinity, compSec: 0, fixedSec: 0 }
+    return {
+      stepSec: Infinity,
+      specOn: false,
+      specFade: 0,
+      computeBound: false,
+      memSec: Infinity,
+      compSec: 0,
+      fixedSec: 0,
+    }
   const bytes = residentBytes(m, p.format)
   const eff = tpEff(p.tpDeg) * engineEff(s)
   const bw = hw.hbmTbsPerGpu * 1e12 * p.tpDeg * eff * MBU_DECODE
@@ -814,11 +849,13 @@ export function laneStep(s: GameState, lo: Loadout, p: ParallelPlan, load: LaneL
   const combine = (mem: number, comp: number): number =>
     load.overlapPrefill ? Math.max(mem, comp + bg) : Math.max(mem, comp) + bg
   const plain = combine(tMem, tComp) + fixed
-  const g = load.specTokens ?? 1
+  const fade = specFade(b)
+  const g = 1 + ((load.specTokens ?? 1) - 1) * fade
   if (g > 1) {
     // the draft head proposes SPEC_DRAFT_TOKENS tokens (a small extra read each), the
     // target verifies them all in one step: memory is shared, compute grows with the
-    // drafts — so speculation pays at low batch and loses once the step turns compute-bound.
+    // drafts — so speculation pays at low batch, fades as the batch grows (specFade) and
+    // loses once the step turns compute-bound.
     const draft = (SPEC_DRAFT_TOKENS * SPEC_DRAFT_VRAM_FRAC * m.paramsActiveB * bytes * 1e9) / bw / dThr
     const verify = tComp * (SPEC_DRAFT_TOKENS + 1)
     const spec = combine(tMem + draft, verify) + fixed
@@ -826,13 +863,22 @@ export function laneStep(s: GameState, lo: Loadout, p: ParallelPlan, load: LaneL
       return {
         stepSec: spec,
         specOn: true,
+        specFade: fade,
         computeBound: verify >= tMem + draft,
         memSec: tMem + draft,
         compSec: verify,
         fixedSec: fixed,
       }
   }
-  return { stepSec: plain, specOn: false, computeBound: tComp >= tMem, memSec: tMem, compSec: tComp, fixedSec: fixed }
+  return {
+    stepSec: plain,
+    specOn: false,
+    specFade: fade,
+    computeBound: tComp >= tMem,
+    memSec: tMem,
+    compSec: tComp,
+    fixedSec: fixed,
+  }
 }
 
 /**
@@ -1071,7 +1117,7 @@ export function rackLoadEstimate(
     throttle: opt.throttle,
   }
   const step = laneStep(s, lo, p, load)
-  const perUser = (step.specOn ? g : 1) / step.stepSec
+  const perUser = specYield(g, step) / step.stepSec
   return {
     sprites: n,
     streams: rackStreams,
@@ -1149,7 +1195,7 @@ export function serverBandwidthCeiling(s: GameState, lo: Loadout): number {
     overlapPrefill: false,
     specTokens: g,
   })
-  return (step.specOn ? g : 1) / step.stepSec
+  return specYield(g, step) / step.stepSec
 }
 
 /**
@@ -1225,20 +1271,19 @@ export function routeBonus(s: GameState, def: TowerDef): number {
 }
 
 /**
- * One cache's hit chance (§4.2): prefix-cache research lifts it. Capped at
- * CACHE_HIT_CAP — even a fully-researched cache misses a real share of traffic, since
- * unique prompts don't share a cached prefix. A hit skips only the shared-prefix share
- * of the prefill (combat.ts), so this is a TTFT-acceleration rate, not a free-serve rate.
+ * One cache's hit chance (§4.2): Prefix Caching research (automatic prefix caching in the engine)
+ * lifts it by PREFIX_RESEARCH_HIT. Capped at CACHE_HIT_CAP — even a fully-researched cache misses
+ * a real share of traffic, since unique prompts don't share a cached prefix. A hit skips only the
+ * shared-prefix share of the prefill (combat.ts), so this is a TTFT-acceleration rate, not a
+ * free-serve rate.
  */
 export function cacheChance(s: GameState, def: TowerDef): number {
-  return Math.min(CACHE_HIT_CAP, (def.cacheChance ?? 0) + 0.2 * prefixLevel(s))
+  const researched = s.infra.kv.prefixHitCeil > 0 ? PREFIX_RESEARCH_HIT : 0
+  return Math.min(CACHE_HIT_CAP, (def.cacheChance ?? 0) + researched)
 }
 
-/** KV-cache / prefix-cache research level (0..2) derived from the prefix hit ceiling. */
-function prefixLevel(s: GameState): number {
-  const c = s.infra.kv.prefixHitCeil
-  return c >= 0.85 ? 2 : c > 0 ? 1 : 0
-}
+/** The hit chance Prefix Caching research adds to every cache. */
+export const PREFIX_RESEARCH_HIT = 0.4
 
 /**
  * §4.2 the workload's prefix-reuse ceiling. A request's prefix is either resident in a
@@ -1300,10 +1345,13 @@ export function towerRangeTiles(t: Tower): number {
 
 /* ------------------------------------------------------------------ *
  *  GUARDRAILS (§3.3) — the second-layer external safety buildings.     *
- *  guard_encoder / guard_mod have a FIXED check latency; guard_llm     *
- *  runs the REAL §6 roofline on its OWN rack ([fix M8]) so its latency  *
- *  is a real (shorter) inference time, and that rack draws real power   *
- *  and pays its own GPU-hours.                                          *
+ *  guard_encoder / guard_mod have a FIXED check latency (a served      *
+ *  86M encoder: a few ms of forward plus the service hop; a hosted     *
+ *  API call); guard_llm runs the REAL §6 roofline on its OWN rack       *
+ *  ([fix M8]) — a 12B prefill of the turn plus its verdict, plus the    *
+ *  same service hop — so it costs several to ten times the encoder on   *
+ *  input and checks the answer too, and that rack draws real power and  *
+ *  pays its own GPU-hours.                                              *
  * ------------------------------------------------------------------ */
 
 /** The generative guardrail's own serving loadout (its fixed rack + a 12B-active "model" body). */
@@ -1369,11 +1417,11 @@ export function guardScreenTokens(side: 'input' | 'output', tokensIn: number, to
 
 /**
  * §3.3 [fix M8] one guardrail check in REAL ms for a turn of `tokens`. encoder / moderation take
- * their FIXED `checkLatencyMs` (a BERT forward over ≤512-token segments run in parallel; a hosted
- * API call); the generative family (guard_llm) runs a real 12B inference on its own rack via the
- * §6 roofline: the turn's prefill (so a longer turn costs more) plus the verdict's remaining
- * tokens decoded while one cohort of checks shares the rack — tens of ms on an H100 for a
- * typical prompt.
+ * their FIXED `checkLatencyMs` (a served BERT encoder over ≤512-token segments run in parallel,
+ * service hop and tokenization included; a hosted API call); the generative family (guard_llm)
+ * runs a real 12B inference on its own rack via the §6 roofline: the turn's prefill (so a longer
+ * turn costs more) plus the verdict's remaining tokens decoded while one cohort of checks shares
+ * the rack, plus the service hop (GUARD_SERVICE_MS) — tens of ms on an H100 for a typical prompt.
  */
 export function guardCheckMs(s: GameState, spec: NonNullable<TowerDef['guardrail']>, tokens: number): number {
   if (!spec.runsOnRoofline) return spec.checkLatencyMs ?? 0
@@ -1384,7 +1432,7 @@ export function guardCheckMs(s: GameState, spec: NonNullable<TowerDef['guardrail
   const perUser = rackLoadEstimate(s, lo, 1, n + GUARD_VERDICT_TOKENS).perUserTokS
   const prefillSec = prefillRate > 0 ? n / prefillRate : 0
   const decodeSec = perUser > 0 ? (GUARD_VERDICT_TOKENS - 1) / perUser : 0
-  return (prefillSec + decodeSec) * 1000
+  return (prefillSec + decodeSec) * 1000 + GUARD_SERVICE_MS
 }
 
 /** A guardrail's check latency at the reference prompt (GUARD_REF_TOKENS) — what the readouts quote. */
@@ -1396,6 +1444,16 @@ export function guardLatencyMs(s: GameState, spec: NonNullable<TowerDef['guardra
 export function guardPower(s: GameState, spec: NonNullable<TowerDef['guardrail']>): number {
   const lo = guardLoadout(spec)
   return lo ? serverPower(s, lo) : 0
+}
+
+/**
+ * §6.5 the real kW a building would draw once placed (the placement and planning previews): a
+ * rack as it ships, a generative guardrail's own GPU rack, every other building its nameplate.
+ */
+export function buildDrawKw(s: GameState, def: TowerDef): number {
+  if (def.kind === 'server') return serverPower(s, defLoadout(def))
+  if (def.kind === 'guardrail' && def.guardrail?.runsOnRoofline) return guardPower(s, def.guardrail)
+  return def.powerDraw ?? 0
 }
 
 /** §6.5 real heat (kW) a generative guardrail's rack rejects (≈ its power); 0 otherwise. */

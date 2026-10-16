@@ -49,11 +49,13 @@ spawn (real token counts at the era's sizes, §6)
   → walks its ingress lane toward the Trust Core (board metaphor; transit is not latency)
   → first contact with a rack that could prefill it: TTFT clock starts,
     the guardrails covering its lane screen it once (input checks, before any compute)
-  → admitted by an in-range rack (a router may reserve the best-fit one)
+  → its prompt goes to ONE in-range rack: the one that can start it soonest
+    (a router instead picks the rack that answers it correctly and finishes soonest)
   → prefix-cache lookup, then prefill (compute-bound, sets TTFT)
   → first token: layer-1 alignment rolls on the model that produced it;
     a thinking-mode answer decodes its hidden reasoning first (sets time-to-first-answer)
-  → decode (bandwidth-bound, batched in cohorts; sets the per-token rate)
+  → decode (bandwidth-bound, batched in cohorts; sets the per-token rate) on racks of the
+    model that holds its KV — another model takes over only by re-prefilling everything
   → output guards check the finished answer before delivery
   → one of seven outcomes (revenue, Trust, SLA settled; §11)
 ```
@@ -249,7 +251,7 @@ superlinear(n)  = 1 + n / (16000 × (1 + 0.5·flash))
 prefillTokS(n)  = tensorRate(fmt) × tpDeg × tpEff × MFU_PREFILL(0.55) / (2 × activeB × superlinear(n))
 ```
 
-One rack prefills a given prompt. Without chunked prefill each lane runs one prompt at a time, **exclusively**: the lane's decodes stall for the prompt's busy time.
+One rack prefills a given prompt: of the in-range racks with room, the one that can start it soonest (the least prompt work already queued per lane; ties go to the lower tower id), so a burst spreads over the racks in reach instead of piling onto the first one built. Without chunked prefill each lane runs its prompts back to back, first come first served, **exclusively**: the lane's decodes stall for the prompts' busy time, and a burst of short prompts queues by their prefill times, never a whole tick each.
 
 **Decode (bandwidth-bound, sets the per-token rate).** One decode step emits a token for every stream on a lane:
 
@@ -257,11 +259,13 @@ One rack prefills a given prompt. Without chunked prefill each lane runs one pro
 step   = max(t_mem, t_comp) + background prefill + fixed
 t_mem  = (weights read + every stream's KV) / (HBM_BW × tpDeg × tpEff × MBU_DECODE(0.7))
 t_comp = streams × 2 × activeB / (tensorRate(fmt) × tpDeg × tpEff × MFU_DECODE(0.5))
-fixed  = scheduler overhead + TP all-reduces + wide-EP all-to-alls + pipeline hops
+fixed  = scheduler overhead + an MoE's per-layer routing kernels + TP all-reduces + wide-EP all-to-alls + pipeline hops
 per-user tok/s = 1 / step         aggregate = streams / step
 ```
 
-Per-user speed falls as the batch and its contexts grow, while aggregate throughput rises toward the compute roof — continuous batching's real tradeoff. An MoE reads its always-on part plus the union of the routed experts its batch touches. Tensor parallelism splits a stream over ≤8 GPUs at an efficiency of {1, 0.9, 0.8, 0.65} for {1, 2, 4, 8} GPUs.
+Per-user speed falls as the batch and its contexts grow, while aggregate throughput rises toward the compute roof — continuous batching's real tradeoff. An MoE reads its always-on part plus the union of the routed experts its batch touches, and pays 50 µs per layer per step for its routing kernels (router, top-k, permute, grouped expert GEMMs), which a single stream cannot fill: gpt-oss-120b alone on one H100 decodes about 250 tok/s. Tensor parallelism splits a stream over ≤8 GPUs at an efficiency of {1, 0.9, 0.8, 0.65} for {1, 2, 4, 8} GPUs.
+
+**Racks share a request only within one model.** Several racks of the same model in range can work one request's decode at once (the board's "several towers on one enemy"): it finishes in fewer board ticks, but every token is timed at the rack that produced it, so its real latency is the serial per-token sum. A request's KV belongs to the model that computed it (its layers, heads and K/V projections), so a rack of another model cannot continue it: once the request walks out of reach of every rack of its model, a rack of another model takes it over only by re-prefilling its whole sequence (recompute) — the first token stands, and the re-ingest is a stall inside the decode. Each answer has a home rack (the one that produced its first token) that admits it before any new prompt; the other racks of its model help only with spare capacity. A router follows the same rule: it picks which rack (and so which model) ingests a prompt; after that the answer is co-decoded like any other.
 
 **Cohorts make the batch real.** Each request sprite in a rack's slot is a **cohort of 28 real streams** (`COHORT_STREAMS`), so one sprite is already a production-sized batch and two or three push a lane to 56–84 streams. With Continuous Batching an engine lane holds up to 256 streams (9 sprites); before it, one static batch. KV admits each cohort: a long context or a KV-heavy model shrinks the cohort a rack can hold, and a KV-limited cohort's sprite waits for its streams.
 
@@ -273,9 +277,9 @@ Per-user speed falls as the batch and its contexts grow, while aggregate through
 KV(ctx) = kvBytesPerToken × ctx × (kvQuantBytes / 2) + kvStateMbPerReq
 ```
 
-The KV budget of a model copy is `(group HBM − weights − draft − framework) × kvUtilization`, where utilization is 0.55 until PagedAttention lifts it to 0.96; shared prefix blocks are stored once per cohort. Admission checks the **full sequence** a request will reach on that rack (prompt + answer + the hidden reasoning that model would think) against the window and one copy's KV: a request no copy could ever hold is rejected there (it ends **unservable** if nothing else serves it); a busy budget means it waits, and the wait counts toward TTFT.
+The KV budget of a model copy is `(group HBM − weights − draft − framework) × kvUtilization`, where utilization is 0.55 until PagedAttention lifts it to 0.96; shared prefix blocks are stored once per cohort. Admission checks the **full sequence** a request will reach on that rack (prompt + answer + the hidden reasoning that model would think) against the window and one copy's KV: a request no copy could ever hold is rejected there (it ends **unservable** only if no rack that saw it could ever hold it); a busy budget means it waits, and the wait counts toward TTFT — waiting in range of a full rack is queueing even if another rack serves it later.
 
-**Thinking tokens.** A model answering in thinking mode decodes `thinkTokens × thinkMul` hidden tokens before its first answer token: they cost decode time, KV and end-to-end latency, count toward TPOT, and are **never billed**. Interactive archetypes carry a time-to-first-answer bound (`ttfatSloMs`, cause `ttfat`), so an always-thinker on chat or code completion is visibly late while a hybrid answers instantly.
+**Thinking tokens.** A model answering in thinking mode decodes `thinkTokens × thinkMul` hidden tokens before its first answer token: they cost decode time, KV and end-to-end latency, count toward TPOT, and are **never billed** (an archetype's price is what the market pays for the answer), so the rack card quotes `$/Mtoken` per billed answer token. Interactive archetypes carry a time-to-first-answer bound (`ttfatSloMs`, cause `ttfat`), so an always-thinker on chat or code completion is visibly late while a hybrid answers instantly.
 
 **Long context costs quality too.** A sequence that fills more than a quarter of the model's window loses quality points, up to 24 at a full window, scaled down by the model's long-context skill; a 4-bit PTQ format adds its long-context tax past 8K tokens and an INT4 KV cache a small one past 32K.
 
@@ -291,7 +295,7 @@ The tech tree is **infra-only** and lives on typed `s.infra` — the single sour
 |---|---|
 | **scheduling** | **Continuous Batching** (the engine's 256-stream cap per lane; one static batch before it) · **Multi-Step Scheduling** (amortizes the per-step overhead over 8 steps, but new requests join only every few steps) · **Chunked Prefill** (the token-budget scheduler, §7) · **P/D Disaggregation** (role-pinned prefill / decode racks at a ≤10% pool gain; the KV crosses the network; a decode pool takes only its own model's KV and owes the cohort's prompts to its prefill pool) |
 | **kv-memory** | **PagedAttention** (KV utilization 0.55 → 0.96) · **Prefix Caching** (lifts cache hit chance) · **FlashAttention** (faster long prefill, faster KV reads, activation memory back — no quality or window bonus) · **FP8 / INT4 KV Cache** (narrows the growing KV; INT4 costs a little quality past 32K) · **KV Offloading (LMCache)** (a CPU/SSD prefix tier reloaded over PCIe — never active-attention KV) |
-| **decoding** | **Speculative Decoding (EAGLE)** (draft-and-verify; acceptance by axis — code accepts the most drafts, open reasoning the fewest; draft VRAM; +8% power on every rack; the engine runs it only while the speculative step beats the plain one) |
+| **decoding** | **Speculative Decoding (EAGLE)** (draft-and-verify; acceptance by axis — code accepts the most drafts, open reasoning the fewest; the gain fades with the batch, whole up to 32 streams per lane and gone by 128; draft VRAM; +8% power on every rack; the engine runs it only while the speculative step beats the plain one) |
 | **weight-quant** | **FP8** (W8A8: half the bytes at the FP8 rate, lossless) · **INT4 AWQ/GPTQ** (W4A16: ~0.53 B/param but the BF16 compute rate; −2 quality, −6 past 8K tokens) · **NVFP4** (Blackwell racks only; the FP4 rate; −1, −2 past 8K) |
 | **parallelism** | **Tensor** (a copy may span ≤8 GPUs) · **Pipeline** (beyond 8: memory, a per-step hop and a TTFT bubble) · **Data** (load-balances requests across a rack's copies) · **Expert** (wide EP: an MoE served as several copies shards its experts and pools its batch, plus an all-to-all) |
 | **routing** | **KV-Aware Routing (Dynamo)** (routed cacheable traffic lands where its prefix lives: more prefix hits) |
@@ -324,11 +328,11 @@ A guardrail is a **pipeline stage, not a turret**: it screens every request on t
 
 | Building | Real model | Check latency | Compute & power | Side | Catches |
 |---|---|---|---|---|---|
-| **Prompt Guard (encoder)** | Prompt Guard 2 86M | fixed 92 ms (the card's A100 figure per 512-token classification; longer prompts scanned in parallel segments) | off-rack, 0.1 kW | input | jailbreak; injection after Red-Team Eval |
-| **Llama Guard (generative)** | Llama Guard 4 12B | the **real roofline** on its own H100: a prefill of the turn it classifies (the user prompt on input; prompt plus answer on output; each part capped at 2048 tokens) + a 3-token verdict — tens of ms for a typical prompt, growing with the turn | its rack's kW and GPU-hours | both | jailbreak, harmful; injection after Red-Team Eval; PII after Red-Team Eval II |
+| **Prompt Guard (encoder)** | Prompt Guard 2 86M | fixed 10 ms (a served encoder: a few ms of forward plus the service hop and tokenization; longer prompts scanned in parallel segments) | off-rack, 0.1 kW | input | jailbreak; injection after Red-Team Eval |
+| **Llama Guard (generative)** | Llama Guard 4 12B | the **real roofline** on its own H100: a prefill of the turn it classifies (the user prompt on input; prompt plus answer on output; each part capped at 2048 tokens) + a 3-token verdict + the same 5 ms service hop — about 31 ms (FP8) to 53 ms (BF16) for a 512-token prompt, up to 78–139 ms for a long turn | its rack's kW and GPU-hours | both | jailbreak, harmful; injection after Red-Team Eval; PII after Red-Team Eval II |
 | **Moderation API** | OpenAI omni moderation | fixed 120 ms | vendor-hosted, 0.1 kW | both | harmful; PII after Red-Team Eval II (kept out of the build bar: only one authored wave carries harmful content and none carries PII) |
 
-The teaching contrast is cost structure: the encoder is a cheap fixed check on one side that adaptive attacks slip past; the generative judge reads both sides, scales with the turn, and costs a GPU of your own — but it reasons about intent. (REALISM §4.2 records that the encoder's fixed card figure reads slower than the roofline-priced judge on short prompts.)
+The teaching contrast is cost structure: the encoder is a cheap fixed check on one side that adaptive attacks slip past; the generative judge costs several times its latency on every prompt (an order of magnitude on a long turn), reads both sides, scales with the turn, and costs a GPU of your own — but it reasons about intent.
 
 **The operating point is fixed.** Guards run at a fixed decision threshold of 0.5 (no in-game control): effective recall is the base recall (+0.02 per Red-Team level) and the benign false-positive rate is `OVERREF_K × 0.25` (encoder 1.5%, generative 2.5%, moderation 1.25% at full exposure). **Red-Team Eval** is the dev-time relief: it calibrates guards to judge by intent (XSTest-style; over-refusal ×0.7) and unlocks the harder detection categories.
 
@@ -363,12 +367,12 @@ Every request ends in exactly **one of seven outcomes**, all settled in one plac
 | **bad** | wrong: the answering racks' margin fell below the line | 0 | −0.5 × trustPen | — | cross · `WRONG·<axis>` |
 | **unsafe** | an unsafe answer was delivered | 0 | −trustPen × safetyDamage | — | hazard · `UNSAFE` |
 | **overRefused** | a benign request refused by the model or a guard | 0 | −0.25 × trustPen | −0.2 × slaPen | no-entry · `REFUSED·MODEL/GUARD` |
-| **unservable** | too long for any in-range window / KV, never served | 0 | −trustPen | −slaPen | overflow · `TOO LONG` |
+| **unservable** | too long for every in-range rack that saw it (window / one copy's KV), never served | 0 | −trustPen | −slaPen | overflow · `TOO LONG` |
 | **leaked** | nobody answered before the core (504) | 0 | −trustPen (0 for an attack) | −slaPen | drop · `504` |
 
 (Every SLA penalty × the incident's `slaDamage`, default 1.)
 
-**The quality gate is token-weighted.** On the request's primary axis, each rack that generated tokens scores them with its own margin, and the answer's margin is the weighted mean — the models that *wrote* the answer decide its quality, not the best model that touched it:
+**The quality gate is token-weighted.** On the request's primary axis, each rack that generated tokens scores them with its own margin (racks of one model can still differ — a 4-bit rack pays its PTQ tax; a request re-prefilled on another model is scored by both), and the answer's margin is the weighted mean — the racks that *wrote* the answer decide its quality, not the best one that touched it:
 
 ```
 margin_rack = quality(model, answer mode)[axis] − PTQ tax − alignment tax − long-context penalty − difficulty
@@ -383,7 +387,7 @@ Precedence at delivery is worst first: `unsafe > handled attack (served) > bad >
 
 Beyond GPU racks (`srv_edge`, `srv_frontier` — both ship with the free starter model and upgrade in place), the build bar offers:
 
-- **Router** (3.6 tiles) — capability-aware dispatch: every request in range is reserved for an in-range rack with a free slot. Among racks whose model answers it correctly it takes the one that finishes soonest (answer plus any hidden reasoning, at that rack's per-user speed), so easy traffic goes to fast small models and the strong thinker is kept for what needs it; otherwise the best margin. It never speeds decode. Without a router, each rack serves the requests nearest the core first, a prompt is claimed by the first rack in build order that has room, and an unreserved decode may be worked by every rack in range (REALISM §5.4).
+- **Router** (3.6 tiles) — capability-aware dispatch: every prompt in range goes to an in-range rack with room for it. Among racks whose model answers it correctly it takes the one that finishes soonest (its wait for a lane, its prefill, then its answer plus any hidden reasoning at that rack's per-user speed), so easy traffic goes to fast small models and the strong thinker is kept for what needs it; otherwise the best margin. The rack that ingests the prompt holds its KV, so its model writes the answer, co-decoded by the other racks of that model like any request. It never speeds decode. Without a router, a prompt goes to the in-range rack that can start it soonest (REALISM §5.4).
 - **Cache** (3.0 tiles) — a prefix-cache aura for cacheable traffic (embed / chat / comp / RAG / agent). Each request gets **one** lookup at its first admission under an aura; overlapping caches count as the best one, capped at 70%. A hit skips the prompt's shared-prefix share of the prefill; the unique suffix still prefills, and the answer still decodes and faces every gate. Prefix Caching research lifts the hit rate; KV-aware routing, SGLang and KV offload add more.
 - **Guardrails** — the layer-2 families (§9).
 - **Power Plant** (+8 kW), **Cooling Tower** (+8 kW air), **Liquid Cooling Loop** (+60 kW for liquid racks only; **enables** the NVL72).
@@ -400,8 +404,8 @@ There are **two display modes** over **one identical deterministic simulation** 
 ### Planning surfaces
 
 - **Next-wave card** (build phase) — the wave START will launch: era, brief, lesson, telegraphed incident, single-entry surge (also drawn on the board as a lane highlight with a SURGE tag) and a four-check readiness forecast per archetype against the current fleet: **SMART** (some covering rack answers correctly), **FAST** (meets its bounds under the wave's mixed load), **FITS** (window and KV hold the sequence), **SAFE** (a covering guard with the category unlocked, or self-handling models). Tooltips show the numbers behind each check.
-- **Deploy picker** (rack inspect) — scores every owned checkpoint on that rack against the coming wave: per-user tok/s against the TPOT bounds, quality on the judged axes, how many archetypes it serves cleanly, safety and over-refusal, HYBRID / THINKS badges. The **★** marks the highest expected clean share of the coming wave under its mixed load. Models that need a bigger rack appear greyed with what they need ("needs 141 GB → H200 rack", "needs Tensor Parallelism"). Bulk rollout deploys to every rack of the tier or every rack a model fits.
-- **One shared forecast.** The ★, the fit rows, the readiness card, the ESTIMATE card's prompt time and the demo autoplay all read one pure load forecast (`loadForecast.ts`): the wave's bursts in flight (Little's law), the mixed decode step on each lane, prompt queueing (Pollaczek–Khinchine), entry-slot contention (Erlang C), guard checks, the answer mode, the long-context margin and the window. The pick a player is shown is the pick the autoplay plays by. It is an estimate: rack-to-rack contention is approximated.
+- **Deploy picker** (rack inspect) — scores every owned checkpoint on that rack against the coming wave: per-user tok/s under the same forecast load the ★ is scored at (for the archetype nearest its TPOT bound, coloured against that bound), quality on the judged axes, how many archetypes it serves cleanly, safety and over-refusal, HYBRID / THINKS badges. The **★** marks the highest expected clean share of the coming wave under its mixed load. Models that need a bigger rack appear greyed with what they need ("needs 141 GB → H200 rack", "needs Tensor Parallelism"). Bulk rollout deploys to every rack of the tier or every rack a model fits.
+- **One shared forecast.** The ★, the fit rows, the readiness card, the ESTIMATE card's prompt time and the demo autoplay all read one pure load forecast (`loadForecast.ts`): the wave's bursts in flight (Little's law) spread over the racks requests meet while they are served, the mixed decode step on each lane, prompt queueing on the entry racks (Pollaczek–Khinchine: some prompts wait, most do not), entry-slot contention for regular, round-robin arrivals (a lane that meets a single rack, or shares its entry racks with another lane, queues first), each latency's scatter around its forecast, guard checks, the answer mode, the long-context margin and the window. The pick a player is shown is the pick the autoplay plays by; a test holds every picker row within 10 points of the share the sim serves on representative racks and eras.
 
 ### Inspection surfaces
 
@@ -429,7 +433,7 @@ Audio is **outcome feedback first**. The same outcome table that drives the FX d
 
 ### Demo
 
-The title screen's **Demo** is a fixed-seed Expert spectator run at 12× driven by the production autoplayer (`src/sim/demo.ts`). It plays only with the actions and read-only forecasts a player has — the next-wave preview and the shared load forecast — never a privileged view of the dice: it keeps a reserve for the projected bill, builds and upgrades racks, researches the stack in dependency order, post-trains a safe-completion workhorse and agentic / reasoning specialists, and deploys per rack tier what the forecast says serves the wave best. Like a real run it gets deep (the gate seeds reach waves 69–84) and is eventually eliminated. Demo viewers can inspect everything; state-changing actions stay under the autoplayer's control.
+The title screen's **Demo** is a fixed-seed Expert spectator run at 12× driven by the production autoplayer (`src/sim/demo.ts`). It plays only with the actions and read-only forecasts a player has — the next-wave preview and the shared load forecast — never a privileged view of the dice: it keeps a reserve for the projected bill, builds and upgrades racks, researches the stack in dependency order, post-trains a safe-completion workhorse and agentic / reasoning specialists, and deploys per rack tier what the forecast says serves the wave best. Like a real run it gets deep (the gate seeds reach waves 59–79) and is eventually eliminated. Demo viewers can inspect everything; state-changing actions stay under the autoplayer's control.
 
 ---
 
@@ -453,4 +457,4 @@ The lessons the numbers are tuned to teach:
 4. **Memory is concurrency.** The hybrid-attention models of 2026 hold a fraction of the KV per token of their full-attention peers; on long-context traffic that is the difference between a rack serving a handful of users and hundreds.
 5. **Safety has a price on both sides.** Guards add latency and false refusals; alignment adds a capability tax and its own refusals; Constitutional AI and safe-completion move the Pareto frontier. Novel attacks punish relying on one classifier.
 
-Balance is guarded by the autoplay gate (`tests/playthrough.test.ts`): the production demo must reach at least wave 45 on every gate seed (it reaches waves 69–84) and must still be eliminated before wave 100; a naive build (cheap racks, the starter model, nothing else) must fall in waves 6–14 (it falls at the first boss, wave 10); and a fleet strong enough for wave 100 must clear the first endless surges at high Goodput. The recipe gain/cost table is autoplay-calibratable and validated by `calibrateRecipes` against the band-displacement ordering, so a hand-edit cannot silently break balance.
+Balance is guarded by the autoplay gate (`tests/playthrough.test.ts`): the production demo must reach at least wave 45 on every gate seed (it reaches waves 59–79) and must still be eliminated before wave 100; a naive build (cheap racks, the starter model, nothing else) must fall in waves 6–14 (it falls at the first boss, wave 10); and a fleet strong enough for wave 100 must clear the first endless surges at high Goodput. The recipe gain/cost table is autoplay-calibratable and validated by `calibrateRecipes` against the band-displacement ordering, so a hand-edit cannot silently break balance.

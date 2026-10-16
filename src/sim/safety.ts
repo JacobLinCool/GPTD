@@ -116,20 +116,22 @@ export function pSelfHandle(m: ModelDef, hazard: SafetyHazard, severity: number)
 }
 
 /**
- * §3.6 no-free-lunch: a guardrail's EFFECTIVE recall at the global threshold,
- * effRecall = clamp01(baseRecall × (0.6 + 0.8 × threshold)) — raise the threshold
- * to catch more. A small red-team eval bonus (+0.02) is "calibrating the threshold,
- * not improving the model" (§3.6 [fix M4]).
+ * §3.6 no-free-lunch: a guardrail's EFFECTIVE recall at a decision threshold,
+ * effRecall = clamp01(baseRecall × (0.6 + 0.8 × threshold)) — a stricter threshold catches
+ * more. The game runs at the fixed calibrated point 0.5 (s.guardrailThreshold), where the
+ * factor is exactly 1 and the guard keeps its measured recall. A small red-team eval bonus
+ * (+0.02) is "calibrating the threshold, not improving the model" (§3.6 [fix M4]).
  */
 export function effRecall(baseRecall: number, threshold: number, redteamBonus = 0): number {
   return clamp01(baseRecall * (0.6 + 0.8 * threshold) + redteamBonus)
 }
 
 /**
- * §3.6 the rate a guardrail wrongly blocks a BORDERLINE benign request at:
- * OVERREF_K[archetype] × threshold² (convex — the cost of catching more). Red-team
- * eval lowers the convexity (OVERREF_K ×0.7, XSTest: judge by intent, [fix M4]). A
- * request's actual risk multiplies this by its archetype's `refusalExposure` (guards.ts).
+ * §3.6 the rate a guardrail wrongly blocks a BORDERLINE benign request at a decision
+ * threshold: OVERREF_K[archetype] × threshold² (convex — the cost of catching more; the game
+ * runs at the fixed point 0.5). Red-team eval lowers the convexity (OVERREF_K ×0.7, XSTest:
+ * judge by intent, [fix M4]). A request's actual risk multiplies this by its archetype's
+ * `refusalExposure` (guards.ts).
  */
 export function overRefuse(archetype: GuardrailArchetype, threshold: number, overrefMul = 1): number {
   return OVERREF_K[archetype] * overrefMul * threshold * threshold

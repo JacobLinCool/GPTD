@@ -22,10 +22,11 @@ export function updateMovement(s: GameState, dt: number): void {
 
 /**
  * A request that reaches the core unanswered is a 504 (§2.5). It is `unservable` when a
- * rack in its path rejected it on a hard capacity gate (context window / whole KV budget)
- * and nothing else served it, otherwise a plain `leaked`. A hazardous request that was
- * never answered is NOT a breach: no unsafe text was delivered (resolve.ts prices it).
+ * rack in its path rejected it on a hard capacity gate (context window / one copy's whole KV
+ * budget) and no rack that saw it could ever have held it; a request some rack could have
+ * held waited on capacity, and is a plain `leaked`. A hazardous request that was never
+ * answered is NOT a breach: no unsafe text was delivered (resolve.ts prices it).
  */
 function leak(s: GameState, r: Request): void {
-  resolveOutcome(s, r, r.windowBlocked ? 'unservable' : 'leaked')
+  resolveOutcome(s, r, r.windowBlocked && !r.fitSeen ? 'unservable' : 'leaked')
 }

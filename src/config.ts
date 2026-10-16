@@ -149,6 +149,13 @@ export const MFU_PREFILL = 0.55
 export const MFU_DECODE = 0.5
 /** Per-iteration CPU scheduling + sampling overhead of the engine, in ms (multi-step amortizes it). */
 export const STEP_OVERHEAD_MS = 1.0
+/**
+ * §4.8 an MoE layer's fixed per-step cost, in µs: the router GEMM, top-k, the token permute /
+ * unpermute and the grouped expert GEMMs are several small kernels per layer that a small batch
+ * cannot fill (launch- and latency-bound). Calibrated so gpt-oss-120b alone on one H100 decodes
+ * ≈250 tok/s (Artificial Analysis production median ≈212 tok/s); it amortizes over the batch.
+ */
+export const MOE_LAYER_OVERHEAD_US = 50
 /** Multi-step scheduling: decode steps run per scheduler call (vLLM v0.6 used 8). */
 export const MULTISTEP_STEPS = 8
 /** The widest tensor-parallel group one stream is split across (latency gains flatten beyond 8). */
@@ -162,6 +169,13 @@ export const ALLTOALL_US = 12
 /** Pipeline parallelism: activation hand-off per extra stage per decode step (µs) and per prefill (ms). */
 export const PP_HOP_US = 30
 export const PP_BUBBLE_MS = 20
+/**
+ * §3.3 a guard check's service overhead, in ms: the hop to the guard service and back plus
+ * tokenizing the turn (an AI-gateway hop is ≈3–4 ms, REFERENCE-DOSSIER §3.6). Every guard pays it
+ * — the encoder's fixed check latency already includes it; the generative judge pays it on top
+ * of its roofline inference.
+ */
+export const GUARD_SERVICE_MS = 5
 /** P/D disaggregation: KV transfer bandwidth between racks (GB/s, ~400 Gb/s RDMA). */
 export const KV_TRANSFER_GBPS = 50
 /** P/D disaggregation: a phase-dedicated pool's parallelism tuning gain (DistServe, ≤ 10%). */
@@ -194,6 +208,14 @@ export const CHUNKED_PREFILL_EFF = 0.9
 
 /** §4.4 speculative decoding: draft tokens verified per step (EAGLE runs 3–5). */
 export const SPEC_DRAFT_TOKENS = 4
+/**
+ * §4.4 speculative decoding fades with the batch: verification turns compute-bound and the
+ * engine shrinks each stream's draft budget, so the accepted-token gain is whole up to
+ * SPEC_FADE_START_STREAMS streams per lane and gone by SPEC_FADE_END_STREAMS (log-linear in
+ * between; EAGLE-3 / vLLM measure the speed-up collapsing at batch 32–128).
+ */
+export const SPEC_FADE_START_STREAMS = 32
+export const SPEC_FADE_END_STREAMS = 128
 /** Draft-head VRAM as a share of the target's weights (≈ one extra decoder layer), with a floor in GB. */
 export const SPEC_DRAFT_VRAM_FRAC = 0.03
 export const SPEC_DRAFT_VRAM_MIN_GB = 0.5

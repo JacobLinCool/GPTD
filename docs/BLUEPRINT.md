@@ -37,12 +37,15 @@ spawn（時代縮放後的真實 token 數，§2.6）
         · TTFT 計時開始（queueSec 只在這時累計）
         · 覆蓋這條 lane 的 guardrail 依 family 篩檢一次（§3.3）：input 延遲 → TTFT，output 延遲 → E2EL；
           input 端攔下的攻擊在任何運算之前就結束
-  → Router：capability-aware dispatch，把請求保留給範圍內能答對且最快答完的 rack（§4.3）
-  → rack 准入：完整序列的 context window 與「單一 model copy 的 KV」硬門檻；cohort 依剩餘 KV 准入；
-        prefix cache 只查一次（§6.2）
-  → PREFILL：一個 prompt 只由一座 rack 吃下；exclusive（該 lane 的 decode 停頓）或 chunked token budget（§4.3）
+  → rack 准入（離 core 最近的請求先）：完整序列的 context window 與「單一 model copy 的 KV」硬門檻；
+        cohort 依剩餘 KV 准入；prefix cache 只查一次（§6.2）
+        · prompt 只交給一座 rack：範圍內有空位、最快能開始它的那座（佇列中的 prompt 工作最少；同分取較小 tower id）；
+          Router 範圍內改為 capability-aware dispatch：能答對且最快答完的那座（§4.3）
+        · 串流中的答案由它的 home rack 優先准入；同模型的其他 rack 只用剩餘容量幫忙 decode
+  → PREFILL：exclusive（每條 lane 依序背靠背跑 prompt，該 lane 的 decode 停頓）或 chunked token budget（§4.3）
   → 第一個 token：TTFT latch；由產生它的模型擲第一層對齊（§3.2）；回答模式決定 hidden reasoning tokens（§1.4）
   → DECODE：lane step = max(HBM 讀取, 運算) + 背景 prefill + 固定成本；每個 token 依產生它的 rack 計時與計分（§6.2）
+        · KV 屬於算出它的模型：只有同模型的 rack 能接續；另一個模型只能把整段序列重新 prefill 後接手（recompute）
   → 交付：output 端 guardrail 先檢查 → TPOT / E2EL 判定 → 七終局之一（§2.5）
   → 經濟：依實際處理的 token 計價收入；GPU-hour 與能源兩行帳單；每波 SLA 合約依 Goodput 支付（§6.6）
 ```
@@ -66,7 +69,8 @@ prefill = compute-bound、decode = bandwidth-bound (§1.1)；prefill 因 O(n²) 
 **兩個時鐘：**
 1. **real-s（真實秒）**：請求的服務時間。每個 combat tick 推進 `realDt = dt × SIM_TIME_SCALE`（出貨值 10）真實秒，token 依 rack 的物理速率前進：
    ```
-   ttftReal  = queueSec                      // 只在範圍內有「能 prefill 它」的 rack 時累計（佇列、slot/KV 爭用）
+   ttftReal  = queueSec                      // 只在範圍內有「能 prefill 它」的 rack 時累計（佇列、slot/KV 爭用；
+                                             //   在滿載 rack 範圍內等待也算，即使最後由另一座 rack 服務）
              + prefillWallSec                // 完成 prefill 的那個 tick 內的分數時間（含 chunked 的步驟）
              + guardInSec                    // 覆蓋 lane 的 input guard，每個 family 一次
              + admissionDelaySec             // pipeline bubble、multi-step 的排程等待
@@ -74,7 +78,7 @@ prefill = compute-bound、decode = bandwidth-bound (§1.1)；prefill 因 O(n²) 
    e2elReal  = ttftReal + Σ 每個 token 的 wall time + 停頓 + KV transfer + guardOutSec
    TPOT      = decodeSec / (maxWork − 1)     // 交付時判一次；hidden tokens 計入
    ```
-   一個 token 的 wall time 是產生它的 lane 的物理時間：`1 / (rate × share)`，其中 `rate` 是該 lane 的 per-user 速率（§6.2），`share` 是 prefill 留給 decode 的時間比例。KV 不足而只放得進 `k < 28` 條串流的 cohort，其 sprite 要等串流輪流完成（`wall = sec × 28/k`），這段等待計入 E2EL 而不計入 TPOT。同一個請求被多座 rack 同時 decode 時，每個 token 仍以產生它的 rack 計時，所以拆給多座 rack 不會讓延遲變短。
+   一個 token 的 wall time 是產生它的 lane 的物理時間：`1 / (rate × share)`，其中 `rate` 是該 lane 的 per-user 速率（§6.2），`share` 是 prefill 留給 decode 的時間比例。KV 不足而只放得進 `k < 28` 條串流的 cohort，其 sprite 要等串流輪流完成（`wall = sec × 28/k`），這段等待計入 E2EL 而不計入 TPOT。同一個請求被多座**同模型** rack 同時 decode 時（board 的「多座塔一起打一個敵人」），每個 token 仍以產生它的 rack 計時：它在 board 上更快完成，真實延遲卻是逐 token 的序列總和，不會變短。另一個模型讀不了這份 KV（KV tensor 綁定一個模型的層、head 與 K/V 投影）：當請求走出所有同模型 rack 的範圍、只剩其他模型的 rack 時，接手的 rack 必須把整段序列（prompt + 已生成的 token）重新 prefill（recompute preemption），第一個 token 不變，重算時間是 decode 內的停頓（計入 E2EL 與 TPOT）。
 2. **board-s（可見步調）**：lane 移動、動畫與帳單的時間軸。請求在 lane 上走路本身不累計任何真實延遲；一座 rack 的帳單以 board-s 計時，再換算成 RACKS_PER_TILE 座真實 rack 的 real-s 成本（§6.6）。
 
 **SLO 一律在 real-s 軸判定**：TTFT 在第一個 token 判；time to first answer 在 hidden tokens 結束的那一刻判；E2EL 在 decode 途中（含 output guard 尾段）與交付時判；TPOT 在交付時判一次。第一個違反的 bound 記為 `sloCause`。
@@ -292,7 +296,7 @@ requests 子系統**只提供 token，不定 serving 速率**。prefill 超線�
   ```
   寫出答案的模型決定答案品質，碰過它的最強模型不能替弱模型背書。embedding 沒有生成文字，由完成 prefill 的 rack 計分一次。
 - **長 context 扣分**：`24 × (1 − 0.75 × longCtx) × ramp^1.5`，`ramp = clamp((contextLen/window − 0.25)/0.75, 0, 1)`；4-bit PTQ 在 8K token 以上再扣其長 context 稅，INT4 KV 在 32K 以上再扣 2。
-- **context 硬門檻（§1.2）**：完整序列 > window，或一條串流的 KV > 一個 model copy 的 KV → 這座 rack 永不准入（`windowBlocked`）；若最終沒有任何 rack 服務它 → `unservable`。
+- **context 硬門檻（§1.2）**：完整序列 > window，或一條串流的 KV > 一個 model copy 的 KV → 這座 rack 永不准入（`windowBlocked`）；只有在看過它的 rack 中**沒有任何一座**放得下它（`fitSeen` 未設）、且它抵達 core 時，才是 `unservable`——有 rack 放得下卻因容量滿而沒服務到的，是一般的 `leaked`。
 
 ### 2.4 內容（archetype 設計表，§1.4 IETF + NVIDIA ISL/OSL）
 
@@ -313,7 +317,7 @@ requests 子系統**只提供 token，不定 serving 速率**。prefill 超線�
 > **價格與懲罰**：前緣工作（`agent` $3/$12、`reason` $1/$5）單價最高，`embed`/`chat` 最便宜；每型另有 `trustPenalty`/`slaPenalty`/`data` yield（`jailbreak` 的 Trust 懲罰最重：9）。`reason` 的 `thinkMul = 0`：它的長 CoT 輸出本身就是推理。`summ` 的 6 s TTFT 引用 MLPerf v5.0 長 context 405B 的 p99 TTFT bound（§1.3）。`agent` 是真實使用者任務：它的 tool output 帶 prompt injection，hazard 清掉之後照一般請求判品質；`jailbreak` 是 `adversarial`：正確答案是擋下或拒答。
 > **latClass 規則**：`IN` 400 ms / 40 ms、`NR` 2000 ms / 200 ms、`TO` 沒有延遲 SLO；per-type 覆寫收緊或放寬各自的 bound（§6.4）。`embed`（OSL 0）不套 TPOT、不會被誤拒、不會思考。
 
-**campaign 與平衡 gate**：waves 由 **100 波真實歷史 campaign** 驅動（`campaign-data.ts` 的 `WaveTheme` 主題表 → `campaign.ts` 的 `buildCampaign` 展開成 `WaveDef`；難度曲線集中在 `campaign.ts` 的旋鈕：`waveBudget`、`STEP_CAP/BOSS_STEP_CAP`、`ERA_TOKEN_GROWTH` + `eraTokenRamp`、`tierComplexity`、`hazardMulOf`、`novelShareOf`、SLA 合約常數）。每一波是一個真實事件：需求轉移（聊天熱潮、RAG 與寫程式助手、推理洪流、agent 成為多數）或營運衝擊（H100 短缺、海纜中斷、電網緊急、出口管制、EU AI Act、價格戰、服務中斷、agent 攻擊）；模型與晶片發表不是 wave，那是玩家的工具。tier 1→12 單調不減，wave 100（*BOSS: The Always-On Agent Era*）是頂點，之後接 endless。這是一場淘汰賽：多數 run 在中途結束，結束的原因是累積的壓力——量、組合、品質線、攻擊與事件一起上升——而不是某一波突然塞進物理上服務不了的請求。平衡 gate（`tests/playthrough.test.ts`）檢查的是**深度 + 系統使用**而非勝利：production demo（`sim/demo.ts`）在四個 gate seed 上都要達到 `GAUNTLET_FLOOR = 45` 且在 wave 100 之前被淘汰、答出的請求八成以上乾淨、誤拒少於 served 的一成，並用到完整的 serving stack；只蓋便宜 rack 加起手模型的 naive build 必須撐過開場教學波、在 wave 6–14 之間倒下；一支能打 wave 100 的艦隊必須以 80% 以上 Goodput 清掉前三個 endless surge（每個的量不低於 wave 100 的 95%）。本版實測：demo 到達 W69–W84、naive 在 W10（第一個 boss）倒下、endless 前三個 surge 的 Goodput 95–97%。
+**campaign 與平衡 gate**：waves 由 **100 波真實歷史 campaign** 驅動（`campaign-data.ts` 的 `WaveTheme` 主題表 → `campaign.ts` 的 `buildCampaign` 展開成 `WaveDef`；難度曲線集中在 `campaign.ts` 的旋鈕：`waveBudget`、`STEP_CAP/BOSS_STEP_CAP`、`ERA_TOKEN_GROWTH` + `eraTokenRamp`、`tierComplexity`、`hazardMulOf`、`novelShareOf`、SLA 合約常數）。每一波是一個真實事件：需求轉移（聊天熱潮、RAG 與寫程式助手、推理洪流、agent 成為多數）或營運衝擊（H100 短缺、海纜中斷、電網緊急、出口管制、EU AI Act、價格戰、服務中斷、agent 攻擊）；模型與晶片發表不是 wave，那是玩家的工具。tier 1→12 單調不減，wave 100（*BOSS: The Always-On Agent Era*）是頂點，之後接 endless。這是一場淘汰賽：多數 run 在中途結束，結束的原因是累積的壓力——量、組合、品質線、攻擊與事件一起上升——而不是某一波突然塞進物理上服務不了的請求。平衡 gate（`tests/playthrough.test.ts`）檢查的是**深度 + 系統使用**而非勝利：production demo（`sim/demo.ts`）在四個 gate seed 上都要達到 `GAUNTLET_FLOOR = 45` 且在 wave 100 之前被淘汰、答出的請求八成以上乾淨、誤拒少於 served 的一成，並用到完整的 serving stack；只蓋便宜 rack 加起手模型的 naive build 必須撐過開場教學波、在 wave 6–14 之間倒下；一支能打 wave 100 的艦隊必須以 80% 以上 Goodput 清掉前三個 endless surge（每個的量不低於 wave 100 的 95%）。本版實測：demo 到達 W59–W79、naive 在 W10（第一個 boss）倒下、endless 前三個 surge 的 Goodput 95–97%。
 
 ### 2.5 七終局（統一 movement + combat + safety，`sim/resolve.ts`）
 
@@ -324,7 +328,7 @@ requests 子系統**只提供 token，不定 serving 速率**。prefill 超線�
 | `bad` | 答案 margin < 0（能力不足，§6.4） | 0（退款） | −0.5 × trustPen | 0 |
 | `unsafe` | 帶著未清的 hazard 被**交付**（breach，立即結算） | 0 | −trustPen × `safetyDamage` | 0 |
 | `overRefused` | 良性請求被第一層（模型）或第二層（guard）誤拒（`refusedBy`） | 0 | −0.25 × trustPen | −0.2 × slaPen |
-| `unservable` | 被硬門檻擋下（window 或單一 copy 的 KV）且沒有任何 rack 服務它，抵達 core | 0 | −trustPen | −slaPen |
+| `unservable` | 被硬門檻擋下（window 或單一 copy 的 KV），看過它的 rack 沒有一座放得下，抵達 core | 0 | −trustPen | −slaPen |
 | `leaked` | 抵達 core 仍未回答（504）；對抗性請求的 leak 不扣 Trust | 0 | −trustPen（攻擊：0） | −slaPen |
 
 > 每個 SLA 懲罰再乘上事件的 `slaDamage`（預設 1）。收入依**實際處理的 token**計價：已 ingest 的 prompt（cached prefix 也算）+ 已生成的答案 token；hidden reasoning tokens 永不計費。所以被擋下的攻擊收入為 0，被拒答的攻擊只收它的 prompt 與一段短拒答（hard refusal 30 token、safe completion 200 token）。答出答案的終局（`served`/`bad`）產生 Data。判定順序（交付時，最壞者優先）：未清 hazard → `unsafe`；對抗性且全清 → `served`；margin < 0 → `bad`；違反 SLO → `sloMiss`；否則 `served`。
@@ -380,16 +384,16 @@ pSelfHandle(m, h, sev) = clamp01(alignment.safety/100 − sev × HAZARD_HARDNESS
 
 | 建築 | family | 每次檢查成本 | side | catches | baseRecall | range | 電力 / 帳單 | §ref |
 |---|---|---|---|---|---|---|---|---|
-| `guard_encoder` | encoder（Prompt Guard 2 86M） | **92 ms 固定**（一次 BERT forward；長 prompt 切段平行掃） | input | jailbreak, injection | 0.975 | 2.9 | 0.1 kW，無 GPU 帳單 | §3.3 |
+| `guard_encoder` | encoder（Prompt Guard 2 86M） | **10 ms 固定**（服務化的 BERT forward 數 ms + 服務往返與 tokenize；長 prompt 切段平行掃） | input | jailbreak, injection | 0.975 | 2.9 | 0.1 kW，無 GPU 帳單 | §3.3 |
 | `guard_llm` | generative（Llama Guard 4 12B） | **自己 H100 上的真推論**：讀入 turn 的 prefill + 3 個 verdict token 的 decode | both | jailbreak, injection, harmful, pii | 0.92 | 3.0 | 一座 H100 的 kW + GPU-hour + 能源 | §3.3 |
 | `guard_mod` | moderation（OpenAI omni） | **120 ms 固定**（廠商託管） | both | harmful, pii | 0.88 | 2.9 | 0.1 kW | §3.3 |
 
 ```
-guardCheckMs(generative, T) = T / prefillTokS(T) + (GUARD_VERDICT_TOKENS − 1) / perUser(一個 cohort, T + 3)
+guardCheckMs(generative, T) = (T / prefillTokS(T) + (GUARD_VERDICT_TOKENS − 1) / perUser(一個 cohort, T + 3)) × 1000 + GUARD_SERVICE_MS(5)
 turn tokens：input = min(tokensIn, 2048)；output = input turn + min(tokensOut, 2048)
 readouts 以 GUARD_REF_TOKENS = 512 的 prompt 報價
 ```
-> **generative guard 接上 roofline**：Llama Guard 的 verdict 是一個短分類（`safe`，或 `unsafe` 加類別代碼），所以它的成本是「讀完這個 turn」的 prefill 加幾個 token。一座 H100 上 512-token 的 prompt 約 48 ms（BF16；研究 FP8 後約 26 ms），2048 token 約 134 / 73 ms——短 prompt 時比 encoder 還快，但它隨 turn 長度成長、兩端都檢查，還要付自己那座 GPU 的電與帳單。encoder 便宜固定，卻在新型攻擊上大幅失準（下方）。這是 §3.3「模擬器中最重要的真實對比」的完整版本：選 guard 是在延遲曲線、覆蓋類別、對新型攻擊的韌性與成本之間取捨。
+> **generative guard 接上 roofline**：Llama Guard 的 verdict 是一個短分類（`safe`，或 `unsafe` 加類別代碼），所以它的成本是「讀完這個 turn」的 prefill 加幾個 token，再加上和 encoder 一樣的服務往返（5 ms）。一座 H100 上 512-token 的 prompt 約 53 ms（BF16；研究 FP8 後約 31 ms），2048 token 約 139 / 78 ms——在同等最佳化下是 encoder（10 ms）的 3–14 倍，隨 turn 長度成長、兩端都檢查，還要付自己那座 GPU 的電與帳單。encoder 便宜固定，卻在新型攻擊上大幅失準（下方）。這是 §3.3「模擬器中最重要的真實對比」的完整版本：選 guard 是在延遲曲線、覆蓋類別、對新型攻擊的韌性與成本之間取捨。
 
 **依 lane 覆蓋篩檢（`sim/guards.ts`）**：guard 是 pipeline stage，不是砲塔。
 ```
@@ -404,7 +408,7 @@ covers(guard, lane) ⟺ guard 的 range 圓與 lane 折線相交（與 guard 擺
 ```
 同一 family 的副本只增加覆蓋、不增加 recall（同一個分類器對同一輸入給出同一判決）；不同 family 疊加（defense in depth）。input 端攔下對抗性請求時，它在任何 prefill 之前就以 `served` 結束、處理 token 為 0。每個 guard 結果都發出 `guard` 事件。
 
-**閾值 → recall vs over-refusal（§3.6 no-free-lunch，XSTest）**：全域 `s.guardrailThreshold` 固定為 0.5：
+**閾值 → recall vs over-refusal（§3.6 no-free-lunch，XSTest）**：`s.guardrailThreshold` 是固定的校準工作點 0.5（沒有任何控制會改它；曲線本身由公式與測試涵蓋）：
 ```
 effRecall  = clamp01(baseRecall × (0.6 + 0.8 × threshold) + 0.02 × redteamLevel) × (novel ? NOVEL_RECALL_MUL[family] : 1)
 overRefuse = OVERREF_K[family] × (redteamLevel ≥ 1 ? 0.7 : 1) × threshold²
@@ -474,15 +478,15 @@ red-teaming 是 Lab 一次性 eval（`r_eval_redteam_v1/v2`，eval 研究軌）�
 - **Continuous Batching（§4.1）**：engine 的 batch 上限 = 每條 lane `⌊ENGINE_MAX_STREAMS / COHORT_STREAMS⌋ = 9` 個 sprite（研究前每條 lane 一個靜態 batch）；實際能放多少由 KV 准入決定。2–4× 的吞吐由 batch 自然湧現，**不寫死乘數**。
 - **Multi-Step Scheduling（§4.1）**：每次排程跑 8 個 decode step，把每步 1 ms 的 CPU 排程開銷攤成 1/8；代價是新請求要等下一次排程呼叫才能加入（TTFT 加 4 個 step 的時間）。
 - **PagedAttention（§4.2）**：KV 配置利用率 0.55 → 0.96（SOSP'23：傳統配置浪費 60–80%）。
-- **Prefix Caching（§4.2）**：prefix 命中天花板 0.85，cache tower 的命中率 0.35 → 封頂 0.7。命中只跳過共享前綴；cohort 的共享前綴 KV 只存一份。
+- **Prefix Caching（§4.2）**：prefix 命中天花板 0.85，cache tower 的命中率 0.35 + 0.4 → 封頂 0.7。命中只跳過共享前綴；cohort 的共享前綴 KV 只存一份。
 - **KV-Aware Routing（Dynamo，§4.10）**：被 Router 覆蓋的 cacheable 流量被導向持有其前綴的副本：恢復 50% 的 miss，上限 0.85。它的 2× 是 prefix 重用（TTFT / prefill 重算），不是 decode 速度。
 - **FlashAttention（§4.2）**：prefill 的 O(n²) 項變緩（`1 + n/(16000 × 1.5)`）、Flash-Decoding 的 KV 讀取快 1.2×、每 GPU 還回 0.5 GB activation 記憶體；不給品質、window 或 KV 大小的加成。
 - **FP8 / INT4 KV Cache（§4.2）**：KV element bytes 2 → 1 → 0.5；INT4 KV 在 32K token 以上扣 2 品質（KIVI / KVQuant）。
 - **KV Offloading（LMCache，§4.2）**：一個 CPU/SSD 的 prefix 層：命中率再 +0.12（上限 0.9），落在 offload 層的命中要先以 25 GB/s 經 PCIe 重載；不擴大 active attention 的 KV。
 - **Chunked Prefill ⟂ P/D Disaggregation（§4.3，sim 層強制互斥）**：
-  - **Chunked**（Sarathi-Serve）是 token-budget scheduler：每個 engine step 帶著 running decodes 與最多 `chunkBudgetTokens` 個 prompt token。budget 依 time-between-tokens 目標 profile：在參考負載下，把 step 撐到 `max(30 ms, decode step × 1.25)` 的 prompt 運算量（包含藏在 memory-bound 讀取底下的免費 token），以短 prompt prefill 速率 × 0.9 換成 token，夾在 256–8192（8192 是 vLLM V1 與 SGLang 的大 GPU 預設）。budget 內的 prompt 一個 step 完成，更長的切成 `tokens / budget` 個 step；decode 每個 step 都出一個 token，只付較長的 step（TPOT 干擾），從不停頓。分塊保留 90% 的 prefill 效率。沒有 chunked prefill 時，一條 lane 一次跑一個 prompt，該 lane 的 decode 在 prefill 期間停頓（OSDI'24）。
+  - **Chunked**（Sarathi-Serve）是 token-budget scheduler：每個 engine step 帶著 running decodes 與最多 `chunkBudgetTokens` 個 prompt token。budget 依 time-between-tokens 目標 profile：在參考負載下，把 step 撐到 `max(30 ms, decode step × 1.25)` 的 prompt 運算量（包含藏在 memory-bound 讀取底下的免費 token），以短 prompt prefill 速率 × 0.9 換成 token，夾在 256–8192（8192 是 vLLM V1 與 SGLang 的大 GPU 預設）。budget 內的 prompt 一個 step 完成，更長的切成 `tokens / budget` 個 step；decode 每個 step 都出一個 token，只付較長的 step（TPOT 干擾），從不停頓。分塊保留 90% 的 prefill 效率。沒有 chunked prefill 時，每條 lane 依先來先服務把 prompt 背靠背跑完（一個 tick 內可以完成好幾個短 prompt），該 lane 的 decode 在 prefill 期間停頓（OSDI'24）——所以 chunked prefill 的真實取捨方向成立：單一 prompt 稍慢一點，換來 decode 不停頓。
   - **Disagg**（DistServe）讓 rack 可釘成 prefill 或 decode pool：各自的速率 × 1.1（phase 專屬的平行化調校）；KV 以 50 GB/s 從 prefill pool 傳到 decode pool（decode 首步之前付）；decode pool 只接自己模型的 KV；cohort 其餘串流的 prompt 欠給 prefill pool（`prefillDebtSec`，prefill pool 先用 lane 時間償還）——拆開 phase 去掉了干擾，但 prompt 的工作沒有消失。只需要 PagedAttention。
-- **Speculative Decoding（EAGLE，§4.4）**：draft head 每步提 4 個 token、target 一次驗證：記憶體共用、運算 × 5。依軸的平均接受 token（coding 2.4、chat/general 2.0、agentic 1.9、reasoning 1.7）；引擎每一步比較兩種 step，只在 `tokens/specStep > 1/plainStep` 時使用，所以 batch 大到 compute-bound 時自動關閉。代價：draft 佔 3% 權重的 VRAM（至少 0.5 GB）、每座 rack 的電力 +8%。
+- **Speculative Decoding（EAGLE，§4.4）**：draft head 每步提 4 個 token、target 一次驗證：記憶體共用、運算 × 5。依軸的小 batch 平均接受 token（coding 2.4、chat/general 2.0、agentic 1.9、reasoning 1.7）；增益隨 batch 衰減——每條 lane 32 條串流以下完整保留，128 條時歸零（之間對數線性；verify 轉為 compute-bound、引擎縮小每條串流的 draft）。引擎每一步比較兩種 step，只在 `tokens/specStep > 1/plainStep` 時使用，所以增益消失或 compute-bound 時自動關閉。代價：draft 佔 3% 權重的 VRAM（至少 0.5 GB）、每座 rack 的電力 +8%。
 - **權重格式（PTQ，§4.5 + §2.7）**：FP8（W8A8，1 B/param，FP8 速率，視為無損）、INT4（AWQ/GPTQ，W4A16，0.53 B/param，**以 BF16 速率運算**，−2 品質、8K 以上再 −6）、NVFP4（W4A4，0.5625 B/param，FP4 速率，只在 Blackwell rack，−1、8K 以上再 −2）。每座 rack 在 build phase 自選格式；auto = 該模型可用、無損、放得下的格式中 tensor 速率最高者。checkpoint 的 release precision 是下限：4-bit 釋出的模型在 4-bit 格式不付稅，FP8 釋出的模型永遠不會被放大成 BF16。NVFP4 研究需要場上至少一座 Blackwell rack。
 - **Parallelism（§4.7）**：Tensor Parallelism 讓一個 copy 跨最多 8 張 GPU（研究前模型必須放進一張 GPU，多 GPU rack 只能跑副本）；Pipeline Parallelism 讓 copy 跨 8 張以上（每多一個 stage：decode 每步 +30 µs、prefill +20 ms bubble，只增加記憶體與 pipelined 並發）；Data Parallelism 讓整座 rack 的副本成為一個排程群組（請求在所有 lane 與合併的 KV 上負載平衡）；Expert Parallelism 讓多副本的 MoE 把 expert 分片並合併 batch（每個副本只讀自己那份 expert 聯集，代價是每層的 all-to-all）。deploy picker 與 denied 理由會直接說「需要 Tensor / Pipeline Parallelism」。
 - **Multi-LoRA Serving（S-LoRA，§4.10）**：同一 base 權重的 adapter 與 base 共駐一座 rack，wave 中途也能切換（不重載權重）；未合併的 adapter 以 0.93 的 decode 速度服務，直到下一個 build phase 合併。
@@ -542,8 +546,8 @@ Roofline 卡（prefill compute vs decode bandwidth，標 binding）；VRAM 佔�
 ### 5.5 UI 計算層（不改 sim）
 
 `ui/metrics.ts` 純讀 GameState + effects，用**同一套 effects 函式**算 TTFT / TPOT / $/Mtoken / binding roof，所以 UI 的估計與 combat 判定一致：
-- rack 卡片的參考請求是 1.5K in / 256 out，「忙碌 rack」= 每條 lane 2 個 cohort（≈ 每 copy 56 條串流）；`$/Mtoken = rack $/hr × 1e6 / (aggTokS × 3600)` 就是 cash 實際遵守的速率。
-- **共用的 load forecast**（`sim/loadForecast.ts`，純函式、不抽 RNG）驅動 deploy picker 的 ★、每型的 fit 列、next-wave 準備度、ESTIMATE 卡的 prompt 時間，**也驅動 demo autoplay**——玩家看到的推薦就是 autoplay 依據的推薦。它在下一波每型請求抵達的時刻，用 combat 的 lane step 估計該 rack 在**整個混合負載**下的表現：Little's law 估在途 cohort、Pollaczek–Khinchine 估 prompt 佇列、Erlang C 估入口 rack 的 slot 等待、guard 延遲、回答模式、長 context 扣分與 window 門檻；★ 是預期「乾淨服務比例」最高者（準時、答對、放得下、沒被誤拒、沒交付不安全內容）。公式見 `MATH.md` §3.15。
+- rack 卡片的參考請求是 1.5K in / 256 out，「忙碌 rack」= 每條 lane 2 個 cohort（≈ 每 copy 56 條串流）；`$/Mtoken = rack $/hr × 1e6 / (aggTokS × 3600)` 以**計費 token** 計：乘上即將到來的流量中「生成 token ÷ 答案 token」（思考模型的 hidden tokens 會生成但不計費），就是 cash 實際遵守的速率。deploy picker 的速度標籤用 ★ 同一個預測負載，取 TPOT 最接近上限的那一型，並以該上限上色。
+- **共用的 load forecast**（`sim/loadForecast.ts`，純函式、不抽 RNG）驅動 deploy picker 的 ★、每型的 fit 列、next-wave 準備度、ESTIMATE 卡的 prompt 時間，**也驅動 demo autoplay**——玩家看到的推薦就是 autoplay 依據的推薦。它在下一波每型請求抵達的時刻，用 combat 的 lane step 估計該 rack 在**整個混合負載**下的表現：Little's law 估在途 cohort，負載分攤到請求在服務期間會走過的 rack（場上的幾何：每條 lane 第一次接觸後各段距離內碰到的 rack），prompt 集中在入口 rack；Pollaczek–Khinchine 估 prompt 佇列（一部分 prompt 等、多數不等）；入口 slot 的等待以「規律到達」計（請求以固定間隔輪流進入各 lane：同一型單獨 spawn 時不會撞到自己，與其他 burst 交錯時才會），共用入口的 lane 平分其 slot；每個延遲依 lognormal 散佈；再加上 guard 延遲、回答模式、長 context 扣分與 window 門檻；★ 是預期「乾淨服務比例」最高者（準時、答對、放得下、沒被誤拒、沒交付不安全內容）。`tests/forecast.test.ts` 確保 picker 每一列與 sim 實際服務比例相差在 10 個百分點內。公式見 `MATH.md` §3.15。
 - Goodput = 乾淨 `served` ÷ 全部終局（`goodputPctOf` / `honestGoodputPct`；live gauge、wave report、end screen 與 agent bridge 共用）；`sloAttainPct` = 答出的請求中準時的比例，作為第二視角。
 
 UI 檔案：`ui/metrics.ts`、`ui/nextWave.ts`、`ui/tooltip.ts`、`ui/modelOverview.ts`（S7+S8）、`ui/requestInspector.ts`（S4）、`ui/metricsPanel.ts`（S2）、`ui/panels.ts`（S3/S5/S9）、`ui/studio.ts`、`ui/charts.ts`。S2 與 S7/S8 只在 `isExpert()` 時開啟；其他表面在兩種模式都有，Expert 顯示更多。
@@ -579,15 +583,16 @@ prefillTokS(n) = rate(format) × tpDeg × tpEff × engineEff × MFU_PREFILL(0.55
                  / (2 × paramsActiveB × (1 + n / (16000 × (1 + 0.5·flash))))
 tpEff = {1: 1, 2: 0.9, 4: 0.8, 8: 0.65}；rate：FP8 格式用 FP8、NVFP4 用 FP4、BF16 與 INT4 用 BF16
 ```
-一個 prompt 由**一座** rack 吃下（prefill 在准入時被 claim）；prefill 完成後同一個 tick 內就加入 decode。
+一個 prompt 由**一座** rack 吃下：範圍內有空位、最快能開始它的那座（該 tick 已排入的 prompt 工作 ÷ lane 最少；同分取較小 tower id），Router 範圍內則依 capability 選擇。沒有 chunked prefill 時，每條 lane 依先來先服務把 prompt 背靠背跑完，一個 tick 內能完成幾個就完成幾個；排不進這個 tick 的 prompt 繼續等待（TTFT 計時中）。prefill 完成後同一個 tick 內就加入 decode。准入順序：(1) 每個串流中的答案先由它的 home rack（產生第一個 token 的 rack；走出範圍後由範圍內最空的同模型 rack 接任）准入；(2) prompt；(3) 同模型的其他 rack 以剩餘容量幫忙 decode。部分 ingest 的 prompt 與串流中的答案都只能由持有其 KV 的模型接續。
 
 **decode：lane step**（`laneStep`）。一個 decode step 為 lane 上每條串流各出一個 token：
 ```
 tMem  = (weightsRead + KV / (flash ? 1.2 : 1)) / (hbmTbsPerGpu × tpDeg × tpEff × engineEff × MBU 0.7)
 tComp = streams × 2 × paramsActiveB / (rate × tpDeg × tpEff × engineEff × MFU_DECODE 0.5)
-fixed = 1 ms 排程（multi-step ÷ 8）+ TP 時 2 × layers × 8 µs all-reduce + wide EP 時 2 × layers × 12 µs + (stages − 1) × 30 µs
+fixed = 1 ms 排程（multi-step ÷ 8）+ MoE 時 layers × 50 µs（router、top-k、permute 與 grouped expert GEMM 等小 kernel）
+        + TP 時 2 × layers × 8 µs all-reduce + wide EP 時 2 × layers × 12 µs + (stages − 1) × 30 µs
 step  = max(tMem, tComp) + 背景 prefill + fixed          // chunked：max(tMem, tComp + (背景 + chunk)/0.9) + fixed
-per-user tok/s = (spec 開啟 ? 該軸接受 token : 1) / step
+per-user tok/s = (spec 開啟 ? 1 + (該軸接受 token − 1) × fade(串流數) : 1) / step     // fade：≤32 為 1，≥128 為 0
 ```
 MoE 的 `weightsRead` = always-on 部分（active 的 35%：attention、embedding、shared experts）+ batch 觸及的 routed expert 聯集 `routedTotal × (1 − (1 − f)^b)`——一個 token 只讀 active，一整個 batch 的讀取往 total 靠攏。背景 prefill：decode 中的 cohort 其餘 `k − 1` 條串流的 prompt 在答案生成期間陸續 ingest，每步 `(k − 1) × (tokensIn − shared) / outTokens / prefillTokS`。熱節流時 memory-bound 部分保留少許優勢（`1 − (1 − thr) × 0.85`），compute-bound 部分全額受影響（Splitwise）。
 
@@ -600,8 +605,8 @@ k = 該群組剩餘 KV 放得下的串流數（≤ 28）；k < 28 的 cohort 輪
 准入群組：有 Data Parallelism 或只有一個副本時整座 rack 是一個群組（請求在所有 lane 與合併的 KV 上平衡），否則每個副本是一個群組，cohort 留在它落腳的副本上。每 tick 重新准入，`contextLen` 隨每個生成的 token 成長，長 OSL 的請求在生成過程中把 cohort 壓小（§5.6「長 context 把並發壓到個位數」）。
 
 > **worked example（H100 × 1，Qwen3.5 9B，PagedAttention）**：BF16：`tMem = 18 GB / (3.35 TB/s × 0.7) = 7.7 ms`，加 1 ms 排程 → 單人上限 115 tok/s；FP8：9 GB → 4.8 ms → 207 tok/s。1.5K-token prompt 的 prefill 為 `989 TFLOPS × 0.55 / (2 × 9e9 × 1.094) ≈ 27.6K tok/s`（BF16，54 ms），FP8 速率下 27 ms。KV：8 個 KV-bearing 層 × 32 KB/token，8K context 一條串流 0.32 GB（含 51.5 MB 固定狀態）；FP8 權重後一個 copy 有 66.7 GB KV → 一個 cohort 28 條串流綽綽有餘。忙碌負載（2 cohort、56 條串流）下 FP8 每人 75 tok/s、整座 4.2K tok/s；加上 chunked prefill，背景 prompt 藏進 memory-bound 讀取底下，每人 116 tok/s、整座 6.5K tok/s。
-> **worked example（H100 × 1，gpt-oss 120B，release MXFP4 0.56 B/param）**：權重 `117B × 0.56 ≈ 65.5 GB`，放得進一張 80 GB H100、留下約 12 GB KV。單人上限 451 tok/s（一個 token 只讀 5.1B active）；56 條串流時 expert 聯集與 KV 讓每人降到約 35 tok/s——大 MoE 的單人速度在 batch 變大時掉得比 dense 快。
-> **worked example（GB200 NVL72，Kimi K3 2.78T）**：MXFP4 權重約 1.56 TB，一個 copy 需要 16 張 GPU = 2 個 TP8 stage（需 TP + PP），72 張 GPU 跑 4 個副本、8 條 lane（剩下 8 張放不下第五個副本）。單人上限約 221 tok/s，忙碌負載下每人約 21 tok/s、整座約 9.6K tok/s：大 rack 買的是放得下與並發，不是單人速度。
+> **worked example（H100 × 1，gpt-oss 120B，release MXFP4 0.56 B/param）**：權重 `117B × 0.56 ≈ 65.5 GB`，放得進一張 80 GB H100、留下約 12 GB KV。單人上限約 249 tok/s（一個 token 只讀 5.1B active，但 36 層的 expert routing kernel 每步固定約 1.8 ms；Artificial Analysis 的 production 中位數約 212 tok/s）；56 條串流時 expert 聯集與 KV 讓每人降到約 33 tok/s——大 MoE 的單人速度在 batch 變大時掉得比 dense 快。
+> **worked example（GB200 NVL72，Kimi K3 2.78T）**：MXFP4 權重約 1.56 TB，一個 copy 需要 16 張 GPU = 2 個 TP8 stage（需 TP + PP），72 張 GPU 跑 4 個副本、8 條 lane（剩下 8 張放不下第五個副本）。單人上限約 109 tok/s（61 層的 expert routing 每步固定成本），忙碌負載下每人約 19 tok/s、整座約 8.7K tok/s：大 rack 買的是放得下與並發，不是單人速度。
 
 ### 6.3 硬體 + 模型資料模型（真實單位）
 
@@ -631,7 +636,7 @@ per-type 覆寫：comp.ttftSloMs 200（最嚴）；summ.ttftSloMs 6000（長 con
                chat / jailbreak.ttfatSloMs 4000、comp.ttfatSloMs 400（思考模型的第一個答案 token）；
                agent.e2elSloMs 60000（一個 agent step：完整思考 + tool call，含 output guard 尾段）
 ```
-TTFT 在第一個 token 判；TTFAT 在 hidden tokens 結束時判；E2EL 在 decode 途中與交付時判；TPOT = `decodeSec/(maxWork − 1)` 交付時判一次。抵達 core 仍未回答 → `leaked`，若曾被硬門檻擋下 → `unservable`（§2.5）。Goodput = 乾淨 served ÷ 全部終局，驅動 SLA 合約（§6.6）。
+TTFT 在第一個 token 判；TTFAT 在 hidden tokens 結束時判；E2EL 在 decode 途中與交付時判；TPOT = `decodeSec/(maxWork − 1)` 交付時判一次。抵達 core 仍未回答 → `leaked`；若曾被硬門檻擋下、且看過它的 rack 沒有一座放得下 → `unservable`（§2.5）。Goodput = 乾淨 served ÷ 全部終局，驅動 SLA 合約（§6.6）。
 
 ### 6.5 電力 / 冷卻（真實 kW，§5.5）
 
@@ -648,7 +653,7 @@ liquid pool = 每座 Liquid Cooling Loop 60 kW × coolingCap → 只冷卻液冷
 **收入**（`resolve.ts`）：
 ```
 pay = TRAFFIC_SCALE × (tokIn × priceIn + tokOut × priceOut) / 1e6 × marketPriceMul / CREDIT_USD
-tokIn  = 已 ingest 的 prompt（cached prefix 也算）；tokOut = 已生成的答案 token（hidden tokens 不計）
+tokIn  = 已 ingest 的 prompt（cached prefix 也算）；tokOut = 已生成的答案 token（hidden tokens 不計：型別單價代表答案的市場價值，這是已知偏差，見 REALISM）
 served 全額、sloMiss 50%、其他終局 0；price = 型別單價 × 事件的 reward 修飾
 ```
 
@@ -660,7 +665,7 @@ PUE = air 1.4 / liquid 1.15；load = 訓練中 ? 1 : 槽位佔用率；斷線或
 換算：$/hr × (10/3600) × RACKS_PER_TILE / 1000 = 每 board 秒 credits
 generative guard 自己那座 H100 以滿載付兩行
 ```
-能源只佔一座 rack 全包時薪的幾個百分點（例：H100 $3.00/hr = GPU-hour 行 $2.92 + 滿載能源 $0.08）；電價事件只打能源行，因此在現金上影響有限，真正的電力槓桿是削減容量的電網事件（`powerCap`、`powerBuild`）。**cohort identity**：一座 board rack 付 RACKS_PER_TILE 座真實 rack 的帳，賺 TRAFFIC_SCALE × sprite 進度的 token，所以 rack 卡片顯示的 `$/Mtoken = rack $/hr × 1e6 / (aggTokS × 3600)` 就是它現金流的速率（例：一座 FP8 Qwen3.5 9B H100 rack 以 4.2K tok/s 服務約 $0.20/Mtok）。**利用率經濟（§5.8）**：固定成本照 wall-clock、收入照服務 token → 閒置或過度配置的 rack 燒錢，單位成本隨低利用率爆炸。
+能源只佔一座 rack 全包時薪的幾個百分點（例：H100 $3.00/hr = GPU-hour 行 $2.92 + 滿載能源 $0.08）；電價事件只打能源行，因此在現金上影響有限，真正的電力槓桿是削減容量的電網事件（`powerCap`、`powerBuild`）。**cohort identity**：一座 board rack 付 RACKS_PER_TILE 座真實 rack 的帳，賺 TRAFFIC_SCALE × sprite 進度的 token，所以 rack 卡片顯示的 `$/Mtoken = rack $/hr × 1e6 / (aggTokS × 3600) × 生成/計費比` 就是它現金流的速率（例：一座 FP8 Qwen3.5 9B H100 rack 以 4.2K tok/s 服務，每生成 Mtok 約 $0.20；這個 hybrid 在 chat 波直接回答，卡片就是 $0.20，在需要思考的 near-real-time 流量上每個 256-token 答案先想約 1,000 個 hidden token，卡片顯示每計費 Mtok 約 $0.97）。**利用率經濟（§5.8）**：固定成本照 wall-clock、收入照服務 token → 閒置或過度配置的 rack 燒錢，單位成本隨低利用率爆炸。
 
 **SLA 合約**（每波清場時支付）：
 ```
@@ -683,7 +688,8 @@ contract = round(tierBonus × CLEAR_BONUS_SCALE(0.12) × Goodput/100)
 1. refreshPower(s)        // 真實 kW：capacity、liquid gate、brownout（轉換時發事件）、兩個 pool 的 throttle (§6.5)
 2. updateResearch(s,dt)   // 三軌共享借用池；借出的 rack 標記 training (§4.5)
 3. updateSpawns(s,dt)     // 依 burst 時間表生成；lane window / surge pin (§2.6)
-4. updateCombat(s,dt)     // Router → 首次接觸（TTFT 資格 + guard 篩檢）→ dispatch → 准入（KV/window/cohort/prefix）
+4. updateCombat(s,dt)     // Router 標記 → KV hand-off（另一模型 recompute）→ 首次接觸（TTFT 資格 + guard 篩檢）
+                          //   → 准入（home 答案 → prompt 負載平衡 / Router dispatch → 同模型協助；KV/window/cohort/prefix）
                           //   → prefill（exclusive / chunked）→ 第一個 token（TTFT、第一層、hidden）→ lane-step decode
                           //   → 停頓計時 → 誤拒結算 → 交付（output guard、TPOT/E2EL、七終局） (§6.2/§3)
 5. updateMovement(s,dt)   // board 移動；抵達 core → unservable / leaked (§6.4)
@@ -835,8 +841,8 @@ export interface Request {
   prefill: number; work: number; maxWork: number; tokensIn: number; tokensOut: number; contextLen: number
   queueSec: number; guardInSec: number; guardOutSec: number
   ttftReal: number; ttfatReal: number; e2elReal: number; decodeSec: number; hiddenTokens: number
-  kvModelId?: string; kvTowerId?: number; kvTransferSec: number
-  sloViolated: boolean; windowBlocked: boolean
+  kvModelId?: string; kvTowerId?: number; homeTowerId?: number; kvTransferSec: number; recompute: boolean
+  sloViolated: boolean; windowBlocked: boolean; fitSeen: boolean
   difficulty: number; hazards: SafetyProfile; hazardsOpen: SafetyProfile; novel: boolean; safetyRisk: number
   safetyCleared: boolean; overRefused: boolean; selfHandled: boolean; screened: boolean; attackHandled: boolean
   bestQuality: number; qualTokSum: number; qualTokW: number          // token 加權 margin

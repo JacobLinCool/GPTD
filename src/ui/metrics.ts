@@ -41,6 +41,7 @@ import {
   dollarsPerMtokenAt,
   frameworkGbPerGpu,
   guardLatencyMs,
+  hiddenTokensFor,
   hasLiquidLoop,
   hwNeedsLiquid,
   kvFreeGb,
@@ -400,22 +401,58 @@ export function dollarsPerMtoken(usdPerHour: number, aggTokS: number): number {
 }
 
 /**
- * The rack's serving cost in $/Mtoken (output) on a busy rack of the representative request
- * — the real number the dashboards show AND the rate its cash flow obeys: a board rack bills
- * RACKS_PER_TILE real racks' GPU-hours + energy, and earns on TRAFFIC_SCALE × the tokens its
- * sprites progress, which is those racks' aggregate (the cohort identity, config.ts).
+ * The request the rack cards price when no traffic is coming (1.5K in / 256 out, near-real-time): a
+ * thinking checkpoint reasons first on it, spending half its hidden-token budget (the share most
+ * archetypes trigger), a hybrid in thinking mode too.
+ */
+const REF_REQUEST: Pick<RequestTypeDef, 'latClass' | 'outputTokens' | 'thinkMul'> = {
+  latClass: 'NR',
+  outputTokens: REF_OUT_TOKENS,
+  thinkMul: 0.5,
+}
+
+/**
+ * Generated tokens per BILLED token: (answer + hidden reasoning) / answer, over the upcoming
+ * traffic's generating archetypes in the mode this model answers each in (a hybrid answers
+ * interactive traffic without thinking), or the reference request when no traffic is coming.
+ * Hidden reasoning decodes like any token but is never billed (the archetype's price is the
+ * answer's market value), so a thinker's cost per billed token is this much higher.
+ */
+export function generatedPerBilledToken(
+  m: ModelDef | null | undefined,
+  traffic?: Pick<UpcomingTraffic, 'entries'> | null,
+): number {
+  let answer = 0
+  let generated = 0
+  for (const e of traffic?.entries ?? []) {
+    if (e.outputTokens <= 0 || e.def.adversarial) continue
+    answer += e.count * e.outputTokens
+    generated += e.count * (e.outputTokens + hiddenTokensFor(m, e.def))
+  }
+  if (answer > 0) return generated / answer
+  return (REF_OUT_TOKENS + hiddenTokensFor(m, REF_REQUEST)) / REF_OUT_TOKENS
+}
+
+/**
+ * The rack's serving cost in $ per million BILLED output tokens on a busy rack of the representative
+ * request — the real number the dashboards show AND the rate its cash flow obeys: a board rack bills
+ * RACKS_PER_TILE real racks' GPU-hours + energy, and earns on TRAFFIC_SCALE × the answer tokens its
+ * sprites deliver (the cohort identity, config.ts). Per generated token that is the hourly bill over
+ * the aggregate decode rate; a thinking model also generates hidden reasoning it is not paid for, at
+ * the share the upcoming traffic makes it think (`generatedPerBilledToken`).
  */
 export function rackDollarsPerMtoken(
   s: GameState,
   lo: Loadout,
   contextLen = midDecodeContext(REF_IN_TOKENS, REF_OUT_TOKENS),
+  traffic: Pick<UpcomingTraffic, 'entries'> | null = upcomingTraffic(s),
 ): number {
   if (!lo.hw) return Infinity
   const est = rackLoadEstimate(s, lo, busySprites(s, lo), contextLen, {
     inputTokens: REF_IN_TOKENS,
     outputTokens: REF_OUT_TOKENS,
   })
-  return dollarsPerMtokenAt(s, lo, est.aggTokS, 1)
+  return dollarsPerMtokenAt(s, lo, est.aggTokS, 1) * generatedPerBilledToken(lo.model, traffic)
 }
 
 /* ------------------------------------------------------------------ *
@@ -494,10 +531,11 @@ export function fleetMetrics(s: GameState): FleetMetrics {
 
   let dpmSum = 0
   let dpmN = 0
+  const traffic = upcomingTraffic(s)
   for (const tw of onlineServers(s)) {
     const lo = loadoutOf(s, tw)
     if (!lo.hw || !lo.model || !serverFitsMemory(s, lo)) continue
-    const dpm = rackDollarsPerMtoken(s, lo)
+    const dpm = rackDollarsPerMtoken(s, lo, undefined, traffic)
     if (Number.isFinite(dpm)) {
       dpmSum += dpm
       dpmN++
@@ -840,9 +878,15 @@ export interface DeployCandidate {
   spanGpus: number
   /** mid-wave, a Multi-LoRA adapter swap on the loaded base: deployable now without a weight reload. */
   hotSwap: boolean
-  /** per-user decode tok/s on a busy rack of this tier (a 1.5K-in / 256-out request). */
+  /**
+   * per-user decode tok/s and TPOT as the upcoming wave would see them on this rack — under the
+   * same forecast load the ★ is scored at, for the archetype whose TPOT bound is tightest at that
+   * load (no traffic forecast: a busy rack of the representative 1.5K-in / 256-out request).
+   */
   perUserTokS: number
   tpotMs: number
+  /** the TPOT bound (ms) that archetype is judged against (Infinity = no bound, or no traffic forecast). */
+  tpotBoundMs: number
   /** count-weighted effective quality on the judged axes of the upcoming traffic. */
   judgedQ: number
   /** archetypes it would serve fast ∧ smart ∧ in-window at the forecast load, of those in the upcoming traffic. */
@@ -894,6 +938,7 @@ export function deployCandidates(s: GameState, tw: Tower, traffic: UpcomingTraff
       spanGpus: fits ? 0 : rackPlan(s, lo).g,
       perUserTokS: 0,
       tpotMs: Infinity,
+      tpotBoundMs: Infinity,
       judgedQ: 0,
       clears: 0,
       kinds: entries.length,
@@ -913,12 +958,24 @@ export function deployCandidates(s: GameState, tw: Tower, traffic: UpcomingTraff
         let qSum = 0
         let clean = 0
         const fits = trafficFits(s, lo, entries, env)
+        let worstUse = -1
         entries.forEach((e, i) => {
           const f = fits[i]
           c.fit.push(f)
           qSum += f.effQ * e.count
           if (f.fast && f.smart && f.window) c.clears++
           clean += e.count * cleanShare(s, m, e, f, env)
+          // the speed chip: this rack's per-user speed for the archetype nearest its TPOT bound
+          // at the forecast load (the most numerous generating one when none has a bound)
+          if (e.outputTokens <= 1 || !(f.lat.perUserDecodeTokS > 0)) return
+          const bound = sloBoundsOf(e.def).tpotMs
+          const use = Number.isFinite(bound) ? f.lat.tpotMs / bound : 0
+          if (use > worstUse) {
+            worstUse = use
+            c.perUserTokS = f.lat.perUserDecodeTokS
+            c.tpotMs = f.lat.tpotMs
+            c.tpotBoundMs = bound
+          }
         })
         c.judgedQ = totalCount ? qSum / totalCount : 0
         c.score = totalCount ? clean / totalCount : 0
@@ -1170,7 +1227,7 @@ export function diagnoseRequest(s: GameState, r: Request): RequestDiagnosis {
   let forecast: Outcome = 'served'
   let certain = true
   if (r.overRefused) forecast = 'overRefused'
-  else if (r.windowBlocked && !prefillDone) forecast = 'unservable'
+  else if (r.windowBlocked && !r.fitSeen && !prefillDone) forecast = 'unservable'
   else if (open.length && !r.safetyCleared) {
     forecast = 'unsafe'
     certain = !open.some((h) => h.verdict === 'catchable')

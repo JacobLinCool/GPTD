@@ -10,12 +10,14 @@ import {
   fmtDollarsPerMtoken,
   fmtLatencyMs,
   fmtTokS,
+  generatedPerBilledToken,
   latencyOf,
   rackDollarsPerMtoken,
   REF_IN_TOKENS,
   REF_OUT_TOKENS,
   rooflineOf,
   sparsityOf,
+  upcomingTraffic,
   vramOf,
 } from '../src/ui/metrics'
 import { decodeTokSb1, serverFitsMemory } from '../src/sim/effects'
@@ -28,7 +30,7 @@ import { updateCombat } from '../src/sim/combat'
  * Bring s.infra to the modern serving era (continuous batching + paged KV + FP8)
  * so a 31B fits a single 80 GB H100 and the metrics match a real deploy.
  */
-import { INFRA_NODES, MODEL_DEFS } from '../src/sim/content'
+import { INFRA_NODES, MODEL_DEFS, REQUEST_TYPES } from '../src/sim/content'
 import { applyInfraEffects } from '../src/sim/research'
 function modernEra(s: ReturnType<typeof createState>): void {
   for (const id of ['inf_batching', 'inf_paged', 'inf_wq_fp8']) {
@@ -89,8 +91,33 @@ describe('ui/metrics — worked-example parity (§5.7 / §5.8)', () => {
     const lo = loadout(s, H100, BIG)
     expect(serverFitsMemory(s, lo)).toBe(true)
     const agg = latencyOf(s, lo, REF_IN_TOKENS, REF_OUT_TOKENS).aggDecodeTokS
-    const expected = (rackHourlyUsd(s, lo, 1) * 1e6) / (agg * 3600)
+    // per generated token, scaled to the billed (answer) tokens of the representative request
+    const expected = ((rackHourlyUsd(s, lo, 1) * 1e6) / (agg * 3600)) * generatedPerBilledToken(lo.model, upcomingTraffic(s))
     expect(rackDollarsPerMtoken(s, lo)).toBeCloseTo(expected, 9)
+  })
+
+  it('the card prices billed tokens: a thinker pays for hidden reasoning it is never paid for', () => {
+    const s = createState(2)
+    modernEra(s)
+    // an instruct model bills every token it generates
+    const never = MODEL_DEFS['g_qwen3_5_0_8b_non_reasoning_2']
+    expect(never.thinking).toBe('never')
+    expect(generatedPerBilledToken(never)).toBe(1)
+    // with no traffic coming, an always-thinker reasons first on the reference request: half its budget
+    const always = MODEL_DEFS['k2h_7b']
+    expect(always.thinking).toBe('always')
+    const hidden = Math.round(always.thinkTokens * 0.5)
+    expect(generatedPerBilledToken(always)).toBeCloseTo((REF_OUT_TOKENS + hidden) / REF_OUT_TOKENS, 9)
+    const lo = loadout(s, H100, 'k2h_7b')
+    const agg = latencyOf(s, lo, REF_IN_TOKENS, REF_OUT_TOKENS).aggDecodeTokS
+    const perGenerated = (rackHourlyUsd(s, lo, 1) * 1e6) / (agg * 3600)
+    expect(rackDollarsPerMtoken(s, lo, undefined, null)).toBeGreaterThan(perGenerated * 2)
+    // over a chat-only wave a hybrid answers instantly (nothing hidden) while the always-thinker still thinks
+    const chat = { entries: [{ def: REQUEST_TYPES.chat, count: 10, inputTokens: 512, outputTokens: 256, difficulty: 18, context: 0 }] }
+    const hybrid = MODEL_DEFS['g_qwen3_5_9b_2']
+    expect(hybrid.thinking).toBe('hybrid')
+    expect(generatedPerBilledToken(hybrid, chat)).toBe(1)
+    expect(generatedPerBilledToken(always, chat)).toBeCloseTo((256 + hidden) / 256, 9)
   })
 
   it('the $/Mtoken a rack card shows is the rate its cash flow obeys (the cohort identity)', () => {
@@ -140,7 +167,8 @@ describe('ui/metrics — worked-example parity (§5.7 / §5.8)', () => {
       model.alignment = saved
     }
     const effective = (usd / (tokens * TRAFFIC_SCALE)) * 1e6
-    const shown = rackDollarsPerMtoken(s, lo)
+    // chat is answered instantly (no hidden reasoning): every generated token is billed
+    const shown = rackDollarsPerMtoken(s, lo, undefined, null) / generatedPerBilledToken(lo.model, null)
     // within the tick granularity (a finished sprite frees its slot at the next tick)
     expect(effective / shown).toBeGreaterThan(0.85)
     expect(effective / shown).toBeLessThan(1.15)

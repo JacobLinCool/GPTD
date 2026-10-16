@@ -5,7 +5,7 @@ import { onLangChange, t, waveName } from '../i18n'
 import { outcomeColor } from '../outcomes'
 import { CAMPAIGN_THEMES } from '../sim/campaign-data'
 import { HARDWARE_DEFS, WAVES } from '../sim/content'
-import { defLoadout, serverPower, towerRangeTiles } from '../sim/effects'
+import { buildDrawKw, towerRangeTiles } from '../sim/effects'
 import { CORE_POS, LANE_PATHS, isBuildable, posAt, tileCenter, worldToTile } from '../sim/pathing'
 import { clamp01, fxLevel, reducedMotion } from './anim'
 import { BannerLayer } from './banners'
@@ -669,8 +669,8 @@ export class WorldRenderer {
         }
       }
     }
-    // projected power: the rack's real draw against the substation + plant capacity
-    const add = def.kind === 'server' ? serverPower(s, defLoadout(def)) : (def.powerDraw ?? 0)
+    // projected power: the building's real draw (a rack, a generative guard's own GPU) against the substation + plant capacity
+    const add = buildDrawKw(s, def)
     if (add > 0 || def.kind === 'power') {
       const cap = s.power.cap + (def.power ?? 0)
       const used = s.power.used + add

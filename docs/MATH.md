@@ -29,7 +29,7 @@ Units: *real s* is the datacenter clock every latency, token rate and SLO is jud
 | `r.hiddenTokens` | Hidden reasoning tokens the answering model thinks before the answer (unbilled) | tokens |
 | `r.contextLen` | Live KV sequence = prompt + tokens generated so far | tokens |
 | `r.difficulty` | The quality line on the judged axis = `difficulty[primaryAxis] × complexityMul` | pts |
-| `r.queueSec` | Real seconds waiting in range of a rack that could prefill it | real s |
+| `r.queueSec` | Real seconds waiting in range of a rack that could prefill it (a full rack is queueing too) | real s |
 | `r.guardInSec` / `r.guardOutSec` | Input / output guardrail check time charged to this request | real s |
 | `r.ttftReal` / `r.ttfatReal` / `r.e2elReal` | Time to first token / first ANSWER token / whole answer | real s |
 | `r.decodeSec` | Per-stream decode time after the first token (the TPOT basis) | real s |
@@ -39,11 +39,13 @@ Units: *real s* is the datacenter clock every latency, token rate and SLO is jud
 | `r.selfHandled` / `r.screened` | Layer 1 rolled / lane guards screened it | bool |
 | `r.attackHandled` | An adversarial request correctly blocked or refused | bool |
 | `r.overRefused` / `r.refusedBy` | A benign request wrongly refused, and by whom (`model` / `guard`) | bool / enum |
-| `r.windowBlocked` | A rack rejected it on a hard gate (window or one copy's KV) | bool |
+| `r.windowBlocked` / `r.fitSeen` | A rack rejected it on a hard gate (window or one copy's KV) / a rack in range could hold it | bool |
 | `r.sloViolated` / `r.sloCause` | Missed a latency bound, and which first (`ttft` / `ttfat` / `tpot` / `e2el`) | bool / enum |
-| `r.routed` / `r.routedTo` | Inside a Router's range / the rack a Router reserved it for this tick | bool / id |
+| `r.routed` / `r.routedTo` | Inside a Router's range / the rack a Router dispatched its prompt to this tick | bool / id |
 | `r.cacheLooked` / `r.cachedTokens` | Its one prefix lookup has been rolled / prompt tokens served from cache | bool / tokens |
-| `r.kvModelId` / `r.kvTowerId` / `r.kvTransferSec` | Who holds its KV after the first token; P/D transfer still owed | id / real s |
+| `r.kvModelId` / `r.kvTowerId` / `r.kvTransferSec` | The model holding its KV (a partly ingested prompt or its context) / the rack that produced its first token; P/D transfer still owed | id / real s |
+| `r.homeTowerId` | The rack whose engine runs its decode (admitted before new prompts; other racks of its model help with spare capacity) | id |
+| `r.recompute` | A streaming answer being re-prefilled by a rack of another model | bool |
 | `r.thinkingMode` | The mode the first-token rack answered in (display) | instant / thinking |
 
 ### Model (`m`)
@@ -171,6 +173,7 @@ Secondary difficulty axes are documentation only (`rag` reasoning 44, `agent` re
 | `MBU_DECODE` | 0.7 | HBM bandwidth utilization of a decode step |
 | `MFU_PREFILL` / `MFU_DECODE` | 0.55 / 0.5 | Model-FLOPs utilization of prefill / a compute-bound decode step |
 | `STEP_OVERHEAD_MS` | 1.0 | Per-step scheduler + sampling overhead (÷ 8 with multi-step) |
+| `MOE_LAYER_OVERHEAD_US` | 50 | An MoE's per-layer routing kernels (router, top-k, permute, grouped GEMMs) per decode step; gpt-oss-120b alone on one H100 ≈ 250 tok/s |
 | `MULTISTEP_STEPS` | 8 | Decode steps per scheduler call |
 | `MAX_TP` | 8 | Widest tensor-parallel group a stream spans |
 | `TP_EFFICIENCY` | {1: 1, 2: 0.9, 4: 0.8, 8: 0.65} | Per-stream scaling of bandwidth and compute |
@@ -188,7 +191,8 @@ Secondary difficulty axes are documentation only (`rag` reasoning 44, `agent` re
 | `CHUNKED_PREFILL_EFF` | 0.9 | Prefill efficiency kept by chunking |
 | `SPEC_DRAFT_TOKENS` | 4 | Draft tokens verified per speculative step |
 | `SPEC_DRAFT_VRAM_FRAC` / `SPEC_DRAFT_VRAM_MIN_GB` | 0.03 / 0.5 | Draft-head memory per copy (and its draft read per token) |
-| `SPEC_TOKENS[axis]` | coding 2.4 · chat 2.0 · general 2.0 · agentic 1.9 · reasoning 1.7 | Mean tokens a speculative step yields |
+| `SPEC_TOKENS[axis]` | coding 2.4 · chat 2.0 · general 2.0 · agentic 1.9 · reasoning 1.7 | Mean tokens a speculative step yields at a small batch |
+| `SPEC_FADE_START_STREAMS` / `SPEC_FADE_END_STREAMS` | 32 / 128 | Streams per lane where the speculative gain starts to fade / is gone (log-linear between) |
 | `TRTLLM_KERNEL_GAIN` | 1.12 | TensorRT-LLM's MBU/MFU multiplier |
 | `RADIX_HIT_BONUS` / `RADIX_HIT_CAP` | 0.10 / 0.80 | SGLang's prefix-hit lift / ceiling |
 | `OFFLOAD_HIT_BONUS` / `OFFLOAD_HIT_CAP` | 0.12 / 0.90 | KV-offload tier lift / ceiling |
@@ -198,7 +202,7 @@ Secondary difficulty axes are documentation only (`rag` reasoning 44, `agent` re
 | `LORA_UNMERGED_SPEED` | 0.93 | Decode speed an unmerged hot-swapped adapter keeps |
 | `CACHE_HIT_CAP` | 0.7 | Best a cache aura gives one request |
 | `KV_ROUTE_MISS_RECOVERY` | 0.5 | Share of routed misses KV-aware routing recovers |
-| Cache tower `cacheChance` | 0.35 (+0.2 per prefix level; level 2 at ceiling 0.85) | Per-cache hit chance before the cap |
+| Cache tower `cacheChance` | 0.35 (+`PREFIX_RESEARCH_HIT` 0.4 once Prefix Caching is researched) | Per-cache hit chance before the cap |
 
 ### 2.6 Weight formats (`effects.ts`)
 | Format | Bytes/param | Tensor rate | Flat tax / >8K-token tax (only below release precision) |
@@ -233,11 +237,12 @@ Precision classes of a bytes/param figure: ≥ 1.5 → 16-bit, ≥ 0.75 → 8-bi
 | `GUARD_VERDICT_TOKENS` | 3 | Tokens a generative guard emits per check |
 | `GUARD_TURN_TOKENS` | 2048 | Cap on each side of the turn a guard reads |
 | `GUARD_REF_TOKENS` | 512 | Prompt length the readouts quote a check at |
+| `GUARD_SERVICE_MS` | 5 | Service hop + tokenization every guard check pays (included in the encoder's fixed figure, added to the generative roofline) |
 | Red-team | v1: injection detection, ×0.7 false positives, +0.02 recall · v2: PII detection, +0.02 more | §3.6 |
 
 | Guardrail | Family / side | Catches | `baseRecall` | Check cost | Range | Power |
 |---|---|---|---|---|---|---|
-| `guard_encoder` (Prompt Guard 86M) | encoder / input | jailbreak, injection | 0.975 | 92 ms fixed | 2.9 | 0.1 kW |
+| `guard_encoder` (Prompt Guard 86M) | encoder / input | jailbreak, injection | 0.975 | 10 ms fixed (a served encoder, service hop included) | 2.9 | 0.1 kW |
 | `guard_llm` (Llama Guard 4 12B) | generative / both | jailbreak, injection, harmful, pii | 0.92 | 12B roofline on its own H100 (§3.6) | 3.0 | its H100's kW |
 | `guard_mod` (moderation API) | moderation / both | harmful, pii | 0.88 | 120 ms fixed | 2.9 | 0.1 kW |
 
@@ -340,10 +345,13 @@ Support buildings: Router 24 credits, range 3.6, 0.2 kW · Cache 20, range 3.0, 
 ### 2.14 Forecast, readouts and telemetry
 | Constant | Value | What it sets |
 |---|---|---|
-| `SURGE_SHARE` | 0.5 | Share of the fleet's lanes a single-entry surge reaches |
+| `SURGE_SHARE` | 0.5 | Share of the fleet's lanes a single-entry surge reaches (the cap on its decode spread) |
 | `ENTRY_SPAN_TILES` / `ENTRY_STEP_PX` | 1 / 6 | Entry racks: within 1 tile of first contact, path sampled every 6 px |
+| `REACH_SPANS` | 1, 2, 3, 5, 8, 12, 20, 32 tiles | Spans past first contact the fleet's reach (decode spread) is sampled at |
+| `ENTRY_DWELL_TILES` | 6 | Longest walk a request holds an entry slot for |
+| `SPREAD` (lognormal σ) | TTFT 0.18 · TPOT 0.08 · TTFAT 0.3 · E2EL 0.25 | Scatter of each latency around its forecast |
 | `MAX_PROMPT_UTIL` | 0.95 | Prompt-lane utilization cap in the estimate |
-| `ON_TIME_USE` / `LATE_USE` | 0.85 / 1.3 | On-time share ramp |
+| `ON_TIME_USE` | 0.85 | A latency this far into its bound reads as comfortably on time (the picker's colour) |
 | `ESTIMATE_SPRITES_PER_LANE` | 2 | "Busy rack" of the readouts (≈ 56 streams per copy) |
 | `REF_IN_TOKENS` / `REF_OUT_TOKENS` / `REF_CONTEXT_TOKENS` | 1500 / 256 / 2048 | Reference request of the rack cards |
 | `TELEMETRY_WINDOW` | 5 board s | Answers-per-second window |
@@ -473,15 +481,17 @@ weightsRead = dense: activeB × bytes
 tMem  = (weightsRead + kvGb / (flash ? 1.2 : 1)) × 1e9 / bw / decodeThrottle(thr)
 tComp = b × 2 × activeB × 1e9 / flops / thr
 bg    = chunked ? (bgPrefillSec + chunkSec) / 0.9 / thr : bgPrefillSec / thr
-fixed = 1 ms / (multiStep ? 8 : 1) + (tpDeg > 1 ? 2·layers·8 µs : 0)
+fixed = 1 ms / (multiStep ? 8 : 1) + (MoE ? layers·50 µs : 0) + (tpDeg > 1 ? 2·layers·8 µs : 0)
         + (wide EP ? 2·layers·12 µs : 0) + (stages − 1)·30 µs
 step  = (chunked ? max(tMem, tComp + bg) : max(tMem, tComp) + bg) + fixed
 decodeThrottle(thr) = 1 − (1 − thr) × 0.85
-speculative: draft = 4 × 0.03 × activeB × bytes × 1e9 / bw / decodeThrottle ;  verify = 5 × tComp
+speculative: fade(b) = b ≤ 32 ? 1 : b ≥ 128 ? 0 : ln(128 / b) / ln(4)       # the gain a batch of b keeps
+             g = 1 + (SPEC_TOKENS[axis] − 1) × fade(b)                       # tokens a verify step yields
+             draft = 4 × 0.03 × activeB × bytes × 1e9 / bw / decodeThrottle ;  verify = 5 × tComp
              specStep = combine(tMem + draft, verify) + fixed
-             used when SPEC_TOKENS[axis] / specStep > 1 / step   (it switches off once compute binds)
-per-user tok/s = (specOn ? SPEC_TOKENS[axis] : 1) / step
-LaneStep = { stepSec, specOn, computeBound, memSec = tMem (+ draft), compSec = tComp (or verify), fixedSec = fixed }
+             used when g / specStep > 1 / step   (it switches off once the gain is gone or compute binds)
+per-user tok/s = (specOn ? 1 + (SPEC_TOKENS[axis] − 1) × fade(b) : 1) / step
+LaneStep = { stepSec, specOn, specFade, computeBound, memSec = tMem (+ draft), compSec = tComp (or verify), fixedSec = fixed }
 ```
 Background prefill (a decoding cohort's other `k − 1` prompts ingested over its answer):
 ```
@@ -501,7 +511,7 @@ Headline figures (`rackLoadEstimate`): `decodeTokSb1` is one stream alone (no KV
 |---|---|---|---|---|---|
 | Qwen3.5 9B, BF16 | 1 GPU | 115 tok/s | 43 / 2.4K tok/s | 54 ms | 374 |
 | Qwen3.5 9B, FP8 | 1 GPU | 207 tok/s | 75 / 4.2K (116 / 6.5K chunked) | 27 ms | 1164 |
-| gpt-oss 120B, native MXFP4 at the FP8 rate | 1 GPU, 65.5 GB | 451 tok/s | 35 / 2.0K | 15 ms | 2505 |
+| gpt-oss 120B, native MXFP4 at the FP8 rate | 1 GPU, 65.5 GB | 249 tok/s | 33 / 1.8K | 15 ms | 2549 |
 | Qwen3.6 27B, FP8 (chunked) | 1 GPU | 80 tok/s | 42 / 2.3K | 81 ms | 256 |
 
 ### 3.4 Thinking mode
@@ -523,22 +533,24 @@ ttfatReal × 1000 > def.ttfatSloMs → sloMiss cause 'ttfat'
 ```
 expectedSeq(r) = contextLen + work + (before first token ? hidden(model, r) : 0)
 feasible(h, r) = expectedSeq ≤ window  AND  kvPerReqGb(expectedSeq) ≤ kvGbPerReplica
-canHost(h, r)  = role matches the phase (a decode pool only takes its own model's KV) AND feasible
+canHost(h, r)  = role matches the phase AND (r.kvModelId unset OR h.model = r.kvModelId) AND feasible
 ```
-**First hardware contact.** A request in range of any host that `canHost` it is (a) counted as waiting (its TTFT clock runs: `queueSec += realDt` while still without a first token after the tick) and (b) screened once by the guards covering its lane (§3.6). Lane transit alone never counts.
+`kvModelId` is the model holding the request's KV: set on a partly ingested prompt and at the first token. **Hand-off** (`handOff`, before contact): a request with KV whose model has no rack in reach that could continue it, but a rack of another model in reach that could take it, starts over on that model — a prompt re-ingests from its first token (`prefill = tokensIn`, the cached prefix dropped), a streaming answer re-prefills its whole sequence (`prefill = contextLen`, `recompute`); its first token stands.
 
-**Router dispatch** (when ≥ 1 Router is online). Routed requests, closest to the core first, are reserved for an in-range host with a free slot:
+**First hardware contact.** A request in range of any host that `canHost` it is (a) counted as waiting — a prompt without a first token `queueSec += realDt`; an answer being re-prefilled `e2elReal += realDt`, `decodeSec += realDt` — whenever it is still unfinished after the tick, so waiting at a full rack is queueing even if another rack serves it later, and (b) screened once by the guards covering its lane (§3.6). Lane transit alone never counts.
+
+**Admission** (every tick; candidates closest to the core first). For every rack in a request's range: `feasible` (else `windowBlocked`; a feasible one sets `fitSeen`), then `canHost`; a rack takes one more sprite while `used < slots` and one of its groups holds one stream's KV at `contextLen`.
 ```
-margin(h, r) = q(axis, mode) − longContextPenalty(contextLen) − r.difficulty
-eta(h, r)    = (work + (before first token ? hidden : 0)) × tpot1(h)       # tpot1 = one-cohort TPOT
-pick: among hosts with margin ≥ 0 the smallest eta (ties: larger margin);
-      if none answers correctly, the largest margin (ties: smaller eta); no candidate → unreserved
-```
-**Admission** (per host, every tick). Candidates in range: reserved-for-this-rack first, then closest to the core; up to `slots` sprites.
-```
-infeasible → windowBlocked (it may still be served elsewhere)
-a prompt is claimed by ONE rack per tick ; a decoding request may be batched by every rack that has a slot
 group = Data Parallelism or one copy ? the whole rack : each copy (a cohort stays on its copy)
+pass 1  every streaming answer on its home rack (homeTowerId: the rack that produced its first token;
+        out of reach → the least busy rack of its model in reach becomes its home)
+pass 2  every prompt on ONE rack among those in reach with room:
+          no router: the soonest start = least queuedSec / lanes (ties: lower tower id)
+          routed:    margin(h, r) = q(axis, mode) − longContextPenalty(contextLen) − r.difficulty
+                     eta(h, r)    = queuedSec / lanes + promptSec + (work + (before first token ? hidden : 0)) × tpot1(h)
+                     among margin ≥ 0 the smallest eta (ties: larger margin); else the largest margin (ties: eta)
+          queuedSec += prompt seconds placed there (+ owed P/D prefill debt) ;  promptSec = prefill / (prefillTokS(ingest) × poolGain × thr)
+pass 3  spare capacity: every other rack of an answer's model in reach co-decodes it
 pick the group with the most free KV that holds one stream at contextLen
 prefix lookup (once, cacheable, under a cache aura) → see below
 k   = cohortFit(contextLen, free, sharedTokens) ;  reserve cohortKvGb(contextLen, k, sharedTokens)
@@ -546,7 +558,7 @@ sharedTokens = tokensIn × prefixShare × prefixHitChance
 ```
 **Prefix cache.**
 ```
-best   = max over covering caches of min(0.7, 0.35 + 0.2·prefixLevel)      # prefixLevel 0/1/2
+best   = max over covering caches of min(0.7, 0.35 + (Prefix Caching researched ? 0.4 : 0))
 hbm    = min(0.7, best) ;  SGLang: min(0.8, hbm + 0.1)
          routed ∧ kvAware: min(max(hbm, 0.7, prefixHitCeil), hbm + (1 − hbm) × 0.5)
 offload = offloadGb > 0 ? max(0, min(0.9, hbm + 0.12) − hbm) : 0
@@ -555,15 +567,17 @@ hit (u < hbm + offload): prefill = min(prefill, tokensIn − round(tokensIn × p
 ```
 **Prefill.** P/D: a prefill pool first pays its owed lane time (`debtShare = min(prefillDebtSec, lanes·realDt) / (lanes·realDt)`).
 ```
-exclusive: per lane one prompt, rate = prefillTokS × poolGain × thr / (embedding ? k : 1)
-           busy b = min(prefill / rate, (1 − debtShare)·realDt); done → firstToken(tDone = b / (1 − debtShare))
-           decode share of the tick = max(0, 1 − Σbusy / (lanes·realDt) − debtShare)
+exclusive: prompts run back to back, each on the lane with the least used time (FCFS);
+           rate = prefillTokS(ingest) × poolGain × thr / (embedding ? k : 1) ;  ingest = recompute ? contextLen : tokensIn
+           left = (1 − debtShare)·realDt − used[l] (≤ 0 → the rest wait) ;  b = min(prefill / rate, left)
+           done → firstToken(tDone = (used[l] + b) / (1 − debtShare)) ;  used[l] += b
+           decode share of the tick = max(0, 1 − Σused / (lanes·realDt) − debtShare)
 chunked:   prompts fill the lanes FCFS (least-used lane first); each takes promptOccupancy(T, budget)
            first token at start + wallSec ; decode share = mean over lanes of
            (chunkSteps × decodeStep + max(0, avail − used)) / realDt
 poolGain = role prefill ? 1.1 : 1
 ```
-**First token** (`firstToken`).
+**First token** (`firstToken`; a recompute instead resumes: `e2elReal += tDone`, `decodeSec += tDone`, the KV now this rack's model's).
 ```
 ttftReal  = queueSec + tDone + guardInSec + admissionDelaySec(oneCohortStep)
 ttftReal × 1000 > (def.ttftSloMs ?? class.ttftMs) → cause 'ttft'
@@ -573,7 +587,7 @@ else: layer 1 (§3.6), then hidden tokens are added (§3.4)
 ```
 **Decode.** For each admitted decode job of a group (`share` from the prefill step):
 ```
-rate      = (specOn ? SPEC_TOKENS[axis] : 1) / step × decodeGain
+rate      = (specOn ? 1 + (SPEC_TOKENS[axis] − 1) × specFade : 1) / step × decodeGain
 decodeGain = (role decode ? 1.1 : 1) × (loraHot ∧ adapter ? 0.93 : 1)
 perStream = rate × share × realDt
 gen       = min(work, perStream × k / 28)          ;  work −= gen ;  contextLen += gen
@@ -584,7 +598,7 @@ e2elReal += wall ;  decodeSec += sec
 decode pool: the KV source owes ((k − 1) × (tokensIn − shared) × gen / maxWork) / (its prefill rate × 1.1)
 stall: a decode with a slot and no token anywhere this tick → e2elReal += realDt, decodeSec += realDt
 ```
-Latency is accounted per token at the producing rack's physical rate, so splitting one request across racks never shortens it.
+Latency is accounted per token at the producing rack's physical rate, so co-decoding one request on several racks of its model finishes it in fewer board ticks but never shortens its real latency (its E2EL is the serial per-token sum).
 
 **Answer quality (token-weighted).**
 ```
@@ -599,7 +613,7 @@ E2EL: def.e2elSloMs ∧ e2elReal × 1000 > e2elSloMs → 'e2el'   (also checked 
 precedence: open hazard → unsafe ; adversarial (all cleared) → served ; bestQuality < 0 → bad ;
             sloViolated → sloMiss ; else served
 ```
-A request that reaches the core unanswered is `unservable` when `windowBlocked`, else `leaked`. An over-refused request resolves at once.
+A request that reaches the core unanswered is `unservable` when `windowBlocked ∧ ¬fitSeen` (a rack rejected it on a hard gate and no rack that saw it could ever hold it), else `leaked`. An over-refused request resolves at once.
 
 ### 3.6 Safety (two layers)
 **Layer 1** (the model that produced the first token, rolled once):
@@ -616,8 +630,8 @@ covers(guard, lane) ⟺ the circle (guard.x, guard.y, range × 48 px) touches th
 stages per lane: one per family present (encoder → generative → moderation), each with its
   covering input-side and output-side towers
 guardCheckMs(spec, T):
-  encoder / moderation: checkLatencyMs (92 / 120)
-  generative: T / prefillTokS(T) + (3 − 1) / perUser(one cohort, T + 3) on its own H100 (seconds → ms)
+  encoder / moderation: checkLatencyMs (10 / 120)
+  generative: (T / prefillTokS(T) + (3 − 1) / perUser(one cohort, T + 3)) × 1000 + 5 on its own H100 (ms)
 guardScreenTokens: input = min(max(1, tokensIn), 2048) ;  output = input turn + min(tokensOut, 2048)
 screenInput (first contact), per family: guardInSec += slowest input tower's check(input turn)
                                          guardOutSec += slowest output tower's check(output turn)  (not for embeddings)
@@ -633,9 +647,9 @@ At the fixed threshold 0.5 the recalls are the `baseRecall`s (+0.02 per red-team
 
 | Prompt | 100 | 512 | 2048 | 4096 tokens |
 |---|---|---|---|---|
-| Llama Guard, BF16 | 27 ms | 48 ms | 134 ms | 269 ms |
-| Llama Guard, FP8 researched | 15 ms | 26 ms | 73 ms | 145 ms |
-| Prompt Guard encoder | 92 ms | 92 ms | 92 ms | 92 ms |
+| Llama Guard, BF16 | 32 ms | 53 ms | 139 ms | 139 ms (the turn is capped at 2048) |
+| Llama Guard, FP8 researched | 20 ms | 31 ms | 78 ms | 78 ms |
+| Prompt Guard encoder | 10 ms | 10 ms | 10 ms | 10 ms |
 
 Compounding in expectation (the load forecast's helpers):
 ```
@@ -673,9 +687,11 @@ gpuLine   = toCredits(gpuHrUsd − tdpWatts/1000 × 0.8 × PUE × 0.10)       # 
 energy    = toCredits(serverPower × (0.3 + 0.7·load) × throttle × PUE × 0.10) × powerPrice
 load      = training ? 1 : t.load (slot occupancy) ;  PUE = liquid ? 1.15 : 1.4
 Llama Guard rack: gpuLine + energy at load 1
-$/Mtoken shown = rackHourlyUsd × 1e6 / (aggTokS × 3600)                 # the rate the cash obeys
+$/Mtoken shown = rackHourlyUsd × 1e6 / (aggTokS × 3600) × generatedPerBilled          # per BILLED token
+generatedPerBilled = Σ count × (out + hidden(m, def)) / Σ count × out   over the upcoming traffic's generating archetypes
+                     (no traffic: the reference request, NR, thinkMul 0.5)
 ```
-Example: an H100 rack is $3.00/hr = $2.92 GPU-hour line + $0.08 energy at full load; a Qwen3.5 9B FP8 rack serving 4.2K tok/s shows ≈ $0.20/Mtok.
+Example: an H100 rack is $3.00/hr = $2.92 GPU-hour line + $0.08 energy at full load; a Qwen3.5 9B FP8 rack serving 4.2K tok/s costs ≈ $0.20 per generated Mtok. On a chat wave that hybrid answers instantly and the card shows that $0.20; on near-real-time traffic it thinks first (≈ 1,000 hidden tokens before a 256-token answer) and the card shows ≈ $0.97 per billed Mtok.
 
 The SLA contract paid at wave clear:
 ```
@@ -803,36 +819,48 @@ Model Overview   = per-user tok/s of one cohort on the smallest rack tier that h
 ```
 
 ### 3.15 Load forecast (`loadForecast.ts`: the deploy picker's ★, fit rows, readiness, the demo)
-Demand lines come from the wave's bursts (the incident volume folded in), merged per archetype at its hardest instance; each burst is `(start = delay, end = delay + (count − 1)·interval, rate = 1 / (interval × 10)` per real s, `count)`. For one rack and model:
+Demand lines come from the wave's bursts (the incident volume folded in), merged per archetype at its hardest instance; each burst is `(start = delay, end = delay + (count − 1)·interval, rate = 1 / (interval × 10)` per real s, `count)`. The environment (`loadEnvOf`) samples, on every ingress lane in play, the serving racks a request meets as it walks:
+```
+entryByPath[p] = Σ lanes of the racks met within 1 tile of first contact, each shared by the lanes that meet it first
+reach[k]       = Σ lanes of the distinct racks met within REACH_SPANS[k] tiles of first contact on any lane in play
+fleetLanes     = Σ serving racks' lanes (racks a running project requisitions excluded; a surge × 0.5)
+```
+For one rack and model:
 ```
 hidden, generated = out + hidden, ctx = in + generated / 2
 cached = cacheable ? prefixShare × cacheHit ;  prompt = in × (1 − cached) ;  shared = in × cached
 cacheHit = prefixHitChance(best cache, unrouted) × 0.5
-slots = max(1, min(spritesPerLane, ⌈(kvGbPerReplica / stages) / (28 × kvOne)⌉))
-        kvOne = the decode-weighted mean kvPerReqGb(ctx)
-lanes = Σ serving racks' lanes (racks a running project requisitions excluded; a surge × 0.5)
-S0 = prompt wall time + generated × lightStep × 28 / k                  # one sprite's occupancy
-in flight at t (per lane) = Σ active bursts min(rate × S0, count) / lanes   (Little's law)
+kvSprite_j = min(kvLane, cohortKvGb(ctx_j, 28, shared_j))        # a whole cohort, or the lane when one does not fit
+slots(w)   = clamp(kvLane / (Σ w_j kvSprite_j / Σ w_j), 1, spritesPerLane)   # the sprites a lane holds of the mix w
+S0 = prompt wall time + generated × lightStep × 28 / k            # one sprite's occupancy
+walk_j = speed_j × 0.75 / 10 tiles per real s ;  dwell_j = 6 / walk_j
+in flight at t: raw_j = Σ active bursts min(rate × S_j, count) ;  T = Σ raw
+spread(t) = clamp(max(reach(Σ raw_j × walk_j × S_j / T), T / slots(raw)), 1, fleetLanes)   # the racks requests meet while served
+per lane = raw / spread                                           (Little's law)
 pieces = each burst cut where the others start or finish; weight = arrivals in the piece
-lane step at t: own cohort + min(slots − 1, max(minSprites − 1, in flight)) others (laneStep mix)
-prompt lane at t:  pLanes = min(lanes, max(1, Σ in flight × lanes / slots))
+lane step at t: own cohort + min(slots − 1, max(minSprites − 1, per lane)) others (laneStep mix)
+prompt lane at t:  pLanes = clamp(max(Σ entryByPath, T / slots), 1, fleetLanes)      # prompts gather on the entry racks
                    ρ = min(0.95, Σ rate·service / pLanes)
-                   queue = Σ rate·service² / pLanes × (ρ / busy) / (2(1 − ρ))        # Pollaczek–Khinchine
-                   util  = min(0.95, Σ rate·service / lanes) ;  chunkRate = chunked ? steps·util/spread : 0
-tpot  = 1 / (chunkRate + (1 − util) / step) / (specOn ? SPEC_TOKENS : 1)
-ttft  = prompt wall + queue + admissionDelay + guardIn
-ttfat = ttft + hidden × tpot × 28/k ;  e2el = ttft + generated × tpot × 28/k + guardOut
-use   = max(ttft/bound, ttfat/bound, tpot/bound, e2el/bound)
-entry slot wait: a = Σ in flight / paths ; queued = ErlangC(slots × entryLanes, a)
-                 wait = a ≥ c ? ∞ : meanS / (c − a) ;  late = slack ≤ 0 ? 1 : e^(−slack / wait)
-onTime = onTimeShare(use) × (1 − queued × late)
-onTimeShare(u) = u ≤ 0.85 ? 1 : u ≥ 1.3 ? 0 : (1.3 − u) / 0.45
+                   queue = Σ rate·service² / pLanes × (ρ / busy) / (2(1 − ρ))        # Pollaczek–Khinchine (mean)
+                   util  = min(0.95, Σ rate·service / max(pLanes, spread)) ;  chunkRate = chunked ? steps·util/spread : 0
+tpot  = 1 / (chunkRate + (1 − util) / step) / (specOn ? 1 + (SPEC_TOKENS − 1)·specFade : 1)
+ttft₀ = prompt wall + admissionDelay + guardIn ;  ttfat₀ = ttft₀ + hidden × tpot × 28/k
+e2el₀ = ttft₀ + generated × tpot × 28/k + guardOut ;  each reported with + queue
+within = Π_bounds W(latency₀ / bound, σ_bound) × (1 − ρ·e^(−slack·ρ / queue))      # some prompts wait, most do not
+         W(u, σ) = Φ((−ln u + σ²/2) / σ) ;  slack = min over bounds of (bound − latency₀)
+entry slots of each ingress lane p: hold_j = min(S_j, dwell_j) ; ρ_j = Σ active min(rate × hold_j, count) / paths
+         an arrival of line i finds every other line j holding ⌊ρ_j⌋ + Bernoulli(frac ρ_j) slots and its own line
+         ⌊ρ_i⌋ + Bernoulli(frac ρ_i × mixed), mixed = the share of spawns now from other bursts
+         queued_p = P(N ≥ ⌈entryByPath[p] × slots(hold)⌉) ;  wait = Σρ ≥ capacity ? dwell_i : meanHold / (capacity + 1)
+         late = slack ≤ 0 ? 1 : e^(−slack / wait) ;  queued = mean over p
+onTime = within × (1 − queued × late)
 window = in + generated ≤ window ∧ kvPerReqGb(in + generated) ≤ kvGbPerReplica
 effQ   = serverQualityVs(axis, mode) − longContextPenalty(ctx) ;  margin = effQ − difficulty
 cleanShare = (!window ∨ (!adversarial ∧ margin < 0)) ? 0 : onTime × (1 − max_h leak(h)) × (1 − refusal)
 deploy score = Σ count × cleanShare / Σ count ;  ★ = highest score (ties: judgedQ, then per-user speed)
+speed chip = per-user tok/s of the generating archetype whose TPOT is nearest its bound at this load
 ```
-Entry lanes are the lanes of the serving racks a request meets within 1 tile of its first contact on each lane in play (averaged). The single-archetype readouts (`readoutEnv`) assume a busy rack: 2 cohorts per lane, a 60 s wave, the board's worst-lane guards.
+Requests spawn at fixed intervals round-robin over the lanes, so arrivals are regular: a line spawning alone never collides with itself while its hold is shorter than its spacing on a lane. The single-archetype readouts (`readoutEnv`) assume a busy rack: 2 cohorts per lane, a 60 s wave, the board's worst-lane guards. `tests/forecast.test.ts` holds picker rows within 10 points of the share the sim serves on representative racks and eras.
 
 ### 3.16 Quality on the board
 ```
