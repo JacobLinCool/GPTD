@@ -1,423 +1,843 @@
 # GPTD Math Reference
 
-> New here? GPTD is a tower-defense game simulating an LLM-inference data center — start with the [README](../README.md). This file is the quick reference for every formula, constant, and variable the simulation uses.
+> New here? GPTD is a tower-defense game: you defend a stream of user requests with GPU racks, guardrails and routers, and every number behind the board comes from real LLM-inference engineering. Start with the [README](../README.md). This file is the quick reference for every formula, constant and variable the simulation uses.
 
-Extracted from the **code** (the source of truth: `src/sim/**` + `src/config.ts`) and verified against it — not from prose. Order: variable glossary → constants → formulas by subsystem. The deeper design rationale lives in [BLUEPRINT.md](./BLUEPRINT.md); the real-world grounding in [REALISM.md](./REALISM.md) / [REFERENCE-DOSSIER.md](./REFERENCE-DOSSIER.md).
+Extracted from the **code** (the source of truth: `src/sim/**`, `src/config.ts`, `src/core/types.ts`, plus the pure UI mirrors in `src/ui/metrics.ts` / `src/ui/nextWave.ts`) and checked against it. Order: variable glossary → constants → formulas by subsystem. The design rationale lives in [BLUEPRINT.md](./BLUEPRINT.md); the real-world grounding in [REALISM.md](./REALISM.md) and [REFERENCE-DOSSIER.md](./REFERENCE-DOSSIER.md).
+
+Units: *real s* is the datacenter clock every latency, token rate and SLO is judged on; *board s* is the visible game clock (1 board s = `SIM_TIME_SCALE` real s). Cash is in credits (1 credit = $1000).
 
 ## 1. Variable glossary
 
 ### Meters & resources
 | Symbol | Meaning | Unit |
 |---|---|---|
-| `s.meters.cash` | Cash; bankrupt if `<0` | credits |
-| `s.meters.trust` | Trust meter; loss if `≤0` | 0..100 |
-| `s.meters.sla` | SLA meter; loss if `≤0` | 0..100 |
-| `s.data` | Accumulated training data | data |
-| `s.utilization` | Rolling EMA fleet utilization | 0..1 |
-| `s.fleetCapexUsd` | Total deployed fleet capex (telemetry) | $ |
+| `s.meters.cash` | Cash; the run is lost when it goes below 0 | credits |
+| `s.meters.trust` / `s.meters.sla` | Trust and SLA meters, clamped to [0, 100]; the run is lost at 0 | pts |
+| `s.data` | Training Data (earned by answers, spent on research and the Studio) | data |
+| `s.power` / `s.cooling` | Power draw vs capacity; heat vs heat-rejection capacity (air + liquid pools) | kW |
+| `s.coolingLiquid` | The Liquid Cooling Loops' own pool (inside `s.cooling`) | kW |
+| `s.utilization` | Rolling fleet utilization (EMA) | 0..1 |
+| `s.fleetCapexUsd` | Capex of every rack on the board (telemetry) | $ |
+| `s.modifiers.*` | The active incident's multipliers (§2.13) | × |
 
 ### Request (`r`)
 | Symbol | Meaning | Unit |
 |---|---|---|
-| `r.work` / `r.prefill` | Remaining decode (output) / prefill work | tokens |
-| `r.contextLen` | KV sequence length (grows with output) | tokens |
-| `r.context` | Required context demand for the quality gate | tokens |
-| `r.tokensIn / r.tokensOut` | Input / output token counts (revenue) | tokens |
-| `r.difficulty` / `primaryAxis` | Resolved difficulty line / axis judged on | 0..130 / enum |
-| `r.bestQuality` | Best margin latched (≥0 correct, <0 bad, 999 pure-prefill cache hit) | pts |
-| `r.safetyRisk` / `r.hazardsOpen[h]` | Max open hazard / per-hazard open severity | 0..1 |
-| `r.safetyCleared` / `r.selfHandled` | All hazards cleared / layer-1 rolled | bool |
-| `r.overRefused` / `r.windowBlocked` | Benign wrongly blocked / only met too-small windows | bool |
-| `r.sloViolated` | TTFT/TPOT/E2EL breach | bool |
-| `r.queueSec` / `r.ttftReal` / `r.e2elReal` | Real queue→TTFT / latched TTFT / running E2EL | s (real) |
-| `r.data` | Base data yield (served/bad) | data |
-| `r.slaPenalty / r.trustPenalty` | Per-request meter penalty weights | pts |
+| `r.tokensIn` / `r.tokensOut` | Prompt (ISL) / answer (OSL) length as spawned | tokens |
+| `r.prefill` | Prompt tokens still to ingest (a prefix-cache hit removes the shared prefix) | tokens |
+| `r.work` / `r.maxWork` | Tokens still to generate / total to generate (hidden reasoning tokens are added at the first token) | tokens |
+| `r.hiddenTokens` | Hidden reasoning tokens the answering model thinks before the answer (unbilled) | tokens |
+| `r.contextLen` | Live KV sequence = prompt + tokens generated so far | tokens |
+| `r.difficulty` | The quality line on the judged axis = `difficulty[primaryAxis] × complexityMul` | pts |
+| `r.queueSec` | Real seconds waiting in range of a rack that could prefill it | real s |
+| `r.guardInSec` / `r.guardOutSec` | Input / output guardrail check time charged to this request | real s |
+| `r.ttftReal` / `r.ttfatReal` / `r.e2elReal` | Time to first token / first ANSWER token / whole answer | real s |
+| `r.decodeSec` | Per-stream decode time after the first token (the TPOT basis) | real s |
+| `r.qualTokSum` / `r.qualTokW` / `r.bestQuality` | Token-weighted quality margin accumulator (`bestQuality = sum / weight`; ≥ 0 correct) | pts |
+| `r.hazards` / `r.hazardsOpen` | Hazard severities spawned with / still uncleared | 0..1 |
+| `r.novel` | A novel (adaptive) attack variant | bool |
+| `r.selfHandled` / `r.screened` | Layer 1 rolled / lane guards screened it | bool |
+| `r.attackHandled` | An adversarial request correctly blocked or refused | bool |
+| `r.overRefused` / `r.refusedBy` | A benign request wrongly refused, and by whom (`model` / `guard`) | bool / enum |
+| `r.windowBlocked` | A rack rejected it on a hard gate (window or one copy's KV) | bool |
+| `r.sloViolated` / `r.sloCause` | Missed a latency bound, and which first (`ttft` / `ttfat` / `tpot` / `e2el`) | bool / enum |
+| `r.routed` / `r.routedTo` | Inside a Router's range / the rack a Router reserved it for this tick | bool / id |
+| `r.cacheLooked` / `r.cachedTokens` | Its one prefix lookup has been rolled / prompt tokens served from cache | bool / tokens |
+| `r.kvModelId` / `r.kvTowerId` / `r.kvTransferSec` | Who holds its KV after the first token; P/D transfer still owed | id / real s |
+| `r.thinkingMode` | The mode the first-token rack answered in (display) | instant / thinking |
 
-### Model (capability)
+### Model (`m`)
 | Symbol | Meaning | Unit |
 |---|---|---|
-| `paramsTotalB` / `paramsActiveB` | Total (all experts resident) / active per token (MoE) | B params |
-| `weightBytes` | Authored bytes/param (FP16=2) | bytes/param |
-| `layers` / `kvHeads` / `headDim` / `attn` | KV-formula architecture fields (MLA flag) | count / enum |
-| `contextWindowK` | Advertised context window | K tok |
-| `qualityBy[axis]` | Per-axis quality (chat/coding/reasoning/general/agentic) | 8..130 |
-| `quality` | Scalar = max over axes; `spec` = argmax axis | 8..130 / enum |
-| `alignment.safety` | Intrinsic safety score | 0..100 |
-| `alignment.overRefusal` | Layer-1 benign over-refusal prob | 0..1 |
-| `alignment.refusalStyle` | none / hard-refusal / safe-completion | enum |
-| `instructFollow` | Instruction-following score | 0..100 |
-| `isReasoning / isMoE` | Thinking / MoE flags | bool |
-| `depth` / `effort` | Lineage depth (base+1) / training effort notch | int / 0.25..2 |
+| `paramsTotalB` / `paramsActiveB` | Resident params (every MoE expert) / params read per token | B params |
+| `isMoE` | Sparse mixture of experts | bool |
+| `thinking` | Thinking support from the chat template: `always` / `hybrid` / `never` | enum |
+| `isReasoning` | `thinking ≠ never` (its `qualityBy` is thinking-mode capability) | bool |
+| `thinkTokens` | Hidden tokens per thinking-mode answer at full effort | tokens |
+| `qualityBy[axis]` / `qualityByInstant[axis]` | Per-axis capability (thinking mode) / a hybrid's instant mode | 8..130 |
+| `quality` / `spec` | Best axis value / its axis (display) | pts / enum |
+| `layers` / `kvLayers` / `kvHeads` / `headDim` / `attn` | Architecture (display; KV math reads the two fields below) | count / enum |
+| `kvBytesPerToken` | BF16 KV bytes per token over the KV-bearing layers only | bytes |
+| `kvStateMbPerReq` | Constant per-request cache: sliding windows + linear/SSM state | MB |
+| `nativeWeightBytes` | Release precision (bytes/param incl. block scales) | B/param |
+| `contextWindowK` | Hard context window | K tokens |
+| `longCtx` | Long-context skill | 0..1 |
+| `alignment.safety` / `.refusalStyle` / `.overRefusal` | Layer-1 alignment | 0..100 / enum / 0..1 |
+| `instructFollow` | Instruction following (display; SFT raises it) | 0..100 |
+| `lineage.depth` | Post-training chain depth (roster bases are 0) | int |
 
-### Hardware (rack, `hw`)
+### Hardware (`hw`) and the parallel plan (`p`)
 | Symbol | Meaning | Unit |
 |---|---|---|
-| `hbmGb` / `hbmTbs` | HBM/VRAM capacity / bandwidth | GB / TB/s |
-| `bf16Tflops` / `fp8Tflops` | BF16 / FP8(INT4) tensor throughput | TFLOPS |
-| `tdpWatts` / `gpuHrUsd` / `capexUsd` | Aggregate TDP / $/GPU-hr / deployed capex | W / $ / $ |
-| `targets` | Concurrent batch slots offered by scheduler | slots |
-| `cooling` | Cooling type (liquid mandates a Liquid Loop) | enum |
-| `t.online` / `t.throttle` / `t.load` | Powered / per-tower speed / rack slot use | bool / 0..1 / 0..1 |
+| `gpus` | GPUs one board rack stands for | count |
+| `bf16/fp8/fp4TflopsPerGpu` | Dense tensor rates per GPU (FP4 only on Blackwell) | TFLOPS |
+| `hbmGbPerGpu` / `hbmTbsPerGpu` | HBM capacity / bandwidth per GPU | GB / TB/s |
+| `tdpWattsPerGpu` / `tdpWatts` | Nameplate TDP per GPU / aggregate | W |
+| `gpuHrUsd` | All-in rental rate of the rack (`gpuHrUsdPerGpu × gpus`) | $/hr |
+| `cooling` | `air` or `liquid` (liquid needs a Liquid Cooling Loop) | enum |
+| `p.g` / `p.tpDeg` / `p.stages` | GPUs per model copy / tensor-parallel degree `min(g, 8)` / pipeline stages `g / tpDeg` | count |
+| `p.replicas` / `p.lanes` | Model copies `⌊gpus / g⌋` / decode lanes `replicas × stages` | count |
+| `p.format` / `p.weightGb` / `p.draftGb` / `p.kvGbPerReplica` | Serving format, resident weights, spec-decode draft, usable KV — per copy | — / GB |
 
-### Serving / roofline (`s.infra`)
-| Symbol | Meaning | Unit |
-|---|---|---|
-| `weightQuantBytes` / `kv.quantBytes` | Serving PTQ weight / KV precision (2/1/0.5) | bytes |
-| `kv.flash` / `kv.prefixHitCeil` / `kv.utilization` | FlashAttn level / prefix-hit ceiling / KV allocator (0.55→0.96) | level / 0..1 |
-| `throughput` / `engineTier` | Scheduler throughput level / engine (0 vLLM, 1 SGLang, 2 TRT-LLM) | level / 0..2 |
-| `spec.enabled / spec.level` | Speculative decoding flag / level | bool / level |
-| `scheduling.batch / .multiStep` | Continuous batching / extra slots | bool / slots |
-| `routing.kvAware` | KV-aware routing (Dynamo) | bool |
-| `batch` (`b`, `n`) | Concurrent in-flight requests | count |
-| `throttle` | Thermal throttle factor | 0.2..1 |
-| `realDt` / `dt` | Real seconds this tick (=dt×10) / sim timestep | s |
-
-### Safety
-| Symbol | Meaning | Unit |
-|---|---|---|
-| `threshold` | Global guardrail strictness | 0..1 |
-| `recall` / `overRefuse` | Effective per-hazard recall / over-refusal prob | 0..1 |
-| `redteamLevel` | Owned red-team eval level | 0..2 |
-| `alignmentTax(m)` | Capability cost of intrinsic alignment | pts |
-| `severity` | Open hazard severity | 0..1 |
-
-### Economy & SLO
-| Symbol | Meaning | Unit |
-|---|---|---|
-| `serveRevenue` / `pay` | Per-request income / payout | credits |
-| `opCost` | Per-tick fleet operating bill | credits |
-| `s.marketPriceMul` | Market price multiplier (incidents) | x |
-| `s.modifiers.powerPrice / .safetyDamage / .coolingCap` | Op-bill mult / Trust-damage amp / cooling-cap mult | x |
-| `powerCap` / `coolCap` / `used` / `heat` | Electrical / heat-rejection capacity / draw / heat | kW |
-| `goodput` / `goodputPct` | Clean-in-SLO served / attainment | count / % |
-| `answersPerSec` / `p95` | Rolling answer rate / latency p95 | req/s / s |
-
-## 2. Constants (from `config.ts` etc., verified)
-
-### Economy / scaling
-| Constant | Value | What it tunes |
-|---|---|---|
-| `CREDIT_USD` | 1000 | 1 credit = $1000; build cost = capex/1000 |
-| `TRAFFIC_SCALE` | 100000 | Real streams per sprite; scales BOTH token revenue and op bill |
-| `OP_COST_SCALE` | 0.036 | Calibrates real $/GPU-hr bill to playable (depth lever) |
-| `CLEAR_BONUS_SCALE` | 0.08 | Rescales authored wave clear bonus into credits |
-| `RESEARCH_DATA_SCALE` | 4 | Multiplies authored infra / method-unlock / eval research `dataCost` |
-| `RESEARCH_COMPUTE_SCALE` | 3 | Multiplies authored infra / method-unlock / eval research `compute` |
-| `POSTTRAIN_COMPUTE_SCALE` | 2 | Multiplies Studio post-training compute bills |
-| `SIM_TIME_SCALE` | 10 | Real datacenter sec per board sec (dual clock); SLO judged on real axis |
-| `SIM_DT` / `MAX_STEPS` | 1/60 / 5 | Fixed deterministic timestep (s) / max steps per frame |
-| `FRAMEWORK_GB` | 1.5 | Per-rack VRAM overhead before KV |
-| `RACK_UTILIZATION` | 0.8 | Utilization factor on nameplate TDP |
-| `THROTTLE_FLOOR` | 0.2 | Min speed an overheated GPU keeps |
-| `Mtok divisor` / `sec/hr` | 1e6 / 3600 | tokens×$/Mtok→USD / board-sec→real-hours |
-
-### Start / board
-| Constant | Value | What it tunes |
-|---|---|---|
-| `START.cash` | 300 | Starting cash |
-| `START.trust / .sla / .data` | 100 / 100 / 0 | Starting meters (clamp [0,100]) / data |
-| `START.basePower / .baseCooling` | 6 / 6 | Base substation feed / house chiller (kW) |
-| `TILE` | 48 | px per grid tile; range px = range×TILE |
-| `GRID_COLS / GRID_ROWS` | 24 / 11 | Board grid |
-| `LANE_SPEED` | 0.75 | Per-type tile speed → lane speed |
-
-### SLO classes (`LAT_CLASS_SLO`)
-| Class | Value | Meaning |
-|---|---|---|
-| `IN` (interactive) | ttft 400 ms, tpot 40 ms | Chat / completion |
-| `NR` (near-real-time) | ttft 2000 ms, tpot 200 ms | RAG / reasoning / agentic |
-| `TO` (throughput/offline) | ∞ | No hard latency SLO (embed / batch) |
-
-### Roofline / memory (`effects.ts`)
-| Constant | Value | What it tunes |
-|---|---|---|
-| int4 PTQ threshold | weightQuantBytes ≤ 0.5 | INT4 active |
-| tensor-rate select | bytesPerParam < 2 → fp8, else bf16 | Which TFLOPS figure |
-| decode/compute roof factor | 2 | 2 FLOPs/param/token |
-| superlinear divisor | 16000 | `1+n/16000` prefill O(n²) penalty |
-| KV factor / MLA scaling | 2 / ×0.067 | K and V / MLA KV −93.3% |
-| KV flash shave / prefix shave | ×max(0.55,1−0.08·flash) / ×max(0.6,1−0.12·prefixLevel) | FlashAttn / prefix KV reduction |
-| kvUtilization default | 0.55 (→0.96 paged) | KV allocator quality |
-| ctx-bonus coeffs | flash 0.14 / prefix 0.06 | Effective-window expansion |
-| `serverContext` | min(150, 22·log2(K)) +14·flash +6·prefixLevel | Long-ctx quality score |
-| engineMul | TRT 1.25 / SGLang 1.1 / vLLM 1.0 | Engine tier |
-| speedMul coeff | 0.12 | (1+0.12·throughput)·engineMul |
-| specMul | b≤1:2.0, b≤4:1.7, b≤16:1.66, b≥32:1.0 (16→32 lerp) | Spec-decode gain |
-| bwMul flash coeff | 0.1 | Decode BW ceiling ×(1+0.1·flash) |
-| int4ContextPenalty / int4Tax | −6 (int4 & ctx>8000) / −2 | INT4 long-ctx collapse / flat quality tax |
-| decodeThrottle coeff | 0.85 | decode keeps only a slight edge under throttle |
-| serverPower fp8 / int4 | ×0.85 / ×0.95 | Quant power reduction |
-| serverPower throughput / spec | ×(1+0.05·thr) / ×(1+0.08·specLvl) (frontier only) | Power lift |
-| routeBonus kvAware lift / cap | ×(1+0.8) / decode +90% cap | KV-aware routing |
-| cacheChance prefix coeff / cap | 0.2·prefixLevel / 0.7 | Prefix-cache hit chance |
-| dataMult lab coeff | 0.25 | +0.25 data yield per Lab |
-| pure-prefill cache sentinel / retry cd | 999 / 6 s | Embedding-only cache hit / miss cooldown |
-| quality clamp | [8, 130] | All qualityBy bounds |
-
-### Safety (`safety.ts`)
-| Constant | Value | What it tunes |
-|---|---|---|
-| `TAX_K` | none 0 / hard-refusal 9 / safe-completion 4 | Alignment-tax weight by style |
-| alignmentTax pivot | safety > 40, /100 | `TAX_K·max(0,safety−40)/100` |
-| `HAZARD_HARDNESS` | jailbreak 0.35, injection 0.55, harmful 0.2, pii 0.3 | Self-handle hardness |
-| `OVERREF_K` | encoder 0.06, generative 0.1, moderation 0.05 | Over-refuse convexity |
-| effRecall | base·(0.6 + 0.8·threshold) + 0.02·redteamLevel | Recall floor / threshold gain |
-| over-refuse redteam mult | 0.7 (once red-team owned, XSTest) | Lowers over-refusal |
-| category gating | injection ≥L1, pii ≥L2, jailbreak/harmful always | Hazard catch unlock |
-
-### Post-training (`models.ts`)
-| Constant | Value | What it tunes |
-|---|---|---|
-| quality clamp `Q_LO/Q_HI` | 8 / 130 | Clamp; Q_HI also headroom ceiling |
-| depthDamp coeff | 0.15 | `1/(1+0.15·depth)` diminishing returns |
-| sizeFactor baseline / exp / floor | 8 / 0.7 / 0.1 | `(max(0.1,activeB)/8)^0.7` |
-| dataSizeFactor baseline / exp / floor | 8 / 0.45 / 1 | `max(1,(totalB/8)^0.45)` |
-| depthSurcharge coeff | 0.6 | `1 + 0.6·baseDepth` |
-| sparsityFactor coeff / exp | 0.12 / 0.5 | `1 + 0.12·sqrt(totalB/activeB − 1)` |
-| computeCost mult | 1000 × `POSTTRAIN_COMPUTE_SCALE` | Studio compute bill scale |
-| `EFFORT_NOTCHES` | 0.25 / 0.5 / 1.0 / 1.5 / 2.0 | Effort multipliers |
-| alignmentTaxFactor | rlhf 1 / cai 0.6 / other 0.8 | Per-method tax weight |
-| safetyGain | rlhf 28 / cai 26 / other 18 (×√effort) | `alignment.safety` gain (cap 100) |
-| CAI / crude-RL overRefusal | −0.04·√effort / +0.05·√effort | Pareto vs hard-refusal |
-| SFT instructFollow | +8·√effort (cap 100) | Instruction following |
-| QAT / distill | weightBytes→0.5, −2 each axis / cap = min(teacher, student+18) | INT4 QAT / distillation |
-
-### Method recipes (`content.ts`) — gainScale / gainCap / taxScale / forgetScale / costCompute / costData
-| Recipe | Values | Targets |
-|---|---|---|
-| `grpo` | 28 / 40 / 0.05 / 0.15 / 18 / 8 | reasoning, agentic (max gain; sets isReasoning) |
-| `cpt` | 22 / 40 / 0 / 0.5 / 60 / 40 | domain, long-ctx, general |
-| `distill` | 24 / ∞ / 0 / 0.04 / 12 / 16 | reasoning, coding, agentic (cap = min(teacher, student+18)) |
-| `sft` | 16 / 14 / 0 / 0.08 / 6 / 8 | chat, coding, general, long-ctx |
-| `rlhf` | 14 / 16 / 0.6 / 0.12 / 40 / 14 | safety, chat, general (max tax) |
-| `dora` | 14 / 10 / 0 / 0.03 / 1.4 / 6 | PEFT |
-| `dpo` | 12 / 12 / 0.08 / 0.06 / 10 / 11 | chat, general, safety |
-| `cai` | 12 / 14 / 0.25 / 0.08 / 16 / 9 | safety (Pareto) |
-| `lora` | 12 / 8 / 0 / 0.02 / 1 / 5 | PEFT (cheapest) |
-| `qlora` | 11 / 8 / 0 / 0.02 / 0.8 / 5 | PEFT |
-| `qat` | 0 / 0 / 0 / 0 / 6 / 3 | reshapes weightBytes→0.5 |
-| `merge` | 0 / 0 / 0 / 0 / 0.2 / 0 | averages two same-family checkpoints |
-
-### Research / telemetry
-| Constant | Value | What it tunes |
-|---|---|---|
-| `RESEARCH_MAX_SHARE` | 0.45 | Max fleet FLOPS the research pool requisitions |
-| `TELEMETRY_WINDOW` | 5 s | Rolling req/s window |
-| p95 quantile | 0.95 | `index = ceil(n·0.95)−1` |
-| answered set | served \| sloMiss \| bad | Goodput denominator |
-| utilization EMA | 0.9·prev + 0.1·inst | Rolling fleet utilization |
-| `MAX_TIER` / `LATE_LOAD_GAIN` | 12 / 7 | Authored campaign ceiling / late-game compute amplifier |
-
-### Outcome settlement (`combat.ts` / `movement.ts`)
-| Outcome | Effect |
+### Serving stack (`s.infra`, per-rack state)
+| Symbol | Meaning |
 |---|---|
-| served | cash += pay; data += r.data·dataMult; trust +0.25; sla +0.15 |
-| bad | cash += pay; data += r.data·dataMult; trust −= trustPenalty·0.5 (no cash penalty) |
-| slo_miss / over_refused | sla −= slaPenalty·0.5; trust −= trustPenalty·0.25; pay = 0 |
-| unsafe (served) | trust −= trustPenalty·safetyDamage; pay = 0 |
-| leak / unservable (core) | sla −= slaPenalty (full); trust −= trustPenalty (×safetyDamage if unsafe) |
+| `scheduling.batch` / `.multiStep` / `.chunked` | Continuous batching / multi-step scheduling (count) / chunked prefill |
+| `kv.utilization` / `.prefixHitCeil` / `.quantBytes` / `.offloadGb` / `.flash` | KV allocator quality / prefix-hit ceiling / KV element bytes / CPU-SSD tier / FlashAttention level |
+| `disagg` | P/D disaggregation researched (racks can be pinned to a role) |
+| `spec.enabled` / `.level` | Speculative decoding |
+| `quant.fp8` / `.int4` / `.nvfp4` | Weight formats researched |
+| `par.tp` / `.pp` / `.dp` / `.ep` | Tensor / pipeline / data / expert parallelism |
+| `routing.kvAware` / `loraSlots` / `engineTier` | KV-aware routing / Multi-LoRA / engine (0 vLLM, 1 SGLang, 2 TensorRT-LLM) |
+| `t.precision` / `t.role` / `t.loraHot` / `t.prefillDebtSec` | A rack's weight format (undefined = auto) / P/D role / unmerged adapter swap / prompt work owed to decode pools |
+| `t.throttle` / `t.load` / `t.training` | Thermal throttle (0 = dark) / slot occupancy / requisitioned for research |
+
+### Safety, economy & SLO
+| Symbol | Meaning | Unit |
+|---|---|---|
+| `s.guardrailThreshold` | Global guard decision threshold (fixed at 0.5) | 0..1 |
+| `redteamLevel` | Red-Team Eval levels owned | 0..2 |
+| `refusalExposure` | Share of an archetype's benign traffic borderline enough to refuse | 0..1 |
+| `pay` | Credits one outcome pays | credits |
+| `gpuCost` / `energyCost` | The two lines of the operating bill | credits |
+| `goodput` / `total` / `answered` / `answeredInSlo` | Wave counters (§3.9) | count |
+
+## 2. Constants (from the code)
+
+### 2.1 Economy and clocks (`config.ts`, `content.ts`, `campaign.ts`)
+| Constant | Value | What it sets |
+|---|---|---|
+| `CREDIT_USD` | 1000 | 1 credit = $1000; build cost = `round(capexUsd / 1000)` |
+| `TRAFFIC_SCALE` | 100000 | Real requests per request sprite (scales token revenue) |
+| `COHORT_STREAMS` | 28 | Real concurrent streams one sprite places on every real rack a tile stands for |
+| `RACKS_PER_TILE` | `TRAFFIC_SCALE / COHORT_STREAMS` ≈ 3571.4 | Real racks one board rack stands for (scales the bill) |
+| `ENGINE_MAX_STREAMS` | 256 | Engine batch cap per lane: `⌊256 / 28⌋ = 9` sprites with Continuous Batching (1 before) |
+| `SIM_TIME_SCALE` | 10 | Real seconds per board second |
+| `SIM_DT` / `MAX_STEPS` | 1/60 / 5 | Fixed timestep (board s) / max steps per rendered frame |
+| `CLEAR_BONUS_SCALE` | 0.12 | SLA contract value → credits |
+| `CONTRACT_BASE` / `CONTRACT_PER_TIER` / `CONTRACT_BOSS_PREMIUM` | 160 / 40 / 320 | SLA contract value per wave |
+| `RESEARCH_DATA_SCALE` / `RESEARCH_COMPUTE_SCALE` | 4 / 12 | Multipliers on every authored research node's Data and compute |
+| `POSTTRAIN_COMPUTE_SCALE` | 2 | Multiplier on every Studio compute bill |
+| `RESEARCH_MAX_SHARE` | 0.45 | Most of the fleet's BF16 TFLOPS research may lend |
+| `RESEARCH_TARGET_SECONDS` | 60 | Board seconds per "wave" in the research time preview |
+| `POWER_USD_PER_KWH` | 0.10 | All-in industrial electricity price |
+| `PUE_AIR` / `PUE_LIQUID` | 1.4 / 1.15 | Facility power usage effectiveness by cooling class |
+| `IDLE_POWER_FRAC` | 0.3 | Share of nameplate an idle rack still bills as energy |
+| `RACK_UTILIZATION` | 0.8 | Serving draw as a share of nameplate TDP (the kW meter) |
+| `THROTTLE_FLOOR` | 0.2 | Speed an overheated rack keeps |
+
+### 2.2 Start and board
+| Constant | Value | What it sets |
+|---|---|---|
+| `START.cash` / `.trust` / `.sla` / `.data` | 300 / 100 / 100 / 0 | Starting meters |
+| `START.basePower` / `.baseCooling` | 6 / 6 | Substation feed / house chillers (kW) |
+| `TILE` / `GRID_COLS × GRID_ROWS` | 48 px / 24 × 11 | Board grid; a range of `R` tiles is `R × 48` px |
+| Lanes | 4 | Ingress lanes into the central Trust Core (`LANE_PATHS`) |
+| `LANE_SPEED` | 0.75 | Board speed = `def.speed × speedMul × TILE × LANE_SPEED` px/board s |
+
+### 2.3 SLO bounds (`LAT_CLASS_SLO` + per-archetype overrides)
+| Class | TTFT | TPOT | Archetypes |
+|---|---|---|---|
+| `IN` interactive | 400 ms | 40 ms | chat, comp, jailbreak |
+| `NR` near-real-time | 2000 ms | 200 ms | rag, summ, reason, agent |
+| `TO` throughput/offline | ∞ | ∞ | embed, batch |
+
+| Override (`RequestTypeDef`) | Value |
+|---|---|
+| `comp.ttftSloMs` | 200 ms |
+| `summ.ttftSloMs` | 6000 ms (the long-context bound) |
+| `chat.ttfatSloMs` / `jailbreak.ttfatSloMs` | 4000 ms (time to first ANSWER token) |
+| `comp.ttfatSloMs` | 400 ms |
+| `agent.e2elSloMs` | 60000 ms (one agent step, output-guard tail included) |
+
+### 2.4 Request archetypes (`REQUEST_TYPES`, base 2023 sizes)
+| id | ISL / OSL | class | axis: line | `thinkMul` | `prefixShare` / cacheable | `refusalExposure` | hazards | $in / $out per Mtok | Trust / SLA penalty | Data |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `embed` | 2000 / 0 | TO | general 10 | 0 | 0.3 / ✓ | 0 | — | 0.05 / 0.1 | 1 / 1 | 0 |
+| `chat` | 512 / 256 | IN | chat 18 | 0.5 | 0.4 / ✓ | 1.0 | — | 0.3 / 0.9 | 2 / 3 | 1 |
+| `comp` | 1500 / 150 | IN | coding 56 | 0.05 | 0.5 / ✓ | 0.1 | — | 1 / 3 | 4 / 4 | 2 |
+| `rag` | 8000 / 512 | NR | general 50 | 0.5 | 0.6 / ✓ | 0.4 | — | 1 / 2 | 4 / 6 | 3 |
+| `summ` | 12000 / 400 | NR | general 44 | 0.5 | 0.2 / ✗ | 0.3 | — | 1 / 2 | 3 / 5 | 3 |
+| `reason` | 512 / 6000 | NR | reasoning 82 | 0 | 0.1 / ✗ | 0.5 | — | 1 / 5 | 6 / 5 | 3 |
+| `agent` | 6000 / 800 | NR | agentic 82 | 1 | 0.7 / ✓ | 0.5 (unused: it always carries a hazard) | injection 0.3 | 3 / 12 | 7 / 11 | 4 |
+| `batch` | 1000 / 4000 | TO | general 40 | 0.5 | 0.1 / ✗ | 0.2 | — | 0.5 / 1.5 | 1 / 2 | 4 |
+| `jailbreak` | 600 / 400 | IN | general 38 | 0.5 | 0.1 / ✗ | 0 (adversarial) | jailbreak 0.7 | 0.5 / 1.5 | 9 / 3 | 1 |
+
+Secondary difficulty axes are documentation only (`rag` reasoning 44, `agent` reasoning 66); combat judges `primaryAxis`.
+
+### 2.5 Serving physics (`config.ts`, `effects.ts`)
+| Constant | Value | What it sets |
+|---|---|---|
+| `MBU_DECODE` | 0.7 | HBM bandwidth utilization of a decode step |
+| `MFU_PREFILL` / `MFU_DECODE` | 0.55 / 0.5 | Model-FLOPs utilization of prefill / a compute-bound decode step |
+| `STEP_OVERHEAD_MS` | 1.0 | Per-step scheduler + sampling overhead (÷ 8 with multi-step) |
+| `MULTISTEP_STEPS` | 8 | Decode steps per scheduler call |
+| `MAX_TP` | 8 | Widest tensor-parallel group a stream spans |
+| `TP_EFFICIENCY` | {1: 1, 2: 0.9, 4: 0.8, 8: 0.65} | Per-stream scaling of bandwidth and compute |
+| `ALLREDUCE_US` | 8 | One all-reduce; a TP step pays `2 × layers` of them |
+| `ALLTOALL_US` | 12 | Expert-parallel dispatch + combine per MoE layer per step |
+| `PP_HOP_US` / `PP_BUBBLE_MS` | 30 / 20 | Pipeline hand-off per extra stage per decode step / per prefill (TTFT) |
+| `MOE_SHARED_FRAC` | 0.35 | Always-on share of an MoE's active params |
+| `FRAMEWORK_GB` | 1.5 | Runtime overhead per GPU before KV |
+| `FLASH_ACTIVATION_CREDIT_GB` | 0.5 | Per-GPU overhead FlashAttention gives back |
+| `FLASH_PREFILL_GAIN` / `FLASH_KV_READ_GAIN` | 0.5 / 1.2 | Softer O(n²) prefill term / faster KV reads with FlashAttention |
+| prefill super-linear divisor | 16000 | `1 + n / (16000 × (1 + 0.5·flash))` |
+| `CHUNK_STEP_TARGET_MS` | 30 | Chunked-prefill step target |
+| `CHUNK_MIN_STRETCH` | 0.25 | Least a chunk may stretch a long decode step |
+| `CHUNK_MIN_TOKENS` / `CHUNK_MAX_TOKENS` | 256 / 8192 | Token-budget clamp |
+| `CHUNKED_PREFILL_EFF` | 0.9 | Prefill efficiency kept by chunking |
+| `SPEC_DRAFT_TOKENS` | 4 | Draft tokens verified per speculative step |
+| `SPEC_DRAFT_VRAM_FRAC` / `SPEC_DRAFT_VRAM_MIN_GB` | 0.03 / 0.5 | Draft-head memory per copy (and its draft read per token) |
+| `SPEC_TOKENS[axis]` | coding 2.4 · chat 2.0 · general 2.0 · agentic 1.9 · reasoning 1.7 | Mean tokens a speculative step yields |
+| `TRTLLM_KERNEL_GAIN` | 1.12 | TensorRT-LLM's MBU/MFU multiplier |
+| `RADIX_HIT_BONUS` / `RADIX_HIT_CAP` | 0.10 / 0.80 | SGLang's prefix-hit lift / ceiling |
+| `OFFLOAD_HIT_BONUS` / `OFFLOAD_HIT_CAP` | 0.12 / 0.90 | KV-offload tier lift / ceiling |
+| `PCIE_RELOAD_GBPS` | 25 | Offloaded prefix reload bandwidth |
+| `KV_TRANSFER_GBPS` | 50 | P/D KV hand-off bandwidth |
+| `DISAGG_POOL_GAIN` | 1.1 | Rate gain of a role-pinned (prefill or decode) rack |
+| `LORA_UNMERGED_SPEED` | 0.93 | Decode speed an unmerged hot-swapped adapter keeps |
+| `CACHE_HIT_CAP` | 0.7 | Best a cache aura gives one request |
+| `KV_ROUTE_MISS_RECOVERY` | 0.5 | Share of routed misses KV-aware routing recovers |
+| Cache tower `cacheChance` | 0.35 (+0.2 per prefix level; level 2 at ceiling 0.85) | Per-cache hit chance before the cap |
+
+### 2.6 Weight formats (`effects.ts`)
+| Format | Bytes/param | Tensor rate | Flat tax / >8K-token tax (only below release precision) |
+|---|---|---|---|
+| `bf16` | 2 | BF16 | 0 / 0 |
+| `fp8` (W8A8) | 1 | FP8 | 0 / 0 (lossless) |
+| `int4` (W4A16) | 0.53 | BF16 (weights dequantize) | 2 / 6 |
+| `nvfp4` (W4A4) | 0.5625 | FP4 (Blackwell only; else FP8) | 1 / 2 |
+
+Precision classes of a bytes/param figure: ≥ 1.5 → 16-bit, ≥ 0.75 → 8-bit, else 4-bit. An INT4 KV cache (`kv.quantBytes ≤ 0.5`) adds a 2-point penalty above 32K tokens.
+
+### 2.7 Long context, thinking and calibration
+| Constant | Value | What it sets |
+|---|---|---|
+| `LONGCTX_FILL_FREE` / `LONGCTX_MAX_PENALTY` / `LONGCTX_SKILL_RELIEF` | 0.25 / 24 / 0.75 | Window-fill quality penalty |
+| `LCR_FULL` | 80 | AA-LCR % that counts as full long-context skill |
+| `LONGCTX_FLOOR` | small 0.2 · general 0.5 · coding 0.5 · frontier 0.7 | Skill without an LCR cell |
+| `THINK_TOKENS_MIN` / `MAX` / `FALLBACK` | 300 / 4000 / 1500 | Thinking-budget clamp / budget of an untimed thinker |
+| `THINK_GAP_S` | 1 | Time-to-first-answer gap that counts as hidden reasoning |
+| `ROSTER_FRONTIER_TOLERANCE` | 0.06 | Roster gate (135-checkpoint pool → 58 active) |
+| Bridge `MIN_N` / equating floor | 60 / n ≥ 50 and r ≥ 0.97 | Fit trust floors (`scripts/aa-cells.mjs`) |
+| Quality clamp | [8, 130] | Every quality value |
+
+### 2.8 Safety (`safety.ts`, `effects.ts`, `content.ts`)
+| Constant | Value | What it sets |
+|---|---|---|
+| `TAX_K` | none 0 · hard-refusal 9 · safe-completion 4 | Alignment tax weight |
+| `HAZARD_HARDNESS` | jailbreak 0.35 · injection 0.55 · harmful 0.20 · pii 0.30 | Layer-1 self-handle hardness |
+| `OVERREF_K` | encoder 0.06 · generative 0.10 · moderation 0.05 | Guard false-positive convexity |
+| `NOVEL_RECALL_MUL` | encoder 0.45 · moderation 0.7 · generative 1.0 | Recall a family keeps on a novel attack |
+| `HANDLED_ATTACK_TOKENS` | none 30 · hard-refusal 30 · safe-completion 200 | Answer length of a handled attack |
+| `GUARD_VERDICT_TOKENS` | 3 | Tokens a generative guard emits per check |
+| `GUARD_TURN_TOKENS` | 2048 | Cap on each side of the turn a guard reads |
+| `GUARD_REF_TOKENS` | 512 | Prompt length the readouts quote a check at |
+| Red-team | v1: injection detection, ×0.7 false positives, +0.02 recall · v2: PII detection, +0.02 more | §3.6 |
+
+| Guardrail | Family / side | Catches | `baseRecall` | Check cost | Range | Power |
+|---|---|---|---|---|---|---|
+| `guard_encoder` (Prompt Guard 86M) | encoder / input | jailbreak, injection | 0.975 | 92 ms fixed | 2.9 | 0.1 kW |
+| `guard_llm` (Llama Guard 4 12B) | generative / both | jailbreak, injection, harmful, pii | 0.92 | 12B roofline on its own H100 (§3.6) | 3.0 | its H100's kW |
+| `guard_mod` (moderation API) | moderation / both | harmful, pii | 0.88 | 120 ms fixed | 2.9 | 0.1 kW |
+
+### 2.9 Outcome settlement (`resolve.ts`)
+| Outcome | Pay | Trust | SLA |
+|---|---|---|---|
+| `served` | 100% of processed tokens | +0.25 | +0.15 |
+| `sloMiss` | 50% (`SLO_MISS_PAY_SHARE`) | −0.25 × trustPen | −0.5 × slaPen |
+| `bad` | 0 (refunded) | −0.5 × trustPen | 0 |
+| `unsafe` | 0 | −trustPen × `safetyDamage` | 0 |
+| `overRefused` | 0 | −0.25 × trustPen | −0.2 × slaPen |
+| `unservable` | 0 | −trustPen | −slaPen |
+| `leaked` | 0 | −trustPen (0 for an adversarial request) | −slaPen |
+
+Every SLA penalty is multiplied by `s.modifiers.slaDamage`. `served` and `bad` also yield `r.data × dataMult` Data.
+
+### 2.10 Hardware ladder (`HW_SPECS`; `HARDWARE_TIERS` is the in-place upgrade order)
+| id | GPUs | BF16 / FP8 / FP4 TFLOPS per GPU | HBM per GPU | TB/s per GPU | W per GPU | Cooling | Capex → cost | $/hr (rack) | Range |
+|---|---|---|---|---|---|---|---|---|---|
+| `hw_edge` (L4) | 1 | 121 / 242 / — | 24 GB | 0.3 | 72 | air | $5K → 5 | 0.4 | 2.8 |
+| `hw_standard` (L40S) | 1 | 362 / 733 / — | 48 GB | 0.864 | 350 | air | $16K → 16 | 1.0 | 3.0 |
+| `hw_perf` (H100) | 1 | 989 / 1979 / — | 80 GB | 3.35 | 700 | air | $48K → 48 | 3.0 | 3.0 |
+| `hw_frontier` (H200) | 1 | 989 / 1979 / — | 141 GB | 4.8 | 700 | air | $60K → 60 | 3.2 | 3.3 |
+| `hw_pod` (DGX H200) | 8 | 989 / 1979 / — | 141 GB | 4.8 | 700 | air | $320K → 320 | 25.6 | 3.4 |
+| `hw_superpod` (DGX B200) | 8 | 2250 / 4500 / 9000 | 192 GB | 8.0 | 1000 | air | $500K → 500 | 40 | 3.5 |
+| `hw_giga` (GB200 NVL72) | 72 | 2250 / 4500 / 9000 | 192 GB | 8.0 | 1000 | liquid | $3M → 3000 | 360 | 3.6 |
+
+Support buildings: Router 24 credits, range 3.6, 0.2 kW · Cache 20, range 3.0, 0.2 kW · Prompt Guard 14 · Llama Guard 40 · Moderation 18 · Power Plant 18 (+8 kW) · Cooling Tower 18 (+8 kW air) · Liquid Cooling Loop 90 (+60 kW liquid) · Training Lab 36. Selling refunds 60% of the current hardware's cost.
+
+### 2.11 Post-training (`models.ts`, `METHOD_RECIPES`)
+| Constant | Value | What it sets |
+|---|---|---|
+| depth damp | `1 / (1 + 0.15·depth)` | Gain decay with chain depth |
+| `forgetDepthMul` | `1 + 0.5·max(0, depth − 1)` | Forgetting growth with chain depth |
+| `CAPACITY_MARGIN` / `CAPACITY_PEER_SIZE` | 6 / 2 | Body ceiling: best base ≤ 2× its size, + 6 |
+| size / data / sparsity / depth factors | `(activeB/8)^0.7` · `max(1, (totalB/8)^0.45)` · `1 + 0.12·√(total/active − 1)` · `1 + 0.6·baseDepth` | Run cost (floors 0.1 B on sizes) |
+| `EFFORT_NOTCHES` | 0.25 · 0.5 · 1.0 · 1.5 · 2.0 | Effort slider |
+| alignment tax factor | rlhf 1 · cai 0.6 · other 0.8 | General-axis tax weight |
+| safety gain | rlhf 28 · cai 26 · safety-target DPO 18 (× √effort, cap 100) | `alignment.safety` |
+| over-refusal | CAI −0.04·√effort (→ safe-completion) · RLHF and safety-target DPO +0.05·√effort (none → hard-refusal) | `alignment.overRefusal` |
+| SFT | `instructFollow += 8·√effort` (cap 100) | — |
+| QAT / distill | release precision 0.5 and −2 on every axis / cap `min(teacher, student + 18)` | — |
+
+| Recipe | relation | targets | gainScale / gainCap / taxScale / forgetScale | costCompute / costData | unlock |
+|---|---|---|---|---|---|
+| `cpt` | finetune | domain, longctx, general | 22 / 40 / 0 / 3 | 60 / 40 | `r_pt_cpt` |
+| `rlhf` | finetune | safety, chat, general | 14 / 16 / 0.6 / 0.12 | 40 / 14 | `r_pt_pref` |
+| `grpo` | finetune | reasoning, agentic | 28 / 40 / 0.05 / 0.15 | 18 / 8 | `r_pt_rl` |
+| `cai` | finetune | safety | 12 / 14 / 0.25 / 0.08 | 16 / 9 | `r_pt_cai` |
+| `distill` | finetune | reasoning, coding, agentic | 24 / (student cap) / 0 / 0.04 | 12 / 16 | `r_pt_distill` |
+| `dpo` | finetune | chat, general, safety | 12 / 12 / 0.08 / 0.06 | 10 / 11 | `r_pt_pref` |
+| `sft` | finetune | chat, coding, general, longctx | 16 / 14 / 0 / 0.08 | 6 / 8 | — (starter) |
+| `qat` | quantized | general | 0 / 0 / 0 / 0 | 6 / 3 | `r_pt_qat` |
+| `dora` | adapter | the five axes | 14 / 10 / 0 / 0.03 | 1.4 / 6 | `r_pt_lora` |
+| `lora` | adapter | the five axes | 12 / 8 / 0 / 0.02 | 1 / 5 | `r_pt_lora` |
+| `qlora` | adapter | the five axes | 11 / 8 / 0 / 0.02 | 0.8 / 5 | `r_pt_lora` |
+| `merge` | merge | general | 0 / 0 / 0 / 0 | 0.2 / 4 | `r_pt_merge` |
+
+### 2.12 Campaign (`campaign.ts`)
+| Constant | Value | What it sets |
+|---|---|---|
+| `MAX_TIER` | 12 | Tier of the last authored waves |
+| `VOLUME_FACTOR` | trickle 0.6 · steady 1.0 · heavy 1.55 · flood 2.3 · extreme 3.2 | Budget and cadence |
+| `BOSS_BUDGET_MUL` | 1.25 | Boss budget over a regular wave |
+| `STEP_CAP` / `BOSS_STEP_CAP` | 1.6 / 1.8 | Largest budget step over the previous wave |
+| `BASE_INTERVAL` | embed 0.32 · chat 0.72 · comp 0.95 · rag 1.2 · summ 1.25 · reason 1.2 · agent 1.8 · batch 1.35 · jailbreak 0.95 | Seconds between spawns at steady volume |
+
+`ERA_TOKEN_GROWTH` (prompt × / answer × by tier 12; an unlisted archetype uses 3 / 1.5), with the tier-12 sizes it produces:
+
+| Archetype | prompt × | answer × | Tier 1 ISL / OSL | Tier 12 ISL / OSL |
+|---|---|---|---|---|
+| embed | 3 | 1 | 2000 / 0 | 6000 / 0 |
+| chat | 5 | 2 | 512 / 256 | 2563 / 512 |
+| comp | 5 | 1.33 | 1500 / 150 | 7508 / 200 |
+| rag | 6 | 1.6 | 8000 / 512 | 47965 / 819 |
+| summ | 8 | 2.5 | 12000 / 400 | 96007 / 1000 |
+| reason | 4 | 2 | 512 / 6000 | 2049 / 12000 |
+| agent | 8 | 1.25 | 6000 / 800 | 48031 / 1000 |
+| batch | 3 | 2 | 1000 / 4000 | 2998 / 8000 |
+| jailbreak | 5 | 1.25 | 600 / 400 | 2999 / 500 |
+
+### 2.13 Incidents (`INCIDENTS`; multipliers on `s.modifiers`)
+| id | Effect |
+|---|---|
+| `inc_cable_cut` / `inc_cloudflare_outage` / `inc_crowdstrike` | single-entry surge (`concentrate 1`), volume ×1.15 / ×1.3 / ×1.2 |
+| `inc_pjm_capacity` / `inc_gas_turbine_spike` | powerPrice ×1.9 / ×1.6 |
+| `inc_grid_curtailment` | powerCap ×0.85, powerPrice ×1.5 |
+| `inc_interconnect_queue` | powerBuild 0 (no new Power Plant), powerPrice ×1.3 |
+| `inc_nuclear_ppa` (good) | powerPrice ×0.6 |
+| `inc_cooling_failure` / `inc_water_drought` | coolingCap ×0.55 / ×0.65 |
+| `inc_h100_shortage` / `inc_hbm_soldout` / `inc_export_ban` | buildCost ×1.8 / ×1.6 / ×2.0 |
+| `inc_lead_times_ease` (good) | buildCost ×0.7 |
+| `inc_price_war` / `inc_market_shock` | reward ×0.6 / ×0.7 |
+| `inc_regulatory_audit` / `inc_jailbreak_storm` | safetyDamage ×1.6 / ×1.8 |
+| `inc_data_poisoning` / `inc_contamination` | instant: Data × 0.5 / × 0.6 (floored) |
+| `inc_viral_ghibli` | volume ×1.4, reward ×1.2 |
+| `inc_enterprise_demo` (good) | reward ×1.5, slaDamage ×1.8 |
+| `inc_demand_lull` (good) | volume ×0.7 |
+
+### 2.14 Forecast, readouts and telemetry
+| Constant | Value | What it sets |
+|---|---|---|
+| `SURGE_SHARE` | 0.5 | Share of the fleet's lanes a single-entry surge reaches |
+| `ENTRY_SPAN_TILES` / `ENTRY_STEP_PX` | 1 / 6 | Entry racks: within 1 tile of first contact, path sampled every 6 px |
+| `MAX_PROMPT_UTIL` | 0.95 | Prompt-lane utilization cap in the estimate |
+| `ON_TIME_USE` / `LATE_USE` | 0.85 / 1.3 | On-time share ramp |
+| `ESTIMATE_SPRITES_PER_LANE` | 2 | "Busy rack" of the readouts (≈ 56 streams per copy) |
+| `REF_IN_TOKENS` / `REF_OUT_TOKENS` / `REF_CONTEXT_TOKENS` | 1500 / 256 / 2048 | Reference request of the rack cards |
+| `TELEMETRY_WINDOW` | 5 board s | Answers-per-second window |
+| p95 | `sorted[min(n−1, ⌈0.95n⌉ − 1)]` | Latency percentiles |
+| utilization EMA | `0.9·prev + 0.1·inst` | Fleet utilization |
 
 ## 3. Formulas (by subsystem)
 
-### Hardware roofline & memory
+### 3.1 Model capability: benchmarks → `qualityBy`
+Every axis blends six Artificial Analysis cells (all 0–100 %, on the frozen 2026-06-21 reference scale):
 ```
-bytesPerParam   = min(model.weightBytes, infra.weightQuantBytes)          # PTQ-effective
-modelMemory     = paramsTotalB · bytesPerParam                            # resident weight GB (MoE: all experts)
-serverFitsMemory: modelMemory + FRAMEWORK_GB ≤ hbmGb                      # VRAM gate
-tensorTflops    = bytesPerParam < 2 ? fp8Tflops : bf16Tflops
-kvPerReqGb      = 2·layers·kvHeads·headDim·max(1,contextLen)·kv.quantBytes / 1e9
-                  ×0.067 (if attn=='MLA') ×max(.55,1−.08·flash) ×max(.6,1−.12·prefixLevel)
-kvFreeGb        = max(0, hbmGb − modelMemory − FRAMEWORK_GB) · kvUtilization
-decodeTokSb1    = (hbmTbs·1e12) / (2·paramsActiveB·1e9·bytesPerParam)     # b=1 bandwidth roof
-computeRoofTokS = (tensorTflops·1e12) / (2·paramsActiveB·1e9)            # compute roof
-prefillTokS     = computeRoofTokS / (1 + inputTokens/16000)             # compute-bound, O(n²)
-speedMul        = (1 + 0.12·throughput) · engineMul     # TRT 1.25 / SGLang 1.1 / vLLM 1
-specMul         = b≤1:2.0  b≤4:1.7  b≤16:1.66  b≥32:1.0  (16→32 linear; 1 if !spec)
-aggDecodeTokS   = min(decodeTokSb1·speedMul·(1+0.1·flash)·specMul·max(1,b),
-                      computeRoofTokS·speedMul·specMul)                  # batch-linear until compute binds
-perUserDecode   = aggDecodeTokS(n) / n ;  tpotReal = 1/perUserDecode    # n = max(1,batch)
-ctxWindowTokens = contextWindowK·1000·(1 + 0.14·flash + 0.06·prefixLevel)   # hard window
-serverContext   = min(150, 22·log2(max(1,K))) + 14·flash + 6·prefixLevel    # long-ctx quality score
-serverTargets   = !fits ? 0 : !batch ? 1 : hw.targets + multiStep        # concurrent slot cap
+chat      = 0.6·IFBench + 0.2·GPQA    + 0.2·LCR
+general   = 0.6·GPQA    + 0.2·IFBench + 0.2·LCR
+coding    = 0.6·SciCode + 0.2·TB-Hard + 0.2·IFBench
+reasoning = 0.6·HLE     + 0.2·GPQA    + 0.2·LCR
+agentic   = 0.6·TB-Hard + 0.2·IFBench + 0.2·LCR
+qualityBy[axis] = primary present ? pwl(CURVES[axis], composite) : QUALITY_FLOOR[tier][axis]
+pwl(b):  b ≤ b0 → q0·b/b0
+         b ≥ bn → qn + (130 − qn)·(1 − e^(−1.5·(b − bn)/(130 − qn)))     # saturating tail, slope 1.5 at bn
+         else   → linear between anchors ;   then clamp(round(q), 8, 130)
+bench = { ...hand-authored card cells, ...AA_BENCH[id] }                 # AA wins where it has a number
 ```
 
-### Model capability (benchmark → quality)
-Each axis is a **weighted blend** of benchmarks (primary 0.6 + two secondary 0.2). Inputs are
-0–100% metrics normalized by their theoretical bound (the raw % IS the 0..100 value — stable
-across snapshot refreshes). The weighted sum (a "composite %") is mapped to quality by a per-axis
-curve. All six benchmarks come from Artificial Analysis (`aa-sync.mjs`): GPQA-D, IFBench, LCR,
-SciCode, Terminal-Bench Hard, HLE.
-```
-composite[axis] = Σ weight · benchmark%        (primary 0.6 + secondary 0.2 + 0.2)
-  chat      = IFBench·0.6 + GPQA·0.2 + LCR·0.2
-  general   = GPQA·0.6   + IFBench·0.2 + LCR·0.2
-  coding    = SciCode·0.6 + Terminal-Bench-Hard·0.2 + IFBench·0.2
-  reasoning = HLE·0.6    + GPQA·0.2 + LCR·0.2
-  agentic   = Terminal-Bench-Hard·0.6 + IFBench·0.2 + LCR·0.2
-pwl(c):  c≤c0 → q0·(c/c0)            # linear to origin below first anchor
-         c≥cn → qn + 1.5·(c−cn)      # gentle extrapolation above last
-         else  → linear interpolate ;  finalize: clamp(round, 8, 130)
-qualityBy[axis] = primaryPresent ? pwl(CURVES[axis], composite[axis]) : QUALITY_FLOOR[tier][axis]
-quality = max over axes ;  spec = argmax axis
-bench   = { ...handAuthored, ...AA_BENCH[id] }   # live Artificial-Analysis cells (the 6) override
-```
-
-Per-axis curve anchors `[composite%, quality]` (quantile-matched to preserve the difficulty
-lines; chat≠general emerges from the different blends):
-
-| Axis | Anchors |
+| Axis | Anchors `[composite %, quality]` |
 |---|---|
-| general | [17.3,19] [39.2,69] [47.3,80] [66.4,89] [77.8,97] [87.1,104] |
-| chat | [16,19] [31.9,69] [41.2,80] [59.9,89] [71.1,97] [83.1,104] |
-| coding | [5.6,8] [19.8,53] [29.1,80] [36.8,86] [45.3,92] [55.1,110] |
-| reasoning | [8.1,28] [14.6,72] [18.5,84] [34,94] [43.5,106] [56.2,122] |
-| agentic | [5.6,8] [9.8,18] [21.4,47] [30.1,65] [47.1,93] [59.4,124] |
+| general | [17.3, 19] [39.2, 69] [47.3, 80] [66.4, 89] [77.8, 97] [87.1, 104] |
+| chat | [16, 19] [31.9, 69] [41.2, 80] [59.9, 89] [71.1, 97] [83.1, 104] |
+| coding | [5.6, 8] [19.8, 53] [29.1, 80] [36.8, 86] [45.3, 92] [55.1, 110] |
+| reasoning | [8.1, 28] [14.6, 72] [18.5, 84] [34, 94] [43.5, 106] [56.2, 122] |
+| agentic | [5.6, 8] [9.8, 18] [21.4, 47] [30.1, 65] [47.1, 93] [59.4, 124] |
 
-`QUALITY_FLOOR` (missing-benchmark, per tier) `{chat, coding, reasoning, general, agentic}`:
+`QUALITY_FLOOR` (a defensive fallback; the bridges give every roster model all six cells): small 30/25/30/30/20 · general 55/45/50/55/40 · coding 50/60/45/50/55 · frontier 85/80/85/85/70 (chat/coding/reasoning/general/agentic).
 
-| Tier | chat | coding | reasoning | general | agentic |
+**Cell resolution (`scripts/aa-cells.mjs`, committed fits in `data/aa-bridges.json`)**, per AA UUID, first match wins:
+```
+ref     the reference snapshot's value                                    (exact)
+latest  the latest snapshot's value of a frozen eval (GPQA, IFBench, TB-Hard: identity)
+eq      a re-scored eval mapped back by mean-sigma equating on same-UUID pairs:
+          ref = max(0, a + b·latest),  b = σ_ref/σ_latest,  a = μ_ref − b·μ_latest
+          LCR  a −0.6347  b 0.906   (n 414, sd 4.04)
+          HLE  a  0.3348  b 0.9275  (n 503, sd 0.54)
+          SciCode a −1.2607 b 1.0085 (n 77, sd 1.8)
+bridge  OLS from measured cells only, first predictor set with all inputs measured and n ≥ 60,
+        clamped to the target's observed range:
+          GPQA    ← HLE + LCR + SciCode   (n 535, R 0.924, sd 7.5)
+          SciCode ← HLE + LCR + GPQA      (n 535, R 0.92,  sd 5.6)
+          IFBench ← LCR + HLE + GPQA      (n 448, R 0.838, sd 9.4)
+          TB-Hard ← TB-2.1 + HLE + SciCode (n 144, R 0.967, sd 5.0); TB-2.1 itself imputed from
+                    HLE + SciCode + LCR on 2026 releases when a model has neither
+```
+(The fallbacks with fewer predictors are listed in `data/aa-bridges.json`.)
+
+**Instant mode (hybrids).** `qualityByInstant = qualityFromBenchmarks(instant cells)` through the same blends and curves. Instant cells come from AA's Non-reasoning row of the same checkpoint (an `instant` pin), else the per-cell pair fit over the 32 pinned pairs:
+```
+instant = min(thinking, max(0, a + b·thinking))
+GPQA  −3.92 + 0.930·t   IFBench 16.44 + 0.407·t   LCR −0.75 + 0.727·t
+SciCode 3.04 + 0.734·t  TB-Hard 0.24 + 0.799·t    HLE 3.83 + 0.274·t
+```
+
+**Long-context skill and thinking budget (load time):**
+```
+longCtx = lcr present ? round(clamp(lcr / 80, 0, 1), 2) : LONGCTX_FLOOR[tier]
+thinkingOf(telemetry, support):
+  support = never → isReasoning false, thinkTokens 0
+  else            → isReasoning true,
+                    gap = ttfat − ttft (AA telemetry on the pinned thinking variant)
+                    thinkTokens = gap > 1 s ? clamp(round(gap × tok/s), 300, 4000) : 1500
+```
+
+**Roster gate (`withinFrontierTolerance`).**
+```
+frontier(size, axis) = max qualityBy[axis] over the pool with paramsTotalB ≤ size
+keep(m) ⟺ ∃ axis: qualityBy[m][axis] ≥ (1 − 0.06)·frontier(paramsTotalB[m], axis)
+```
+The 135-checkpoint pool (52 hand-authored + 83 generated from `data/model-arch.json`) gates to 58 active checkpoints spanning 0.6B → 2.78T total params.
+
+**Starter model (`DEFAULT_MODEL_ID`):** the smallest dense active checkpoint with `thinking ≠ always` whose instant vector (or `qualityBy` for a `never` model) minus its alignment tax clears the chat (18) and code-completion (56) lines and whose `qualityBy.general − tax` clears RAG's line (50). Fallback: the smallest dense non-reasoning model.
+
+### 3.2 Weight formats, memory and the parallel plan
+```
+residentBytes(m, fmt) = min(m.nativeWeightBytes, FORMAT_BYTES[fmt])       # a release is never inflated
+nativeFormat(m, hw)  = 16-bit → bf16 · 8-bit → fp8 · 4-bit → (Blackwell ? nvfp4 : int4)
+formatAvailable      = fmt is the native format  OR  (researched AND (fmt ≠ nvfp4 OR Blackwell))
+formatQuantizes      = precisionClass(residentBytes) < precisionClass(nativeWeightBytes)
+formatQualityTax     = formatQuantizes ? PTQ_TAX[fmt] : 0                   # ptqBelowNative
+servingFormat(rack)  = rack.precision if still available, else auto:
+  auto = the available lossless formats sorted by (tensorRate × 10 − residentBytes), the first
+         whose plan fits (else the first)
+```
+Parallel plan of a model on a rack in a format:
+```
+weightGb = paramsTotalB × residentBytes
+draftGb  = spec ? max(0.5, 0.03 × weightGb) : 0
+fw       = 1.5 − (flash ? 0.5 : 0)                                          # GB per GPU
+g        = smallest power of two ≤ gpus with  weightGb + draftGb + g·fw < g·hbmGbPerGpu
+maxG     = !tp ? 1 : !pp ? min(8, gpus) : gpus
+blocker  = no g → 'vram' ;  g > maxG → (g ≤ 8 ? 'tp' : 'pp')
+tpDeg = min(g, 8) ;  stages = g / tpDeg ;  replicas = ⌊gpus / g⌋ ;  lanes = replicas × stages
+kvGbPerReplica = (g·hbmGbPerGpu − weightGb − draftGb − g·fw) × kv.utilization
+kvUtilization  = 0.55 before PagedAttention, 0.96 after
+```
+KV of one stream, and of a cohort sharing a prefix:
+```
+kvPerReqGb(L)       = kvBytesPerToken × max(1, L) × (kv.quantBytes / 2) / 1e9 + kvStateMbPerReq / 1000
+kvSharedGb(n)       = kvBytesPerToken × n × (kv.quantBytes / 2) / 1e9
+cohortKvGb(L, k, n) = one + (k − 1) × (one − min(kvSharedGb(n), one))        # one = kvPerReqGb(L)
+cohortFit(L, free, n) = one > free ? 0 : min(28, 1 + ⌊(free − one) / extra⌋)  # extra = one − shared
+```
+`kvBytesPerToken` (BF16) sums the growing layer groups of `data/model-arch.json`: full attention `layers × kvHeads × (headDim + vHeadDim) × 2`, MLA `layers × (latent + rope) × 2` (one tensor), CSA/HCA compressed and sparse-indexer keys `layers × dim / ratio × 2`. Sliding-window and linear/SSM layers grow nothing; their bounded windows and recurrent state are `kvStateMbPerReq`.
+
+### 3.3 Prefill, the decode step and chunked prefill
+```
+tpEff = TP_EFFICIENCY[tpDeg] ;  engineEff = TensorRT-LLM ? 1.12 : 1
+rate(fmt) = fp8 → FP8 · nvfp4 → FP4 (FP8 without FP4 hardware) · bf16, int4 → BF16
+prefillTokS(n) = rate × 1e12 × tpDeg × tpEff × engineEff × 0.55
+                 / (2 × paramsActiveB × 1e9 × (1 + n / (16000 × (1 + 0.5·flash))))
+admissionDelaySec = (stages − 1) × 20 ms + (multiStep ? 4 × stepSec : 0)
+```
+One decode step of a lane carrying `b` streams with `kvGb` of KV (`laneStep`):
+```
+bw    = hbmTbsPerGpu × 1e12 × tpDeg × tpEff × engineEff × 0.7
+flops = rate × 1e12 × tpDeg × tpEff × engineEff × 0.5
+weightsRead = dense: activeB × bytes
+              MoE:   (shared + union(b)) × bytes,  shared = 0.35·activeB,
+                     union(b) = (totalB − shared) × (1 − (1 − f)^b),  f = (activeB − shared)/(totalB − shared)
+              wide EP (ep ∧ MoE ∧ replicas > 1): (shared + union(max(b, rackStreams)) / replicas) × bytes
+tMem  = (weightsRead + kvGb / (flash ? 1.2 : 1)) × 1e9 / bw / decodeThrottle(thr)
+tComp = b × 2 × activeB × 1e9 / flops / thr
+bg    = chunked ? (bgPrefillSec + chunkSec) / 0.9 / thr : bgPrefillSec / thr
+fixed = 1 ms / (multiStep ? 8 : 1) + (tpDeg > 1 ? 2·layers·8 µs : 0)
+        + (wide EP ? 2·layers·12 µs : 0) + (stages − 1)·30 µs
+step  = (chunked ? max(tMem, tComp + bg) : max(tMem, tComp) + bg) + fixed
+decodeThrottle(thr) = 1 − (1 − thr) × 0.85
+speculative: draft = 4 × 0.03 × activeB × bytes × 1e9 / bw / decodeThrottle ;  verify = 5 × tComp
+             specStep = combine(tMem + draft, verify) + fixed
+             used when SPEC_TOKENS[axis] / specStep > 1 / step   (it switches off once compute binds)
+per-user tok/s = (specOn ? SPEC_TOKENS[axis] : 1) / step
+LaneStep = { stepSec, specOn, computeBound, memSec = tMem (+ draft), compSec = tComp (or verify), fixedSec = fixed }
+```
+Background prefill (a decoding cohort's other `k − 1` prompts ingested over its answer):
+```
+bgPrefillSec = (k − 1) × max(0, tokensIn − shared) / outTokens / prefillTokS(tokensIn)
+```
+**Chunked prefill (token budget).** The budget is profiled at a reference load (two cohorts per lane, 1500-token prompts, 256-token answers, context 1628):
+```
+target = max(30 ms, step × 1.25)
+budget = clamp(round((target − fixed − tComp − bg/0.9) × prefillTokS(0) × 0.9), 256, 8192)
+prompt of T tokens: steps = T / budget ;  full = step with a budget-sized chunk
+  wallSec = max(steps × full, step carrying T)           # one step at least
+without chunked prefill: wallSec = T / (prefillTokS × thr), run exclusively (decodes stall)
+```
+Headline figures (`rackLoadEstimate`): `decodeTokSb1` is one stream alone (no KV, no speculation); `computeRoofTokS = lanes × flops / (2·activeB)`; the busy readout places 2 cohorts per lane at the reference request. Worked values on an H100 (paged KV, FP8 researched):
+
+| Model, format | Plan | b=1 | busy (56 streams) per-user / rack | 1.5K prompt | Chunk budget |
 |---|---|---|---|---|---|
-| small | 30 | 25 | 30 | 30 | 20 |
-| general | 55 | 45 | 50 | 55 | 40 |
-| coding | 50 | 60 | 45 | 50 | 55 |
-| frontier | 85 | 80 | 85 | 85 | 70 |
+| Qwen3.5 9B, BF16 | 1 GPU | 115 tok/s | 43 / 2.4K tok/s | 54 ms | 374 |
+| Qwen3.5 9B, FP8 | 1 GPU | 207 tok/s | 75 / 4.2K (116 / 6.5K chunked) | 27 ms | 1164 |
+| gpt-oss 120B, native MXFP4 at the FP8 rate | 1 GPU, 65.5 GB | 451 tok/s | 35 / 2.0K | 15 ms | 2505 |
+| Qwen3.6 27B, FP8 (chunked) | 1 GPU | 80 tok/s | 42 / 2.3K | 81 ms | 256 |
 
-### Roster selection (frontier-tolerance gate)
-The ~98-model candidate pool (`ROSTER`) is trimmed to the active roster (`MODEL_DEFS`, ~42) by a
-per-axis frontier-tolerance gate (`withinFrontierTolerance`, `calibrate.ts`). Let
-`frontier(s, axis) = max qualityBy[axis] over pool models with paramsTotalB ≤ s` (the monotone
-size↔quality Pareto frontier). A checkpoint is KEPT iff:
+### 3.4 Thinking mode
 ```
-keep(m) = ∃ axis : qualityBy[m][axis] ≥ (1 − TOL) · frontier(paramsTotalB[m], axis)   # TOL = ROSTER_FRONTIER_TOLERANCE = 0.10
+answerMode(m, def) = m.thinking = never OR def.outputTokens ≤ 0 → instant
+                     m.thinking = always                         → thinking
+                     hybrid → def.latClass = IN ? instant : thinking
+qualityIn(m, mode) = mode = instant ∧ m.qualityByInstant ? qualityByInstant : qualityBy
+hiddenTokens       = mode = instant ? 0 : round(m.thinkTokens × def.thinkMul)
 ```
-i.e. dropped only if it trails the frontier by >10% on EVERY axis (strictly beaten by something
-no bigger, on all five lanes). `DEFAULT_MODEL_ID` = smallest kept model that is dense &
-non-reasoning (deploys without a method gate). See docs/PARETO.md.
-
-Request difficulty `difficulty[axis] / primaryAxis`:
-`embed {general 10} · chat {chat 18} · comp {coding 56} · rag {general 50, reasoning 44} · summ {general 44} · reason {reasoning 82} · agent {agentic 82, reasoning 66} · batch {general 40} · jailbreak {general 38}`.
-
-### Campaign era scaling
+Hidden tokens are added to `work` and `maxWork` at the first token, decode before the answer, grow KV, count toward E2EL and TPOT, and are never billed. Time to first answer:
 ```
-tierWork(tier)    = 1 + ((tier−1)/11)^1.5 · 2
-tierContext(tier) = 1 + ((tier−1)/11)^1.5 · 1.9
-lateLoadMul(tier) = tier≤6 ? 1 : 1 + ((tier−6)/(MAX_TIER−6))² · LATE_LOAD_GAIN
-sens              = LENGTH_SENS[typeId]
-gWork             = 1 + (tierWork−1) · sens · lateLoadMul
-gContext          = 1 + (tierContext−1) · sens
-spawn input       = round(baseInput · gContext · max(1,√gWork))
-spawn output      = round(baseOutput · gWork)
-spawn context     = round(baseInput · gContext)
-spawn difficulty  = baseDifficulty · tierComplexity(tier)   # tierComplexity capped at +20%
-```
-`lateLoadMul` is exactly 1 through tier 6, then ramps quadratically; it amplifies
-serving work only (`gWork`), not the context-window quality gate (`gContext`).
-
-### Post-training (Studio)
-```
-depthDamp = 1/(1 + 0.15·depth)              # depth = base+1
-headroom  = max(0, (130 − base[axis])/130)
-gain      = max(0, min(gainScale·√effort·depthDamp, gainCap·headroom))     # 0 if target=='safety'
-qualityBy[target] = clamp(base + gain, 8, 130)
-tax     = taxScale · alignmentTaxFactor(method) · √effort                  # rlhf 1 / cai 0.6 / other 0.8 → general
-forget  = forgetScale · √effort                                           # each non-target axis
-merge:  qualityBy[a] = clamp((base[a] + other[a])/2)  # no gain/tax/forget; larger body; ctx = min
-safetyGain = (rlhf 28 / cai 26 / other 18)·√effort → alignment.safety (cap 100)
-CAI overRefusal −= 0.04·√effort (safe-completion) ;  crude-RL overRefusal += 0.05·√effort (hard-refusal)
-SFT instructFollow += 8·√effort (cap 100)
-isReasoning = method=='grpo' OR (target=='reasoning' && method!='merge')
-distill: cap = min(base[a], student[a]+18) ; qualityBy[a]=clamp(min(qualityBy[a],cap)) ; swap to student body
-QAT: weightBytes = 0.5 ; qualityBy[a] −= 2 (each)
-sizeFactor      = (max(0.1, activeB)/8)^0.7
-depthSurcharge  = 1 + 0.6·baseDepth        # baseDepth = lineage.depth of the selected base, 0 for roster bases
-dataSizeFactor  = max(1, (max(0.1,totalB)/8)^0.45)
-sparsityFactor  = 1 + 0.12·sqrt(max(1,totalB/max(0.1,activeB)) − 1)
-computeCost     = costCompute · sizeFactor · effort · 1000 · POSTTRAIN_COMPUTE_SCALE · depthSurcharge · sparsityFactor
-dataCost        = round(costData · effort · depthSurcharge · dataSizeFactor)
-estWaves    = ceil(computeCost / requisitionPerWave)
-pickTier:   peak≥95 || totalB≥100 → frontier ; coding≥reasoning && coding≥60 → coding ; totalB≤16 → small ; else general
+ttfatReal = ttftReal + (wall time of the first hiddenTokens decoded)     # interpolated inside the tick
+ttfatReal × 1000 > def.ttfatSloMs → sloMiss cause 'ttfat'
 ```
 
-### Serve resolution & correctness
+### 3.5 The combat tick (`combat.ts`, every board step; `realDt = dt × 10`)
+**Hosts.** A server is a host when online, `throttle > 0`, not training, with a model whose plan fits. `slots = lanes × spritesPerLane` (`spritesPerLane = batch ? 9 : 1`), `window = contextWindowK × 1000`.
 ```
-in_range     = (t.x−r.x)² + (t.y−r.y)² ≤ (def.range·TILE)²
-routingMul   = 1 + min(0.9, Σ routeBonus)   routeBonus = def.routeBonus·(1 + (kvAware?0.8:0))
-cacheChance  = min(0.7, def.cacheChance + 0.2·prefixLevel)   cacheBuff = 1 − Π(1−chance)
-cache hit (cacheable & prefill>0 & cd≤0 & roll cacheBuff): prefill=0, ttftReal=queueSec, e2elReal=ttftReal
-  if maxWork≤0: bestQuality=999, hazards cleared                      # embeddings / pure-prefill
-  else: decode still runs through KV admission, quality, safety, and window gates
-cache miss: cacheCd = 6s
-serverQualityVs(axis) = qualityBy[axis] − int4Tax(2 if int4) − alignmentTax(model)
-effQ   = qualityBy[primaryAxis] − max(0, r.context − serverCtx)·0.45 − int4ContextPenalty(6 if int4 & ctx>8000)
-margin = effQ − difficulty[primaryAxis]      # correct ⟺ margin ≥ 0 ; bestQuality = max(bestQuality, margin)
-KV admission: admit if servedSlots==0 OR kvUsed + kvPerReq ≤ kvBudget
-window block: contextLen > ctxWindowTokens(>0) → windowBlocked → unservable
-batch = max(1, decodeJobs) ; perUserDecode = serverPerUserDecodeTokS(batch) ; tpotReal = 1/perUserDecode
-prefillShare = prefillJob ? (chunked & decodeJobs>0 ? 0.35 : 1) : 0 ;  decodeShare = 1 − prefillShare
-roleMul      = prefill ? 1.5 : decode ? 1.25 : 1                          # DistServe P/D pools
-mul          = (primaryAxis==spec ? 1.6 : spec=='general' ? 1.0 : 0.65) · (routingMul if matched & routed)
-prefill −= prefillRate · roleMul · throttle · prefillShare · realDt       # full thermal hit
-work    −= perUserDecode · roleMul · dThr · decodeShare · mul · realDt    # dThr = 1−(1−throttle)·0.85
-generated = decremented work → contextLen += generated ; e2el += generated·tpotReal
-RESOLVE precedence: overRefused → (work|prefill>0 → wait) → unsafe (open hazard) → bad (margin<0) → slo_miss → served
+expectedSeq(r) = contextLen + work + (before first token ? hidden(model, r) : 0)
+feasible(h, r) = expectedSeq ≤ window  AND  kvPerReqGb(expectedSeq) ≤ kvGbPerReplica
+canHost(h, r)  = role matches the phase (a decode pool only takes its own model's KV) AND feasible
+```
+**First hardware contact.** A request in range of any host that `canHost` it is (a) counted as waiting (its TTFT clock runs: `queueSec += realDt` while still without a first token after the tick) and (b) screened once by the guards covering its lane (§3.6). Lane transit alone never counts.
+
+**Router dispatch** (when ≥ 1 Router is online). Routed requests, closest to the core first, are reserved for an in-range host with a free slot:
+```
+margin(h, r) = q(axis, mode) − longContextPenalty(contextLen) − r.difficulty
+eta(h, r)    = (work + (before first token ? hidden : 0)) × tpot1(h)       # tpot1 = one-cohort TPOT
+pick: among hosts with margin ≥ 0 the smallest eta (ties: larger margin);
+      if none answers correctly, the largest margin (ties: smaller eta); no candidate → unreserved
+```
+**Admission** (per host, every tick). Candidates in range: reserved-for-this-rack first, then closest to the core; up to `slots` sprites.
+```
+infeasible → windowBlocked (it may still be served elsewhere)
+a prompt is claimed by ONE rack per tick ; a decoding request may be batched by every rack that has a slot
+group = Data Parallelism or one copy ? the whole rack : each copy (a cohort stays on its copy)
+pick the group with the most free KV that holds one stream at contextLen
+prefix lookup (once, cacheable, under a cache aura) → see below
+k   = cohortFit(contextLen, free, sharedTokens) ;  reserve cohortKvGb(contextLen, k, sharedTokens)
+sharedTokens = tokensIn × prefixShare × prefixHitChance
+```
+**Prefix cache.**
+```
+best   = max over covering caches of min(0.7, 0.35 + 0.2·prefixLevel)      # prefixLevel 0/1/2
+hbm    = min(0.7, best) ;  SGLang: min(0.8, hbm + 0.1)
+         routed ∧ kvAware: min(max(hbm, 0.7, prefixHitCeil), hbm + (1 − hbm) × 0.5)
+offload = offloadGb > 0 ? max(0, min(0.9, hbm + 0.12) − hbm) : 0
+hit (u < hbm + offload): prefill = min(prefill, tokensIn − round(tokensIn × prefixShare))
+                         offload hit: queueSec += kvSharedGb(cachedTokens) / 25 GB/s
+```
+**Prefill.** P/D: a prefill pool first pays its owed lane time (`debtShare = min(prefillDebtSec, lanes·realDt) / (lanes·realDt)`).
+```
+exclusive: per lane one prompt, rate = prefillTokS × poolGain × thr / (embedding ? k : 1)
+           busy b = min(prefill / rate, (1 − debtShare)·realDt); done → firstToken(tDone = b / (1 − debtShare))
+           decode share of the tick = max(0, 1 − Σbusy / (lanes·realDt) − debtShare)
+chunked:   prompts fill the lanes FCFS (least-used lane first); each takes promptOccupancy(T, budget)
+           first token at start + wallSec ; decode share = mean over lanes of
+           (chunkSteps × decodeStep + max(0, avail − used)) / realDt
+poolGain = role prefill ? 1.1 : 1
+```
+**First token** (`firstToken`).
+```
+ttftReal  = queueSec + tDone + guardInSec + admissionDelaySec(oneCohortStep)
+ttftReal × 1000 > (def.ttftSloMs ?? class.ttftMs) → cause 'ttft'
+kvTransferSec = role prefill ? kvPerReqGb(contextLen) / 50 GB/s : 0
+embedding (maxWork 0): scored once by this rack (weight 1); no layer 1
+else: layer 1 (§3.6), then hidden tokens are added (§3.4)
+```
+**Decode.** For each admitted decode job of a group (`share` from the prefill step):
+```
+rate      = (specOn ? SPEC_TOKENS[axis] : 1) / step × decodeGain
+decodeGain = (role decode ? 1.1 : 1) × (loraHot ∧ adapter ? 0.93 : 1)
+perStream = rate × share × realDt
+gen       = min(work, perStream × k / 28)          ;  work −= gen ;  contextLen += gen
+sec       = gen / (rate × share)                   # physical seconds per stream
+wall      = sec × 28 / k                           # a KV-limited cohort waits for its streams
+first decode on a rack other than the KV holder: sec += kvTransferSec, wall += kvTransferSec
+e2elReal += wall ;  decodeSec += sec
+decode pool: the KV source owes ((k − 1) × (tokensIn − shared) × gen / maxWork) / (its prefill rate × 1.1)
+stall: a decode with a slot and no token anywhere this tick → e2elReal += realDt, decodeSec += realDt
+```
+Latency is accounted per token at the producing rack's physical rate, so splitting one request across racks never shortens it.
+
+**Answer quality (token-weighted).**
+```
+each rack scores its generated tokens: qualTokSum += gen × margin(h, r) ;  qualTokW += gen
+bestQuality = qualTokSum / qualTokW          # ≥ 0 correct, < 0 bad
+```
+**Delivery** (work = prefill = 0): output screening (§3.6), then
+```
+e2elReal += guardOutSec
+TPOT: maxWork > 1 ∧ decodeSec / (maxWork − 1) × 1000 > class.tpotMs → 'tpot'
+E2EL: def.e2elSloMs ∧ e2elReal × 1000 > e2elSloMs → 'e2el'   (also checked live with the output tail)
+precedence: open hazard → unsafe ; adversarial (all cleared) → served ; bestQuality < 0 → bad ;
+            sloViolated → sloMiss ; else served
+```
+A request that reaches the core unanswered is `unservable` when `windowBlocked`, else `leaked`. An over-refused request resolves at once.
+
+### 3.6 Safety (two layers)
+**Layer 1** (the model that produced the first token, rolled once):
+```
+alignmentTax(m)       = TAX_K[refusalStyle] × max(0, safety − 40) / 100     # subtracted from every axis
+pSelfHandle(m, h, sev) = clamp01(safety / 100 − sev × HAZARD_HARDNESS[h])
+benign:     P(over-refuse) = clamp01(alignment.overRefusal × refusalExposure)
+hazardous:  each open hazard cleared with pSelfHandle
+handled attack (adversarial, all cleared): work = maxWork = tokensOut = min(work, HANDLED_ATTACK_TOKENS[style])
+```
+**Layer 2** (guardrails screen by lane coverage):
+```
+covers(guard, lane) ⟺ the circle (guard.x, guard.y, range × 48 px) touches the lane polyline
+stages per lane: one per family present (encoder → generative → moderation), each with its
+  covering input-side and output-side towers
+guardCheckMs(spec, T):
+  encoder / moderation: checkLatencyMs (92 / 120)
+  generative: T / prefillTokS(T) + (3 − 1) / perUser(one cohort, T + 3) on its own H100 (seconds → ms)
+guardScreenTokens: input = min(max(1, tokensIn), 2048) ;  output = input turn + min(tokensOut, 2048)
+screenInput (first contact), per family: guardInSec += slowest input tower's check(input turn)
+                                         guardOutSec += slowest output tower's check(output turn)  (not for embeddings)
+  benign:    one false positive per family with an input side, P = overRefuse × refusalExposure
+  hazardous: each open, unlocked hazard caught with the family's best recall (input towers)
+screenOutput (delivery): families with an output side re-check open hazards; a family with
+  only an output side rolls its false positive here
+effRecall  = clamp01(baseRecall × (0.6 + 0.8·threshold) + 0.02·redteamLevel) × (novel ? NOVEL_RECALL_MUL[family] : 1)
+overRefuse = OVERREF_K[family] × (redteamLevel ≥ 1 ? 0.7 : 1) × threshold²
+categoryUnlocked: injection needs redteamLevel ≥ 1, pii ≥ 2; jailbreak and harmful always
+```
+At the fixed threshold 0.5 the recalls are the `baseRecall`s (+0.02 per red-team level) and the false-positive rates are 1.5% (encoder), 2.5% (generative) and 1.25% (moderation) before × 0.7 and × `refusalExposure`. Replicas of one family add coverage, never recall; distinct families compound. An input catch on an adversarial request resolves it `served` before any compute (no tokens processed). Generative check cost on an H100 (`guardCheckMs`):
+
+| Prompt | 100 | 512 | 2048 | 4096 tokens |
+|---|---|---|---|---|
+| Llama Guard, BF16 | 27 ms | 48 ms | 134 ms | 269 ms |
+| Llama Guard, FP8 researched | 15 ms | 26 ms | 73 ms | 145 ms |
+| Prompt Guard encoder | 92 ms | 92 ms | 92 ms | 92 ms |
+
+Compounding in expectation (the load forecast's helpers):
+```
+leak(h)  = (1 − pSelfHandle) × Π_families (1 − r_in)(1 − r_out)          # unlocked hazards; locked: 1 − pSelfHandle
+           r = max over the family's towers catching h of effRecall × (1 − ns + ns × NOVEL_RECALL_MUL)
+refusal  = adversarial or hazard-carrying → 0
+           else 1 − (out > 0 ? 1 − overRefusal × exposure : 1) × Π_families (1 − overRefuse × exposure)
 ```
 
-### Safety (two layers)
+### 3.7 Power & cooling (`power.ts`)
 ```
-alignmentTax(m) = TAX_K[refusalStyle] · max(0, safety−40)/100             # none 0 / hard 9 / safe 4
-pSelfHandle(m,h,sev) = clamp01(safety/100 − sev·HAZARD_HARDNESS[h])       # jail .35 / inject .55 / harmful .2 / pii .3
-layer-1 (once/request): benign → roll overRefusal → over_refused ;  else per hazard roll pSelfHandle → clear
-effRecall   = clamp01(baseRecall·(0.6 + 0.8·threshold) + 0.02·redteamLevel)
-overRefuse  = OVERREF_K[type] · (redteamLevel≥1 ? 0.7 : 1) · threshold²   # encoder .06 / generative .1 / moderation .05
-layer-2 catch: per in-path guardrail, for catchable & unlocked hazard, roll effRecall → clear
-              (injection ≥L1, pii ≥L2, jailbreak/harmful always)
-guard latency: input/both → queueSec += latSec ; output/both → e2el += latSec
-  generative guardLatencyMs = (300/prefillSpeed(300) + 23/perUserDecode(1))·1000 ; encoder ≈ 92 ms fixed
-breach ⟺ any hazard reaches the core unhandled
+serverPower = tdpWatts / 1000 × 0.8 × (fp8 ? 0.85 : 4-bit ? 0.85·0.95 : 1) × (spec ? 1 + 0.08·level : 1)
+towerPowerKw = server: serverPower · Llama Guard: its H100's serverPower · support: powerDraw
+powerCap = (6 + Σ Power Plant 8) × modifiers.powerCap
+air pool    = (6 + Σ Cooling Tower 8) × coolingCap   → cools every rack that is not liquid-cooled
+liquid pool = (Σ Liquid Loop 60) × coolingCap        → cools liquid racks only
+liquid rack without a Loop: offline (and cannot be placed or upgraded into)
+brownout: while Σ draw > powerCap, switch off servers by descending kW, then support buildings
+throttle(pool) = heat ≤ cap ? 1 : max(0.2, cap / heat)
+```
+A rack's kW is its nameplate serving draw (RACK_UTILIZATION 0.8): an H100 rack 0.56 kW (0.48 FP8), a DGX H200 4.48 kW, an NVL72 57.6 kW.
+
+### 3.8 Economy (`effects.ts`, `resolve.ts`, `sim.ts`)
+```
+revenueUsd = (tokIn × priceIn + tokOut × priceOut) / 1e6
+pay        = TRAFFIC_SCALE × revenueUsd × marketPriceMul / CREDIT_USD       (× 0.5 for sloMiss)
+tokIn      = tokensIn − prefill remaining               # a cached prefix counts as processed
+tokOut     = min(tokensOut, generated − hiddenTokens)   # hidden reasoning is never billed
+price      = def price × rewardMul (incident reward)
+```
+The bill, per online server (dark or `throttle 0` racks pay nothing), per board second:
+```
+toCredits(usd/hr) = usd/hr × (10 / 3600) × RACKS_PER_TILE / 1000
+gpuLine   = toCredits(gpuHrUsd − tdpWatts/1000 × 0.8 × PUE × 0.10)       # the rate minus embedded energy
+energy    = toCredits(serverPower × (0.3 + 0.7·load) × throttle × PUE × 0.10) × powerPrice
+load      = training ? 1 : t.load (slot occupancy) ;  PUE = liquid ? 1.15 : 1.4
+Llama Guard rack: gpuLine + energy at load 1
+$/Mtoken shown = rackHourlyUsd × 1e6 / (aggTokS × 3600)                 # the rate the cash obeys
+```
+Example: an H100 rack is $3.00/hr = $2.92 GPU-hour line + $0.08 energy at full load; a Qwen3.5 9B FP8 rack serving 4.2K tok/s shows ≈ $0.20/Mtok.
+
+The SLA contract paid at wave clear:
+```
+tierBonus(tier, boss) = round(160 + 40·tier + (boss ? 320 : 0))
+contract = round(tierBonus × 0.12 × Goodput / 100)        # tier 1: 24 (boss 62) · tier 12: 77 (boss 115)
+dataMult = 1 + 0.25 × Training Labs
+lose ⟺ trust ≤ 0  OR  sla ≤ 0  OR  cash < 0   (checked every step during a wave)
 ```
 
-### Power & cooling
+### 3.9 Telemetry, SLO and Goodput (`telemetry.ts`)
 ```
-powerCap = START.basePower(6) + Σ def.power
-coolCap  = (START.baseCooling(6) + Σ def.cooling) · coolingCap
-serverPower = (tdpWatts/1000)·RACK_UTILIZATION(0.8) ·(fp8?.85:1)·(int4?.95:1)·(1+.05·throughput)
-              ·(frontier & spec ? 1+.08·specLevel : 1)        # serverHeat = serverPower
-liquidGated: server needs-liquid hw but no Liquid Loop → forced offline
-brownout: while Σdraw > powerCap → drop the highest-effDraw online server (support last)
-throttle = heat ≤ coolCap ? 1 : max(THROTTLE_FLOOR(0.2), coolCap/heat)
-```
-
-### Economy ($/Mtoken, cost, outcomes)
-```
-revenueUsd   = (tokensIn·priceIn + tokensOut·priceOut) / 1e6
-serveRevenue = TRAFFIC_SCALE · revenueUsd · marketPriceMul / CREDIT_USD
-rackOpCost/s = gpuHrUsd · (REAL_SEC_PER_BOARD_SEC/3600) · TRAFFIC_SCALE · OP_COST_SCALE / CREDIT_USD
-opCost(tick) = Σ_online rackOpCost/s · dt · powerPrice ;  cash −= opCost      # wall-clock fixed; idle racks bleed
-dataMult     = 1 + 0.25·labs
-clearBonus   = round(w.clearBonus · CLEAR_BONUS_SCALE(0.08))
-loss ⟺ trust ≤ 0  OR  sla ≤ 0  OR  cash < 0
-```
-> **Cost-model note:** `opCost` is **only** the `$/GPU-hr` term. Capex, power, and cooling are **not** separately billed — capex is telemetry (`fleetCapexUsd`); power/cooling gate uptime (brownout/throttle), not the bill. The real `$/GPU-hr` rate implicitly bundles amortized capex + energy, so the docs' "capex amortization + $/GPU-hr + power + cooling" is the *conceptual* real-world cost; the code uses a single `$/GPU-hr` proxy.
-
-### SLO & Goodput
-```
-realDt = dt · SIM_TIME_SCALE (×10)                       # SLO judged on the real-second axis
-TTFT: on prefill≤0 → ttftReal = queueSec ; if ttftReal·1000 > (def.ttftSloMs ?? cls.ttftMs) → sloViolated
-TPOT: if tpotReal·1000 > cls.tpotMs → sloViolated
-E2EL: if def.e2elSloMs & e2el·1000 > def.e2elSloMs → sloViolated
-answered = served | slo_miss | bad ;  goodput += (served & ¬sloViolated)
-goodputPct = answered>0 ? 100·goodput/answered : 100
-p95 = sorted[ min(n−1, ceil(n·0.95)−1) ] ;  answersPerSec = recentServes / 5s
+total        += every terminal outcome
+goodput      += served                                   # clean: correct, safe, on time, not refused
+goodputPct    = total ? 100 × goodput / total : 100      # the live gauge, the report and the bridge
+answered     += served / sloMiss / bad / unsafe with a first token (latency logged)
+sloAttainPct  = answered ? 100 × answeredInSlo / answered : 100
+p95 = sorted[min(n − 1, ⌈0.95·n⌉ − 1)] ;  answersPerSec = answers in the last 5 board s / 5
+utilization: inst = Σ roof × load / Σ roof (roof = aggregate tok/s at full slots) ;  EMA 0.9 / 0.1
 ```
 
-### Research compute
+### 3.10 Research compute (`research.ts`)
 ```
-fleetFlops  = Σ (server ? hw.bf16Tflops : 0)
-pool        = anyResearchActive ? fleetFlops · RESEARCH_MAX_SHARE(0.45) : 0
-selection   = servers by rackFlops desc, requisition until taken ≥ pool (browned-out excluded)
-perTrackRate= min(rate, pool) / activeTracks
-research dataCost = round(authored dataCost · RESEARCH_DATA_SCALE(4))  # infra / method unlock / eval defs
-research compute  = round(authored compute · RESEARCH_COMPUTE_SCALE(3))
-slot.progress += perTrackRate · dt ;  complete ⟺ ≥ slot.compute  (= max(1, computeCost) post-train, else scaled def.compute)
-applyInfraEffects: max(utilization, prefixCeil, specLevel, loraSlots, engineTier) ; min(kvQuantBytes, weightQuantBytes) ; add(multiStep, throughput, flash)
+research dataCost = round(authored × 4) ;  compute = round(authored × 12)     # infra, method unlocks, red-team
+fleetFlops = Σ server racks' BF16 TFLOPS ;  cap = 0.45 × fleetFlops
+requisitionPick: online racks by BF16 TFLOPS desc, each taken iff taken + its TFLOPS ≤ cap;
+                 none fit and ≥ 2 online → the weakest; never the last online rack
+rate = Σ lent TFLOPS × throttle ;  each active track gets rate / activeTracks
+slot.progress += perTrackRate × dt (board s, waves only) ;  done at progress ≥ compute
+applyInfraEffects: utilization / prefixHitCeil / specLevel / loraSlots / engineTier take the max ;
+                   kvQuantBytes the min ; multiStep / offloadGb / flash add ; the rest set switches
+researchUnlocked = not owned ∧ prerequisites ∧ no researched conflict ∧ (NVFP4: a Blackwell rack on the board)
+preview: seconds = compute / (lent / (running tracks + 1)) ;  waves = seconds / waveSeconds
+```
+
+### 3.11 Post-training (Studio, `models.ts`)
+```
+depth (new) = base depth + 1
+uncappedGain = min(gainScale × √effort / (1 + 0.15·depth),  gainCap × max(0, (130 − base[axis]) / 130))
+ceiling(body, axis) = min(130, 6 + max qualityBy[axis] over roster bases with paramsTotalB ≤ 2 × body)
+gain = distill ? uncappedGain : max(0, min(uncappedGain, ceiling − base[axis]))      # safety target: 0
+qualityBy[axis] = clamp(base + gain, 8, 130)
+tax (safety target, rlhf, cai): general −= taxScale × factor × √effort  (unless general is the gain axis)
+forget: every non-gain axis −= forgetScale × √effort × (1 + 0.5·max(0, depth − 1))
+instant vector (hybrid): base instant + the same per-axis delta
+merge: axes averaged (no gain, tax or forgetting); safety, overRefusal, instructFollow averaged;
+       refusalStyle kept if shared, else hard-refusal; release precision = the higher of the two;
+       thinking = same support ? it : hybrid; instant = mean of the parents' instant paths
+       mergeBlock: missing / self / different roster root / different body
+distill: body = the largest roster base strictly smaller (active and total) ; each axis capped at
+         min(teacher, student + 18) (instant likewise) ; window and longCtx = the smaller
+qat: nativeWeightBytes = 0.5 ; every axis −2 (both vectors)
+reasoning run (grpo, or target reasoning): never → always (a hybrid keeps its switch)
+thinkTokens: merge = the larger ; a model that becomes a thinker with 0 gets 1500 ; never → 0
+computeCost = costCompute × (max(0.1, activeB)/8)^0.7 × effort × 1000 × 2
+              × (1 + 0.6·baseDepth) × (1 + 0.12·√(max(1, totalB/activeB) − 1))
+dataCost    = round(costData × effort × (1 + 0.6·baseDepth) × max(1, (max(0.1, totalB)/8)^0.45))
+tier: peak ≥ 95 or totalB ≥ 100 → frontier ; coding ≥ reasoning ∧ coding ≥ 60 → coding ; totalB ≤ 16 → small ; else general
+```
+
+### 3.12 Campaign scaling (`campaign.ts`, `sim.ts`, `actions.ts`)
+```
+waveBudget(tier, volume, boss) = round((11 + 4·tier) × VOLUME_FACTOR[volume] × (boss ? 1.25 : 1))
+budget[i] = min(waveBudget, ⌈budget[i−1] × (boss ? 1.8 : 1.6)⌉)                 # campaignBudgets
+group: count = max(1, round(budget × weight / Σweight)) ;  interval = BASE_INTERVAL / √VOLUME_FACTOR
+       delay = i × max(3, 7 − 0.25·tier)
+ramp   = ((tier − 1) / 11)^1.5
+workMul    = round(1 + (outGrowth − 1)·ramp, 2)
+contextMul = round((1 + (promptGrowth − 1)·ramp) / max(1, √workMul), 2) × authored contextMul
+complexityMul = round(1 + 0.02·min(max(0, tier − 1), 11), 2)
+spawn: input  = max(1, round(ISL × contextMul × max(1, √workMul)))
+       output = max(embed ? 0 : 1, round(OSL × workMul))
+       difficulty = line × complexityMul
+hazardMul  = min(1.45, 1 + 0.039·(tier − 1)) ;  severity = min(1, base × hazardMul)
+novelShare = clamp(0.05·(tier − 2), 0, 0.5) ;  the k-th hazardous request of a burst is novel iff
+             ⌊(k + 1)·share⌋ > ⌊k·share⌋                                       (no RNG draw)
+single-lane surge: every burst pinned to lane hash(realEvent + name) mod 4
+```
+The authored curve these produce: W1 9 requests (tier 1); late bosses W60 204, W70 219, W80 225, W90 235, W100 237 (the per-group rounding makes the sum differ slightly from the band budget). Tier 12 begins at W80; hazard pressure reaches ×1.429 and the novel share 0.5 there.
+
+**Incidents** (rolled at every wave clear for the next wave, index `next`):
+```
+next < 2 → none
+theme.incident ?? themedIncidentId(special) → forced
+else boss, or (next + 1) % 10 = 0, or every 10th endless surge → a random hard (non-good) incident
+     (a boss never gets a lane funnel on top)
+else 60% → a random incident from the whole table
+apply: modifiers[k] *= mods[k] ; concentrate → laneWindow = 1 random lane ; instant(s) now
+startWave: count = max(1, round(count × volume)) ;  rewardMul × reward
+clearWave: modifiers reset to 1, laneWindow cleared, then the next roll
+```
+
+### 3.13 Endless surges (`endless.ts`)
+```
+d = max(1, waveIndex − 99)
+count      = 1 + 0.05·d          work = 1 + 0.035·d
+complexity = 1.22 + 0.01·max(0, d − 2)
+hazardMul  = 1.429 × (1 + 0.01·d)            novelShare = min(0.65, 0.5 + 0.005·d)
+contract   = 640 + 40·d
+bursts: 3–5 templates (weights chat 3, embed 2, comp 2, rag 2, reason 2, summ 1, batch 1, jailbreak 1, agent 1),
+        at least one reason or agent
+budget = 236 (wave 100's boss budget) × count
+burst count = max(1, round(budget × max(w/Σw, hard ? 1/n : 0) × (1 + 0.2·U)))
+interval = BASE_INTERVAL / √3.2 × (0.9 + 0.25·U) ;  delay = i × 4 × (0.85 + 0.3·U)
+workMul = groupMuls(12).workMul × work ;  contextMul = groupMuls(12).contextMul      # U = s.rng.next()
+```
+
+### 3.14 Next-wave preview, runway and readiness (`preview.ts`, `ui/hud.ts`, `ui/nextWave.ts`)
+```
+estDurationSec = max over bursts (delay + (count − 1) × interval + longest lane length / speed)
+fleetBurnPerSec = Σ towerOpexPerSec(load = 1) ;  projectedBill = fleetBurnPerSec × estDurationSec
+runway (waves) = max(0, cash) / (burnPerSec × waveSec)
+readiness per archetype, over the racks whose range touches its lanes (fits from the load forecast
+at the whole mix):
+  SMART = best margin ≥ 0 ;  FAST = some rack meets every bound ('na' without any bound)
+  FITS  = some rack holds prompt + hidden + answer in its window and one copy's KV
+  SAFE  = every hazard caught by a covering guard with its category unlocked, or self-handled
+          with min pSelfHandle ≥ 0.9 across the covering models
+```
+Rack readouts (`ui/metrics.ts`, `ui/modelOverview.ts`), all on the same effects functions:
+```
+busy rack        = 2 cohorts per lane (min(spritesPerLane, 2) × lanes sprites) at context in + out/2
+latencyOf        = prompt wall (promptOccupancy) + admissionDelay ;  TPOT = 1 / busy per-user rate
+rack $/Mtoken    = dollarsPerMtokenAt(busy aggregate tok/s, load 1)       # the reference 1500 in / 256 out request
+Model Overview   = per-user tok/s of one cohort on the smallest rack tier that holds the model
+```
+
+### 3.15 Load forecast (`loadForecast.ts`: the deploy picker's ★, fit rows, readiness, the demo)
+Demand lines come from the wave's bursts (the incident volume folded in), merged per archetype at its hardest instance; each burst is `(start = delay, end = delay + (count − 1)·interval, rate = 1 / (interval × 10)` per real s, `count)`. For one rack and model:
+```
+hidden, generated = out + hidden, ctx = in + generated / 2
+cached = cacheable ? prefixShare × cacheHit ;  prompt = in × (1 − cached) ;  shared = in × cached
+cacheHit = prefixHitChance(best cache, unrouted) × 0.5
+slots = max(1, min(spritesPerLane, ⌈(kvGbPerReplica / stages) / (28 × kvOne)⌉))
+        kvOne = the decode-weighted mean kvPerReqGb(ctx)
+lanes = Σ serving racks' lanes (racks a running project requisitions excluded; a surge × 0.5)
+S0 = prompt wall time + generated × lightStep × 28 / k                  # one sprite's occupancy
+in flight at t (per lane) = Σ active bursts min(rate × S0, count) / lanes   (Little's law)
+pieces = each burst cut where the others start or finish; weight = arrivals in the piece
+lane step at t: own cohort + min(slots − 1, max(minSprites − 1, in flight)) others (laneStep mix)
+prompt lane at t:  pLanes = min(lanes, max(1, Σ in flight × lanes / slots))
+                   ρ = min(0.95, Σ rate·service / pLanes)
+                   queue = Σ rate·service² / pLanes × (ρ / busy) / (2(1 − ρ))        # Pollaczek–Khinchine
+                   util  = min(0.95, Σ rate·service / lanes) ;  chunkRate = chunked ? steps·util/spread : 0
+tpot  = 1 / (chunkRate + (1 − util) / step) / (specOn ? SPEC_TOKENS : 1)
+ttft  = prompt wall + queue + admissionDelay + guardIn
+ttfat = ttft + hidden × tpot × 28/k ;  e2el = ttft + generated × tpot × 28/k + guardOut
+use   = max(ttft/bound, ttfat/bound, tpot/bound, e2el/bound)
+entry slot wait: a = Σ in flight / paths ; queued = ErlangC(slots × entryLanes, a)
+                 wait = a ≥ c ? ∞ : meanS / (c − a) ;  late = slack ≤ 0 ? 1 : e^(−slack / wait)
+onTime = onTimeShare(use) × (1 − queued × late)
+onTimeShare(u) = u ≤ 0.85 ? 1 : u ≥ 1.3 ? 0 : (1.3 − u) / 0.45
+window = in + generated ≤ window ∧ kvPerReqGb(in + generated) ≤ kvGbPerReplica
+effQ   = serverQualityVs(axis, mode) − longContextPenalty(ctx) ;  margin = effQ − difficulty
+cleanShare = (!window ∨ (!adversarial ∧ margin < 0)) ? 0 : onTime × (1 − max_h leak(h)) × (1 − refusal)
+deploy score = Σ count × cleanShare / Σ count ;  ★ = highest score (ties: judgedQ, then per-user speed)
+```
+Entry lanes are the lanes of the serving racks a request meets within 1 tile of its first contact on each lane in play (averaged). The single-archetype readouts (`readoutEnv`) assume a busy rack: 2 cohorts per lane, a 60 s wave, the board's worst-lane guards.
+
+### 3.16 Quality on the board
+```
+serverQualityVs(axis, mode) = qualityIn(m, mode)[axis] − formatQualityTax(m, fmt).flat − alignmentTax(m)
+longContextPenalty(L) = 24 × (1 − 0.75·longCtx) × clamp((L/window − 0.25) / 0.75, 0, 1)^1.5
+                        + (L > 8000 ? formatQualityTax(m, fmt).longCtx : 0)
+                        + (L > 32000 ∧ kv.quantBytes ≤ 0.5 ? 2 : 0)
 ```
