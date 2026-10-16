@@ -80,9 +80,11 @@ export const RESEARCH_DATA_SCALE = 4
  * §4.5 research COMPUTE investment. Scales every research node's compute target so
  * unlocking the tree requisitions real FLOPs over real waves (a chunk of the fleet
  * goes offline to train, §C7) — research is paced by your compute, not free. Pairs
- * with RESEARCH_DATA_SCALE: data is the gate, compute is the wall-clock.
+ * with RESEARCH_DATA_SCALE: data is the gate, compute is the wall-clock. Tuned so a
+ * node takes roughly a third to one wave of the fleet it unlocks at (measured on the
+ * autoplay: ≈5–30 board seconds of a ≈50 s wave), so the lent racks are a felt cost.
  */
-export const RESEARCH_COMPUTE_SCALE = 3
+export const RESEARCH_COMPUTE_SCALE = 12
 
 /**
  * §1.4 post-training compute investment. Scales every Studio run's FLOP bill so a
@@ -112,10 +114,10 @@ export const TRAFFIC_SCALE = 100000
 export const OP_COST_SCALE = 0.036
 
 /**
- * §6.6 clear-bonus rescale. The authored `WaveDef.clearBonus` values (70–1200)
- * were tuned for the old flat-points economy; in the real credit economy they are
- * scaled down so the clear bonus is a meaningful kicker but does NOT dwarf the
- * token-priced request revenue (which is the real economy now).
+ * §6.6 clear-bonus rescale: converts a wave's authored SLA-contract value
+ * (campaign.ts tierBonus) into credits. The paid bonus is that × the wave's Goodput
+ * (campaign.ts contractPayout); the contract ramps in over the first tiers so the
+ * opening waves are funded by token revenue.
  */
 export const CLEAR_BONUS_SCALE = 0.08
 

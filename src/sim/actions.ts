@@ -13,7 +13,8 @@ import {
 } from './effects'
 import { generateEndlessWave } from './endless'
 import { isBuildable, tileCenter } from './pathing'
-import { refreshPower } from './power'
+import { powerBuildOpen, refreshPower } from './power'
+import { rollIncident } from './sim'
 import { surgeLaneOf } from './spawn'
 import { newWaveStats } from './telemetry'
 
@@ -39,10 +40,12 @@ export function tryBuild(s: GameState, defId: string, col: number, row: number):
   const def = TOWER_DEFS[defId]
   if (!def) return false
   if (!canPlaceAt(s, col, row)) return false
-  // §6.5 hard gate (OQ-G8): a liquid-cooled rack (≥1000 W/GPU) cannot be PLACED
+  // §6.5 hard gate (OQ-G8): a liquid-cooled rack (>1000 W/GPU) cannot be PLACED
   // without a Liquid Cooling Loop — an air-cooled rack never needs one.
   if (def.kind === 'server' && def.hardwareId && hwNeedsLiquid(HARDWARE_DEFS[def.hardwareId]) && !hasLiquidLoop(s))
     return false
+  // an interconnection freeze: the utility will not energize a new generation block
+  if (def.kind === 'power' && !powerBuildOpen(s)) return false
   const cost = buildCost(s, def)
   if (s.meters.cash < cost) return false
   s.meters.cash -= cost
@@ -145,8 +148,8 @@ export function upgradeHardware(s: GameState, towerId: number): boolean {
   if (!t) return false
   const next = nextHardware(t)
   if (!next) return false
-  // §6.5 hard gate (OQ-G8): cannot upgrade INTO a liquid-cooled tier (pod/superpod/
-  // giga) until a Liquid Cooling Loop exists — those racks cannot be cooled otherwise.
+  // §6.5 hard gate (OQ-G8): cannot upgrade INTO a liquid-cooled tier (the GB200 NVL72)
+  // until a Liquid Cooling Loop exists — that rack cannot be cooled otherwise.
   if (hwNeedsLiquid(next) && !hasLiquidLoop(s)) return false
   const cost = hardwareUpgradeCost(s, t)
   if (s.meters.cash < cost) return false
@@ -240,11 +243,15 @@ export function cycleRackRole(s: GameState, towerId: number): boolean {
   return true
 }
 
-/** Beat the boss, keep serving: flips the run into procedural endless waves. */
+/**
+ * Beat the boss, keep serving: flips the run into procedural endless waves, which resume
+ * at the wave-100 load (endless.ts), and telegraphs the first surge's incident.
+ */
 export function continueEndless(s: GameState): boolean {
   if (s.phase !== 'won' || s.endless) return false
   s.endless = true
   s.phase = 'build'
+  rollIncident(s)
   return true
 }
 

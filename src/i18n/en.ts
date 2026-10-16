@@ -95,7 +95,7 @@ export const en: Record<string, string> = {
   'inspect.cooling.cap': 'Capacity  +{v} kW cooling',
   'inspect.cooling.l1': 'Prevents thermal throttling.',
   'inspect.coolingLiquid.cap': 'Capacity  +{v} kW cooling',
-  'inspect.coolingLiquid.l1': 'Enables DGX/NVL72 liquid racks.',
+  'inspect.coolingLiquid.l1': 'Enables the liquid-cooled GB200 NVL72; its kW cools only liquid racks.',
   'inspect.coolingLiquid.l2': 'Required — they cannot run without it.',
   'inspect.lab.l1': 'Unlocks the tech tree.',
   'inspect.lab.l2': 'Boosts Data yield from serves.',
@@ -618,6 +618,22 @@ export const en: Record<string, string> = {
   // ===== [/ws:physics] =====
 
   // ===== [ws:economy] economy, campaign waves (names/briefs/teaches), incidents, studio =====
+  'econ.time.sec': '≈{sec} s of wave time',
+  'econ.lend': 'Lends {n} rack(s) to training: −{loss}% serving compute',
+  'econ.lend.blocked': 'Needs ≥2 online racks — research waits so serving never stops',
+  'econ.merge.missing': 'Pick a second checkpoint of the same base to merge with',
+  'econ.merge.self': 'Pick a different checkpoint — a model merged with itself is unchanged',
+  'econ.merge.root': 'Different base models — their weights cannot be averaged',
+  'econ.merge.body': 'Different architectures — a merge needs one shared body (params, layers, attention)',
+  'econ.studio.ceiling': 'Capped by the {b}B body: {axis} tops out near {v} at this size',
+  'econ.cooling.liquidPool': 'Liquid pool  {used}/{cap} kW in use',
+  'econ.cooling.airPool': 'Air pool  {used}/{cap} kW — air racks + buildings',
+  'econ.next.novel': '({pct}% novel)',
+  'econ.next.novelTip': '⚠ {pct}% of its attacks are novel variants: Prompt Guard keeps ~{enc}% of its recall on them, the Moderation API ~{mod}%; Llama Guard or a well-aligned model holds',
+  'deny.powerFreeze': 'Interconnection freeze — no new Power Plant can be connected until this wave clears.',
+  'deny.mergePartner': 'Pick a second, different checkpoint of the same base.',
+  'deny.mergeRoot': 'Those checkpoints come from different base models — their weights cannot be averaged.',
+  'deny.mergeBody': 'Those checkpoints have different architectures — there are no shared weights to average.',
   // ===== [/ws:economy] =====
 
   // ===== [ws:render] board FX: outcome popups, banners, rack/request state =====
@@ -737,7 +753,7 @@ export const en: Record<string, string> = {
     'Every hazard it carries is caught by a guardrail covering its lanes, or refused by every covering model on its own.',
   'next.collapse': 'Collapse',
   'next.expand': 'Expand',
-  'next.foot': '{n} requests · bill ≈${bill} · clear bonus ${bonus}',
+  'next.foot': '{n} requests · bill ≈${bill} · SLA contract up to ${bonus}',
   'next.estimate': 'Estimates from your current fleet — queueing not included.',
   'next.tip.noRack': "? No rack's range covers its lanes yet.",
   'next.tip.smart': 'Smart: needs {axis} {d}; best rack {m}',
@@ -1103,7 +1119,8 @@ export const en: Record<string, string> = {
   'method.cai.desc': 'AI feedback against a constitution. A Pareto safety gain: raises safety AND lowers over-refusal (safe-completion).',
   'method.grpo.desc': 'Group-relative policy optimization. Turns a base model into a thinker and is the strongest path to reasoning/agentic capability.',
   'method.distill.desc': 'Distill a big teacher into a smaller student base: cheaper to serve, but the student never quite matches the teacher.',
-  'method.merge.desc': 'Average the weights of two models (same family). No retraining, no forgetting — blend two specialists into one.',
+  'method.merge.desc':
+    'Average the weights of two checkpoints derived from the same base (identical architecture). No retraining, no forgetting — blend two specialists into one; safety and over-refusal land at the average of the two.',
   'method.qat.desc': 'Train for INT4 inference: half the weight memory and faster decode, at −2 quality. A per-model quant distinct from serving-layer PTQ.',
   // --- research cards ---
   'train.filterAll': 'SHOWING ALL',

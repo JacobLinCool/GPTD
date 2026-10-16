@@ -348,23 +348,34 @@ describe('power & cooling (REAL watts / kW, §6.5)', () => {
 })
 
 describe('liquid-cooling hard gate (OQ-G8, §5.5)', () => {
-  it('a liquid rack (DGX/NVL72) cannot be reached or run without a Liquid Cooling Loop', () => {
-    const s = createState(6)
-    richBuild(s) // FP8 so a 70B fits a frontier rack; methods unlocked
+  /** Climb a frontier rack up the in-place ladder to the DGX B200 (both DGX nodes are air-cooled). */
+  function superpodRack(s: GameState) {
     expect(tryBuild(s, 'srv_frontier', 3, 2)).toBe(true)
     const t = lastTower(s)
-    // edge of the air-cooled ladder: H200 frontier is the last AIR tier.
-    expect(HARDWARE_DEFS.hw_frontier.cooling).toBe('air')
-    expect(HARDWARE_DEFS.hw_pod.cooling).toBe('liquid')
-    // §6.5 placement gate: upgrading INTO the liquid pod tier is blocked with no loop.
+    expect(upgradeHardware(s, t.id)).toBe(true) // → DGX H200 (air)
+    expect(upgradeHardware(s, t.id)).toBe(true) // → DGX B200 (air)
+    expect(t.hwId).toBe('hw_superpod')
+    return t
+  }
+  /** Enough grid for an NVL72 (≈58 kW): base 6 kW + 7 Power Plants. */
+  function powerFor(s: GameState): void {
+    for (const col of [2, 4, 6, 8, 10, 12, 14]) expect(tryBuild(s, 'power', col, 4)).toBe(true)
+  }
+
+  it('the GB200 NVL72 cannot be reached or run without a Liquid Cooling Loop', () => {
+    const s = createState(6)
+    richBuild(s)
+    powerFor(s)
+    const t = superpodRack(s)
+    // §6.5 placement gate: upgrading INTO the liquid NVL72 tier is blocked with no loop.
+    expect(HARDWARE_DEFS.hw_giga.cooling).toBe('liquid')
     expect(upgradeHardware(s, t.id)).toBe(false)
-    expect(t.hwId).toBe('hw_frontier') // still air-cooled
-    // build the Liquid Cooling Loop → the pod upgrade is now allowed.
-    expect(tryBuild(s, 'cooling_liquid', 3, 4)).toBe(true)
+    expect(t.hwId).toBe('hw_superpod')
+    // build the Liquid Cooling Loop → the NVL72 upgrade is now allowed, and it runs.
+    expect(tryBuild(s, 'cooling_liquid', 16, 4)).toBe(true)
     expect(hasLiquidLoop(s)).toBe(true)
     expect(upgradeHardware(s, t.id)).toBe(true)
-    expect(t.hwId).toBe('hw_pod')
-    // and a liquid rack runs (online) only with the loop present.
+    expect(t.hwId).toBe('hw_giga')
     updatePower(s)
     expect(t.online).toBe(true)
   })
@@ -372,10 +383,10 @@ describe('liquid-cooling hard gate (OQ-G8, §5.5)', () => {
   it('an existing liquid rack goes dark (hard gate, not throttle) if the loop is removed', () => {
     const s = createState(7)
     richBuild(s)
-    tryBuild(s, 'cooling_liquid', 3, 4)
-    tryBuild(s, 'srv_frontier', 3, 2)
-    const t = lastTower(s)
-    expect(upgradeHardware(s, t.id)).toBe(true) // → pod (liquid), loop present
+    powerFor(s)
+    tryBuild(s, 'cooling_liquid', 16, 4)
+    const t = superpodRack(s)
+    expect(upgradeHardware(s, t.id)).toBe(true) // → NVL72 (liquid), loop present
     updatePower(s)
     expect(t.online).toBe(true)
     expect(t.throttle).toBeGreaterThan(0)
@@ -394,15 +405,17 @@ describe('liquid-cooling hard gate (OQ-G8, §5.5)', () => {
     expect(air.online).toBe(true)
   })
 
-  it('an air-cooled rack never needs a Liquid Cooling Loop', () => {
-    const s = createState(8)
-    richBuild(s)
-    for (const hwId of ['hw_edge', 'hw_standard', 'hw_perf', 'hw_frontier']) {
+  it('cooling follows the dossier rule: >1000 W/GPU or a beyond-air rack density is liquid; DGX H200/B200 stay air', () => {
+    // REFERENCE-DOSSIER §5.5: ≲1000 W/GPU is air-coolable (DGX H200 ~10.2 kW, DGX B200
+    // ~14.3 kW ship air-cooled); GB200 NVL72 (~120 kW rack, 1200 W/GPU) is liquid-only.
+    const AIR_RACK_KW_MAX = 40
+    for (const hw of Object.values(HARDWARE_DEFS)) {
+      const liquid = hw.tdpWattsPerGpu > 1000 || hw.tdpWatts / 1000 > AIR_RACK_KW_MAX
+      expect(hwNeedsLiquid(hw)).toBe(liquid)
+    }
+    for (const hwId of ['hw_edge', 'hw_standard', 'hw_perf', 'hw_frontier', 'hw_pod', 'hw_superpod'])
       expect(hwNeedsLiquid(HARDWARE_DEFS[hwId])).toBe(false)
-    }
-    for (const hwId of ['hw_pod', 'hw_superpod', 'hw_giga']) {
-      expect(hwNeedsLiquid(HARDWARE_DEFS[hwId])).toBe(true)
-    }
+    expect(hwNeedsLiquid(HARDWARE_DEFS.hw_giga)).toBe(true)
   })
 })
 
@@ -897,8 +910,13 @@ describe('Studio preview parity (§5.2 S9)', () => {
   it('Distill preview (student body swap) matches', () => {
     assertParity(studioRig(124, ['pt_rl', 'pt_distill']), FRONTIER, 'distill', 'reasoning', 1.0)
   })
-  it('Merge preview (averages two upstreams) matches', () => {
-    assertParity(studioRig(125, ['pt_lora', 'pt_merge']), BIG, 'merge', 'general', 1.0, GENERAL)
+  it('Merge preview (averages two same-base checkpoints, blends alignment) matches', () => {
+    const s = studioRig(125, ['pt_lora', 'pt_merge', 'pt_rl'])
+    expect(startPostTrain(s, [BIG], 'lora', 'coding', 1.0)).toBe(true)
+    trainToCompletion(s)
+    expect(startPostTrain(s, [BIG], 'grpo', 'reasoning', 1.0)).toBe(true)
+    trainToCompletion(s)
+    assertParity(s, 'drv_0', 'merge', 'general', 1.0, 'drv_1')
   })
   it('a fine-tune-of-a-fine-tune preview (depth 2, depthDamp) matches', () => {
     const s = studioRig(126, ['pt_lora'])
@@ -1518,7 +1536,8 @@ describe('endless mode', () => {
     const b = endlessScaling(WAVES.length + 19) // surge 20
     expect(b.complexity).toBeGreaterThan(a.complexity)
     expect(b.count).toBeGreaterThan(a.count)
-    expect(b.reward).toBeGreaterThan(a.reward)
+    expect(b.work).toBeGreaterThan(a.work)
+    expect(b.clearBonus).toBeGreaterThan(a.clearBonus)
     expect(a.complexity).toBeGreaterThan(1)
   })
 
@@ -1541,13 +1560,12 @@ describe('endless mode', () => {
     // scaled difficulty/context actually land on spawned requests
     const s = createState(99)
     liveWave(s)
-    const sc = endlessScaling(WAVES.length + 4)
-    spawnRequest(s, 'reason', 1, 1, sc.complexity, sc.reward, sc.context)
+    const g = a.groups[0]
+    spawnRequest(s, 'reason', g.workMul, 1, g.complexityMul, 1, g.contextMul)
     const r = s.requests[0]
     // runtime difficulty = difficulty[primaryAxis] × complexityMul ([fix M2])
-    expect(r.difficulty).toBeCloseTo(82 * sc.complexity, 6)
-    expect(r.reward).toBeCloseTo(30 * sc.reward, 6)
-    expect(r.context).toBe(Math.round(48 * sc.context))
+    expect(r.difficulty).toBeCloseTo(82 * (g.complexityMul ?? 1), 6)
+    expect(r.context).toBe(Math.round(48 * (g.contextMul ?? 1)))
   })
 
   it('an endless wave can be started and cleared after the campaign', () => {
@@ -1574,7 +1592,14 @@ describe('endless mode', () => {
     tryBuild(s, 'guard_llm', 17, 8)
     expect(startWave(s)).toBe(true)
     expect(s.currentWave?.name).toContain('Surge')
-    runFor(s, 240)
+    // the surge resumes at the wave-100 load, far past this small fleet: hold the meters
+    // so the test exercises the plumbing (an endless clear returns to build, no win screen)
+    for (let i = 0; i < Math.round(400 / SIM_DT) && s.phase === 'wave'; i++) {
+      s.meters.trust = 100
+      s.meters.sla = 100
+      s.meters.cash = Math.max(s.meters.cash, 99999)
+      step(s)
+    }
     expect(s.phase).toBe('build') // cleared, no win screen in endless
     expect(s.stats.served).toBeGreaterThan(0)
   })

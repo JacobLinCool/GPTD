@@ -7,6 +7,7 @@ import {
   categoryUnlocked,
   effRecall,
   isBenign,
+  NOVEL_RECALL_MUL,
   overRefuse,
   overrefMul,
   redteamRecallBonus,
@@ -124,10 +125,14 @@ function rollFalsePositive(s: GameState, r: Request, st: LaneGuardStage, rep: To
   return true
 }
 
-/** Roll each open, unlocked hazard against the best recall among one family's towers on one side. */
+/**
+ * Roll each open, unlocked hazard against the best recall among one family's towers on one
+ * side. A novel attack (the era's adaptive variants) keeps only the family's NOVEL_RECALL_MUL.
+ */
 function catchHazards(s: GameState, r: Request, towers: Tower[], family: GuardrailArchetype): void {
   const threshold = s.guardrailThreshold
   const bonus = redteamRecallBonus(s)
+  const novelty = r.novel ? NOVEL_RECALL_MUL[family] : 1
   for (const h of ALL_HAZARDS) {
     if (r.hazardsOpen[h] === undefined || !categoryUnlocked(s, h)) continue
     let best: Tower | null = null
@@ -135,7 +140,7 @@ function catchHazards(s: GameState, r: Request, towers: Tower[], family: Guardra
     for (const g of towers) {
       const spec = g.def.guardrail!
       if (!spec.catches.includes(h)) continue
-      const e = effRecall(spec.baseRecall, threshold, bonus)
+      const e = effRecall(spec.baseRecall, threshold, bonus) * novelty
       if (e > recall) {
         recall = e
         best = g

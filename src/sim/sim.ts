@@ -1,5 +1,6 @@
-import { CLEAR_BONUS_SCALE, SIM_DT } from '../config'
+import { SIM_DT } from '../config'
 import type { GameState, IncidentDef, LoseMeter, ModifierTarget } from '../core/types'
+import { CAMPAIGN_THEMES, contractPayout } from './campaign'
 import { updateCombat } from './combat'
 import { INCIDENTS, WAVES, themedIncidentForWave } from './content'
 import { LANE_COUNT } from './pathing'
@@ -14,7 +15,7 @@ import { refreshPower } from './power'
 import { updateResearch } from './research'
 import { allSpawned, updateSpawns } from './spawn'
 import { defaultModifiers } from './state'
-import { finalizeReport, pruneRecent, recordPowerCost } from './telemetry'
+import { finalizeReport, goodputPctOf, pruneRecent, recordPowerCost } from './telemetry'
 
 /** Advance the simulation by one fixed step. Only does work during a wave. */
 export function step(s: GameState, dt: number = SIM_DT): void {
@@ -91,16 +92,21 @@ function lose(s: GameState): void {
   s.events.push({ type: 'lose', meter })
 }
 
-/** Clear bonus in the real credit economy: the authored value × CLEAR_BONUS_SCALE. */
-function clearBonusOf(w: { clearBonus: number } | null | undefined): number {
-  return w ? Math.round(w.clearBonus * CLEAR_BONUS_SCALE) : 0
+/**
+ * The wave's SLA-contract payment (§6.6): the authored contract value × CLEAR_BONUS_SCALE ×
+ * the wave's Goodput — a customer pays for the share of its traffic that was served cleanly
+ * (on time, correct, safe, not wrongly refused, not dropped).
+ */
+function clearBonusOf(s: GameState, w: { clearBonus: number } | null | undefined): number {
+  if (!w) return 0
+  return contractPayout(w.clearBonus, s.waveStats ? goodputPctOf(s.waveStats) : 100)
 }
 
 function clearWave(s: GameState): void {
   s.waveActive = false
   s.phase = 'build'
   const w = s.currentWave ?? WAVES[s.waveIndex]
-  const bonus = clearBonusOf(w)
+  const bonus = clearBonusOf(s, w)
   if (w) {
     s.meters.cash += bonus
     s.stats.cashEarned += bonus
@@ -118,51 +124,56 @@ function clearWave(s: GameState): void {
   if (!s.endless && s.waveIndex >= WAVES.length - 1) {
     s.phase = 'won'
     s.message = 'win.msg'
+    // nothing is coming: no incident is telegraphed until endless mode rolls its own
+    s.pendingIncident = null
     s.events.push({ type: 'win' })
     return
   }
   rollIncident(s)
-  // a telegraphed cooling / power incident is live in the build phase: show its real kW now
-  refreshPower(s)
 }
 
 /**
- * Pick AND apply a telegraphed incident for the upcoming wave. The effect is live
- * immediately (during the build phase and the wave): `buildCost` raises the price
- * of racks the player is about to place, while `powerPrice`/`coolingCap`/
- * `safetyDamage`/`volume`/`reward` bite once the wave runs. It is cleared back to
- * defaults at the next wave-clear. (Previously the incident was only displayed and
- * never applied — a long-standing dead-effect bug, now fixed.)
+ * Pick AND apply a telegraphed incident for the upcoming wave (s.waveIndex + 1), then
+ * refresh the kW budget so a telegraphed power / cooling shock is visible in the build
+ * phase. The effect is live immediately (during the build phase and the wave):
+ * `buildCost` / `powerBuild` bite on what the player is about to place, while the rest
+ * (`powerPrice`, `powerCap`, `coolingCap`, `safetyDamage`, `slaDamage`, `volume`,
+ * `reward`) bite once the wave runs. It is cleared back to defaults at the next
+ * wave-clear. Also called when a won run continues into endless mode.
  */
-function rollIncident(s: GameState): void {
+export function rollIncident(s: GameState): void {
   const next = s.waveIndex + 1
   s.pendingIncident = null
   if (next < 2) return // ease the player in
   let inc: IncidentDef | undefined
   // (1) a real-event wave forces its SIGNATURE incident (deterministic): the
-  //     DeepSeek price war, the EU AI Act audit, a grid power crunch, a viral melt.
+  //     DeepSeek price war, the EU AI Act audit, a grid emergency, a viral melt.
   const themedId = themedIncidentForWave(next)
   if (themedId) inc = INCIDENTS.find((i) => i.id === themedId)
   if (!inc) {
-    // (2) the final boss and every 10th wave otherwise carry a guaranteed HARD
-    //     incident; endless surges keep the every-10th cadence past the campaign.
+    // (2) a boss wave and every 10th wave otherwise carry a guaranteed HARD incident;
+    //     endless surges keep the every-10th cadence past the campaign.
     const oneBased = next + 1
+    const boss = CAMPAIGN_THEMES[next]?.boss ?? false
     const hardNight =
-      next === WAVES.length - 1 ||
-      oneBased % 10 === 0 ||
-      (s.endless && next >= WAVES.length && (next - WAVES.length) % 10 === 9)
+      boss || oneBased % 10 === 0 || (s.endless && next >= WAVES.length && (next - WAVES.length) % 10 === 9)
     if (hardNight) {
-      const hard = INCIDENTS.filter((i) => !i.good)
+      // a boss already brings its own volume spike, so its hard shock is an operating one
+      // (power, cooling, supply, price, safety, data) — never a second single-entry funnel
+      const hard = INCIDENTS.filter((i) => !i.good && !(boss && i.concentrate))
       inc = hard[s.rng.int(hard.length)]
     } else if (s.rng.chance(0.6)) {
       // (3) otherwise a 60% chance of a random incident — the per-run variability.
       inc = INCIDENTS[s.rng.int(INCIDENTS.length)]
     }
   }
-  if (!inc) return
-  s.pendingIncident = inc
-  applyIncident(s, inc)
-  s.events.push({ type: 'incident', id: inc.id })
+  if (inc) {
+    s.pendingIncident = inc
+    applyIncident(s, inc)
+    s.events.push({ type: 'incident', id: inc.id })
+  }
+  // a telegraphed cooling / power incident is live in the build phase: show its real kW now
+  refreshPower(s)
 }
 
 /** Apply a telegraphed incident's multipliers, lane concentration, and one-shot effect. */

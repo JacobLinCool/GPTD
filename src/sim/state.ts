@@ -4,7 +4,17 @@ import type { ActiveModifiers, GameState } from '../core/types'
 import { STARTER_MODELS } from './content'
 
 export function defaultModifiers(): ActiveModifiers {
-  return { powerPrice: 1, coolingCap: 1, buildCost: 1, safetyDamage: 1, volume: 1, reward: 1 }
+  return {
+    powerPrice: 1,
+    coolingCap: 1,
+    buildCost: 1,
+    safetyDamage: 1,
+    volume: 1,
+    reward: 1,
+    powerCap: 1,
+    powerBuild: 1,
+    slaDamage: 1,
+  }
 }
 
 export function createState(seed = 12345): GameState {
@@ -15,6 +25,7 @@ export function createState(seed = 12345): GameState {
     data: START.data,
     power: { used: 0, cap: START.basePower },
     cooling: { used: 0, cap: START.baseCooling },
+    coolingLiquid: { used: 0, cap: 0 },
     routingPower: 0,
     towers: [],
     requests: [],

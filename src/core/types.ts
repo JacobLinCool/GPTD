@@ -665,6 +665,11 @@ export interface Request {
   hazards: SafetyProfile
   /** §3.4 the hazards NOT yet cleared by layer 1 (self-handle) or layer 2 (a guardrail in path). */
   hazardsOpen: SafetyProfile
+  /**
+   * A NOVEL attack (adaptive variant of the era): classifier guards lose recall on it
+   * (guards.ts NOVEL_RECALL_MUL); a generative judge and the model's own alignment do not.
+   */
+  novel: boolean
   /** derived quick danger flag = max open-hazard severity (renderer/movement). */
   safetyRisk: number
   reward: number
@@ -808,18 +813,46 @@ export interface SpawnGroup {
    * across the active lane window.
    */
   lane?: number
+  /**
+   * Era hazard pressure (campaign.ts hazardMulOf): multiplies every hazard severity the
+   * archetype carries (clamped to 1). Attacks get stronger as the campaign advances.
+   */
+  hazardMul?: number
+  /**
+   * Share (0..1) of this burst's hazardous requests that are NOVEL attacks — adaptive
+   * variants the classifier guards never trained on (they lose recall on them, per
+   * archetype). Assigned deterministically by spawn order, no RNG.
+   */
+  novelShare?: number
+  /** Per-burst hazard override (an authored wave can arm an archetype that is benign by default). */
+  hazards?: SafetyProfile
 }
 
 export interface WaveDef {
   name: string
   brief: string
   teaches: string
-  /** bonus cash paid for clearing the wave */
+  /**
+   * The SLA-contract payment for clearing the wave at 100% Goodput (credits before
+   * CLEAR_BONUS_SCALE); the paid bonus scales with the wave's Goodput (sim.ts clearWave).
+   */
   clearBonus: number
   groups: SpawnGroup[]
 }
 
-export type ModifierTarget = 'powerPrice' | 'coolingCap' | 'buildCost' | 'safetyDamage' | 'volume' | 'reward'
+export type ModifierTarget =
+  | 'powerPrice'
+  | 'coolingCap'
+  | 'buildCost'
+  | 'safetyDamage'
+  | 'volume'
+  | 'reward'
+  /** usable grid capacity (a curtailment order sheds part of the feed). */
+  | 'powerCap'
+  /** 0 = no NEW Power Plant can be energized (an interconnection freeze); 1 = normal. */
+  | 'powerBuild'
+  /** SLA cost of every non-served outcome (an enterprise pilot: strict penalties). */
+  | 'slaDamage'
 
 export interface IncidentDef {
   id: string
@@ -1077,6 +1110,9 @@ export interface ActiveModifiers {
   safetyDamage: number
   volume: number
   reward: number
+  powerCap: number
+  powerBuild: number
+  slaDamage: number
 }
 
 export interface GameState {
@@ -1085,7 +1121,14 @@ export interface GameState {
   meters: Meters
   data: number
   power: Capacity
+  /** every heat load against every heat-rejection asset (air + liquid), for the HUD meter. */
   cooling: Capacity
+  /**
+   * The Liquid Cooling Loops' own pool: only liquid-cooled racks reject heat into it, and
+   * its capacity cools nothing else (air racks and support lean on the house chillers +
+   * Cooling Towers). Included in `cooling`; each pool throttles its own racks.
+   */
+  coolingLiquid: Capacity
   routingPower: number
   towers: Tower[]
   requests: Request[]

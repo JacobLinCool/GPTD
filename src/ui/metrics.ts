@@ -56,6 +56,7 @@ import {
   serverQualityVs,
   serverTargets,
 } from '../sim/effects'
+import { isThrottling } from '../sim/power'
 import { goodputPctOf } from '../sim/telemetry'
 import { HARDWARE_DEFS, HARDWARE_TIERS, REQUEST_TYPES, WAVES } from '../sim/content'
 import { hardwareUpgradeCost, nextHardware } from '../sim/actions'
@@ -299,7 +300,8 @@ export function powerHeadroom(s: GameState): PowerHeadroom {
 export function coolingHeadroom(s: GameState): PowerHeadroom {
   const usedKw = s.cooling.used
   const capKw = s.cooling.cap
-  return { usedKw, capKw, frac: capKw > 0 ? usedKw / capKw : 0, overCap: usedKw > capKw }
+  // over when EITHER pool is: Liquid Loop kW cannot cool an air rack (power.ts)
+  return { usedKw, capKw, frac: capKw > 0 ? usedKw / capKw : 0, overCap: isThrottling(s) }
 }
 
 /* ------------------------------------------------------------------ *

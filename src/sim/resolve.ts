@@ -17,6 +17,7 @@ import { addToLedger, recordOutcome } from './telemetry'
  *    overRefused    0     −0.25·trustPen     −0.2·slaPen               *
  *    unservable     0     −trustPen          −slaPen                   *
  *    leaked         0     −trustPen (0 for an attack) −slaPen          *
+ *  (every SLA penalty × the incident's slaDamage, default 1)            *
  *                                                                      *
  *  Pay is token-priced on the tokens actually processed (the prompt    *
  *  ingested, cached prefix included, plus the tokens generated), so a  *
@@ -86,7 +87,8 @@ export function resolveOutcome(s: GameState, r: Request, outcome: Outcome, detai
   } else {
     const pen = PENALTY[outcome]
     trustDelta = -r.trustPenalty * pen.trust
-    slaDelta = -r.slaPenalty * pen.sla
+    // an incident can sharpen the SLA contract (an enterprise pilot): every SLA penalty scales
+    slaDelta = -r.slaPenalty * pen.sla * s.modifiers.slaDamage
     if (outcome === 'unsafe') trustDelta *= s.modifiers.safetyDamage
     // an attacker who got no answer harms nobody's trust: dropping it is an availability miss only
     if (outcome === 'leaked' && r.def.adversarial) trustDelta = 0

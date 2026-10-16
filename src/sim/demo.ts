@@ -19,18 +19,10 @@ import {
   TOWER_DEFS,
   WAVES,
 } from './content'
-import {
-  loadout,
-  loadoutOf,
-  serverDeployable,
-  serverFitsMemory,
-  serverHeat,
-  serverPerUserDecodeTokS,
-  serverPower,
-} from './effects'
+import { loadout, serverDeployable, serverFitsMemory, serverPerUserDecodeTokS } from './effects'
 import { computeDerivedFields, resolveModel } from './models'
 import { CORE_TILE, isBuildable, isPathTile } from './pathing'
-import { updatePower } from './power'
+import { coolingPools, towerHeatKw, towerLiquidCooled, towerPowerKw, updatePower } from './power'
 import {
   canPostTrain,
   researchOwned,
@@ -147,17 +139,12 @@ function place(s: GameState, defId: string, slot: Slot | undefined): boolean {
 }
 
 function estDraw(s: GameState): number {
-  return s.towers.reduce(
-    (n, t) => n + (t.def.kind === 'server' ? serverPower(s, loadoutOf(s, t)) : (t.def.powerDraw ?? 0)),
-    0,
-  )
+  return s.towers.reduce((n, t) => n + towerPowerKw(s, t), 0)
 }
 
+/** Heat the AIR pool must reject (everything but direct-liquid-cooled racks). */
 function estHeat(s: GameState): number {
-  return s.towers.reduce(
-    (n, t) => n + (t.def.kind === 'server' ? serverHeat(s, loadoutOf(s, t)) : (t.def.heat ?? 0)),
-    0,
-  )
+  return s.towers.reduce((n, t) => n + (towerLiquidCooled(s, t) ? 0 : towerHeatKw(s, t)), 0)
 }
 
 function ensureCapacity(s: GameState, addDraw: number, addHeat: number): void {
@@ -169,13 +156,10 @@ function ensureCapacity(s: GameState, addDraw: number, addHeat: number): void {
     updatePower(s)
   }
   guard = 0
-  while (estHeat(s) + addHeat > s.cooling.cap - 1 && s.meters.cash >= 70 && guard++ < 12) {
-    // a big heat deficit (the big-iron fleet) is far cheaper in TILES via a Liquid Cooling
-    // Loop (+60 kW) than air Cooling (+8 kW) — on the slot-limited board, tiles are scarce,
-    // so use the loop once the gap is large and a loop already exists (the hard gate).
-    const gap = estHeat(s) + addHeat - s.cooling.cap
-    const useLiquid = gap > 16 && hasTowerKind(s, 'cooling_liquid') && s.meters.cash >= TOWER_DEFS.cooling_liquid.cost + 10
-    if (!place(s, useLiquid ? 'cooling_liquid' : 'cooling', infraSlot())) break
+  // the fleet is air-cooled (a Liquid Loop cools only liquid racks), so its heat lands on
+  // the air pool: house chillers + Cooling Towers
+  while (estHeat(s) + addHeat > coolingPools(s).air.cap - 1 && s.meters.cash >= 70 && guard++ < 12) {
+    if (!place(s, 'cooling', infraSlot())) break
     updatePower(s)
   }
 }
@@ -436,7 +420,7 @@ function clearsLine(m: DM, axis: 'reasoning' | 'agentic', line: number): boolean
  *   • waves 80-100: difficulty 98.4, reqContext 203 → need servedAgentic ≳ 110.6 (the WALL)
  * A SINGLE GRPO-agentic run (depth 1) tops out at servedAgentic ≈ 106 — it clears 65-79
  * but FAILS the 80+ wall, which is exactly where the demo died (the agent lane shipped
- * all-`bad` → trust death). STACKING GRPO-agentic runs lifts it: each run adds ≈ +6
+ * all-`bad` → trust death). STACKING GRPO-agentic runs lifts it: each run adds less (≈ +12, +8, +6 at effort 2)
  * agentic. The winning base is a FAST low-active-param MoE (≈3B active, e.g. Qwen3.6-35B-
  * A3B) — three stacked GRPO runs reach servedAgentic ≈ 116 (WALL cleared with margin)
  * while keeping decode fast (≈4 ms TPOT → meets the interactive SLO, no slo_miss flood).
@@ -444,7 +428,7 @@ function clearsLine(m: DM, axis: 'reasoning' | 'agentic', line: number): boolean
  * lane (spatial coverage) WITHOUT an expensive GLM Pod cluster.
  */
 const AGENT_WALL_AG = 110.6
-/** How many stacked GRPO-agentic runs make the apex (each ≈ +6 agentic; 3 clears the wall). */
+/** How many stacked GRPO-agentic runs make the apex (diminishing gains, bounded by the body's capacity ceiling). */
 const APEX_GRPO_DEPTH = 3
 
 /** Project the apex snapshot from a base: APEX_GRPO_DEPTH stacked GRPO-agentic runs. */
@@ -494,7 +478,7 @@ function seedAgentic(s: GameState): DM | undefined {
  * EVERY deployed model to be BOTH low-over-refusal (no SLA bleed) AND high-capability
  * enough to clear the late-tier reason/agent walls (no `bad`-answer trust drain). The
  * §2.4 Pareto tool that delivers low over-refusal is CAI (safe-completion); the tool
- * that clears the agent WALL is a STACK of GRPO-agentic runs (each ≈ +6 agentic):
+ * that clears the agent WALL is a STACK of GRPO-agentic runs (diminishing gains up to the body's capacity ceiling, models.ts):
  *
  *   1. CAI bulk workhorse — strongest lane-clearing MoE that fits a Standard rack at
  *      FP8, low active params (fast decode → meets the interactive SLO). Kills the
@@ -522,6 +506,11 @@ function maybeStudio(s: GameState): void {
 
   const start = (baseId: string, method: 'grpo' | 'cai', target: 'reasoning' | 'agentic' | 'safety', effort: number): boolean => {
     if (!canPostTrain(s, [baseId], method, target)) return false
+    // a futile run: the body's capacity ceiling leaves (almost) nothing to gain on the axis
+    const base = resolveModel(s, baseId)
+    if (method === 'grpo' && target !== 'safety' && base) {
+      if (projTrain(base, method, target, effort).qualityBy[target] - base.qualityBy[target] < 1) return false
+    }
     return startPostTrain(s, [baseId], method, target, effort)
   }
 
@@ -540,7 +529,7 @@ function maybeStudio(s: GameState): void {
 
   // --- 2. the AGENT-WALL apex, in APEX_GRPO_DEPTH stacked GRPO-agentic runs ---
   // A single GRPO-agentic tops out at servedAgentic ≈ 106 and FAILS the wave-80+ wall
-  // (servedAgentic ≳ 110.6). Each stacked GRPO run adds ≈ +6 agentic, so a FAST low-
+  // (servedAgentic ≳ 110.6). Stacked GRPO runs add diminishing gains (bounded by the body's capacity ceiling), so a FAST low-
   // active-param MoE base (≈3B active) reaches servedAgentic ≈ 116 in three runs while
   // keeping ≈4 ms TPOT (meets the interactive SLO → deployable widely without slo_miss).
   // Pick the STANDARD-fitting base whose apex projection clears the wall, preferring the
@@ -808,7 +797,7 @@ function pinApexRacks(s: GameState, waveAbout: number): void {
  * fleet mid-surge → decode collapses → mass slo_miss → SLA death (exactly the wave-80+
  * boss deaths). So in the late game we build POWER and COOLING headroom so the fleet still
  * fits AFTER a ×0.55 cut: target cap ≥ used / 0.55 ≈ 1.85× used (with a small margin).
- * Liquid Cooling Loops (+60 kW) carry the heat headroom cheaply in tiles.
+ * The air-cooled fleet's heat headroom is Cooling Towers (a Liquid Loop cools only liquid racks).
  */
 function ensureIncidentHeadroom(s: GameState, waveAbout: number): void {
   if (waveAbout < 40) return
@@ -822,8 +811,8 @@ function ensureIncidentHeadroom(s: GameState, waveAbout: number): void {
     updatePower(s)
   }
   guard = 0
-  while (s.cooling.cap < heatTarget && s.meters.cash > reserveOf(s) + TOWER_DEFS.cooling_liquid.cost + 30 && guard++ < 16) {
-    if (!place(s, 'cooling_liquid', infraSlot())) break
+  while (coolingPools(s).air.cap < heatTarget && s.meters.cash > reserveOf(s) + TOWER_DEFS.cooling.cost + 30 && guard++ < 16) {
+    if (!place(s, 'cooling', infraSlot())) break
     updatePower(s)
   }
 }

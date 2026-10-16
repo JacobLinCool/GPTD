@@ -19,7 +19,7 @@ import { calibrateRecipes, qualityFromBenchmarks, thinkingOf, withinFrontierTole
 import { MODEL_ARCH } from './roster.arch.generated'
 import { AA_BENCH, AA_BENCH_SOURCE, AA_META } from './roster.bench.generated'
 import { GENERATED_ROSTER } from './roster.generated'
-import { buildCampaign, CAMPAIGN_THEMES, themedIncidentId } from './campaign'
+import { buildCampaign, CAMPAIGN_THEMES, themeIncidentId } from './campaign'
 
 /* ------------------------------------------------------------------ *
  *  REQUEST TAXONOMY — the enemies, redesigned (P3a) by ROOT PROPERTY.  *
@@ -343,14 +343,14 @@ const HW_SPECS: Record<string, HwSpec> = {
   hw_pod: {
     id: 'hw_pod', name: 'DGX H200', gpuModel: 'DGX H200 (8× H200)', gpus: 8,
     bf16TflopsPerGpu: 989, fp8TflopsPerGpu: 1979, hbmGbPerGpu: 141, hbmTbsPerGpu: 4.8,
-    tdpWattsPerGpu: 700, cooling: 'liquid', capexUsd: 320000, gpuHrUsdPerGpu: 3.2,
+    tdpWattsPerGpu: 700, cooling: 'air', capexUsd: 320000, gpuHrUsdPerGpu: 3.2,
     targets: 2, powerDraw: 10, heat: 10, range: 3.4, color: 0xffb86c, accent: 0xffe0b8,
     desc: 'Eight H200s as one node: 1.1 TB of pooled HBM and 38 TB/s aggregate. Fits a 200B-class model.',
   },
   hw_superpod: {
     id: 'hw_superpod', name: 'DGX B200', gpuModel: 'DGX B200 (8× B200)', gpus: 8,
     bf16TflopsPerGpu: 2250, fp8TflopsPerGpu: 4500, hbmGbPerGpu: 192, hbmTbsPerGpu: 8.0,
-    tdpWattsPerGpu: 1000, cooling: 'liquid', capexUsd: 500000, gpuHrUsdPerGpu: 5.0,
+    tdpWattsPerGpu: 1000, cooling: 'air', capexUsd: 500000, gpuHrUsdPerGpu: 5.0,
     targets: 3, powerDraw: 16, heat: 16, range: 3.5, color: 0xff7ab6, accent: 0xffc4de,
     desc: 'Eight Blackwell B200s: 1.5 TB HBM and 64 TB/s. 700B-class checkpoints live here.',
   },
@@ -946,7 +946,9 @@ const METHOD_RECIPES_RAW: Record<PostTrainMethod, MethodRecipe> = {
     gainScale: 22 /* autoplay-calibratable (P5) */,
     gainCap: 40 /* autoplay-calibratable (P5) */,
     taxScale: 0 /* autoplay-calibratable (P5) */,
-    forgetScale: 0.5 /* autoplay-calibratable (P5) */,
+    // continued pre-training without replay is where catastrophic forgetting is best grounded
+    // (DOSSIER §2.1/§2.8): ≈3 points off every non-target axis at effort 1.
+    forgetScale: 3 /* autoplay-calibratable (P5) */,
     reshapesDeployment: false, requiresTech: 'pt_cpt',
     desc: 'Continued pre-training on a big corpus. Broad capability and long-context gains, but the highest catastrophic forgetting.',
   },
@@ -1075,17 +1077,19 @@ const METHOD_RECIPES_RAW: Record<PostTrainMethod, MethodRecipe> = {
     reshapesDeployment: false, requiresTech: 'pt_lora',
     desc: 'LoRA over a quantized base: the lowest hardware barrier of all, for cheap iterative tuning.',
   },
-  // Merge — average two upstream models (§2.6): no retraining, no forgetting, no gainScale.
+  // Merge — weight-average two checkpoints of the SAME base (§2.6, model soups / TIES): no
+  // retraining, no forgetting, no gainScale. The target is unused (the axes are averaged);
+  // the Data pays the eval pass that checks the merged weights (models.ts mergeCompatible).
   merge: {
     id: 'merge', name: 'Model Merge', relation: 'merge',
-    allowedTargets: [...PEFT_TARGETS, 'safety', 'longctx', 'domain'],
-    costCompute: 0.2, costData: 0,
+    allowedTargets: ['general'],
+    costCompute: 0.2, costData: 4,
     gainScale: 0 /* n/a — merge averages upstream axes */,
     gainCap: 0 /* n/a */,
     taxScale: 0 /* autoplay-calibratable (P5) */,
     forgetScale: 0 /* autoplay-calibratable (P5) */,
     reshapesDeployment: false, requiresTech: 'pt_merge',
-    desc: 'Average the weights of two models (same family). No retraining, no forgetting — blend two specialists into one.',
+    desc: 'Average the weights of two checkpoints derived from the same base (identical architecture). No retraining, no forgetting — blend two specialists into one; safety and over-refusal land at the average of the two.',
   },
 }
 
@@ -1506,10 +1510,11 @@ export const TOWER_DEFS: Record<string, TowerDef> = {
     color: 0x36e0e0,
     accent: 0xb6fffb,
     // §5.5: a direct-liquid loop sized for a high-density rack — an NVL72 is ~58 kW
-    // served. ENABLES liquid-cooled racks (DGX/NVL72) and adds large kW (gated hard).
+    // served. ENABLES liquid-cooled racks (>1000 W/GPU, the NVL72) and is their own
+    // heat-rejection pool: its kW cools ONLY liquid racks (power.ts), never air racks.
     cooling: 60,
-    tagline: 'Enables liquid racks · +60 kW',
-    desc: 'Direct liquid cooling (DLC). REQUIRED before any DGX/NVL72 rack (≥1000 W/GPU) can run — those racks cannot be served at all without a loop. Also adds large cooling capacity.',
+    tagline: 'Enables liquid racks · +60 kW liquid',
+    desc: 'Direct liquid cooling (DLC) to the cold plates. REQUIRED before a GB200 NVL72 rack (>1000 W/GPU) can run — it cannot be served at all without a loop. Its +60 kW cools only liquid-cooled racks: air-cooled racks, up to the DGX B200, still reject their heat through Cooling Towers.',
   },
   lab: {
     id: 'lab',
@@ -1548,13 +1553,13 @@ export const WAVES: WaveDef[] = buildCampaign(CAMPAIGN_THEMES)
 /**
  * The DETERMINISTIC between-wave incident a campaign wave forces (overriding the
  * random roll), so a real event lands its signature consequence — DeepSeek's
- * price war, a grid power crunch, the EU AI Act audit, a viral GPU melt. Returns
- * null for 'none' / structural single-lane-surge waves and for endless surges
- * (index past the campaign), where the random roll applies instead.
+ * price war, a grid emergency, the EU AI Act audit, a viral GPU melt: the theme's
+ * explicit `incident`, else its special's default. Returns null for 'none' /
+ * plain structural surge waves and for endless surges (index past the campaign),
+ * where the random roll applies instead.
  */
 export function themedIncidentForWave(index: number): string | null {
-  const theme = CAMPAIGN_THEMES[index]
-  return theme ? themedIncidentId(theme.special) : null
+  return themeIncidentId(CAMPAIGN_THEMES[index])
 }
 
 /* ------------------------------------------------------------------ *
@@ -1636,6 +1641,23 @@ export const INCIDENTS: IncidentDef[] = [
     icon: '🔥',
     mods: { powerPrice: 1.6 },
     desc: 'On-site gas turbines run flat-out to outrun the grid queue; volatile fuel pricing inflates power cost this wave.',
+  },
+  /* --- grid capacity shocks: a curtailment order sheds part of the feed (the racks it can
+   *     no longer power brown out) and what keeps running burns on-site fuel; an
+   *     interconnection freeze blocks energizing any NEW Power Plant. --- */
+  {
+    id: 'inc_grid_curtailment',
+    name: 'Grid Curtailment Order',
+    icon: '🔌',
+    mods: { powerCap: 0.85, powerPrice: 1.5 },
+    desc: 'A grid emergency order curtails large loads before rolling blackouts. 15% of your power feed is cut this wave (racks beyond it go dark) and the rest runs partly on costly backup generation.',
+  },
+  {
+    id: 'inc_interconnect_queue',
+    name: 'Interconnection Freeze',
+    icon: '🗼',
+    mods: { powerBuild: 0, powerPrice: 1.3 },
+    desc: 'The utility will not energize new load: no new Power Plant can be connected this build phase or wave, and power costs more. Fit the fleet inside the power you already have.',
   },
   {
     id: 'inc_nuclear_ppa',
@@ -1754,8 +1776,8 @@ export const INCIDENTS: IncidentDef[] = [
     name: 'Enterprise Demo Day',
     icon: '🤝',
     good: true,
-    mods: { reward: 1.5 },
-    desc: 'A flagship enterprise pilot lands. Clean serves pay a premium this wave — but a single SLO miss is very visible.',
+    mods: { reward: 1.5, slaDamage: 1.8 },
+    desc: 'A flagship enterprise pilot lands. Clean serves pay a 50% premium this wave — but every SLO miss, dropped request or wrongly refused prompt costs 1.8× the SLA.',
   },
   {
     id: 'inc_demand_lull',

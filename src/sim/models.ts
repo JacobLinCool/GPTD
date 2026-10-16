@@ -12,7 +12,7 @@ import type {
 } from '../core/types'
 import { POSTTRAIN_COMPUTE_SCALE } from '../config'
 import { THINK_TOKENS_FALLBACK } from './calibrate'
-import { DEFAULT_MODEL_ID, METHOD_RECIPES, MODEL_DEFS } from './content'
+import { DEFAULT_MODEL_ID, METHOD_RECIPES, MODEL_DEFS, MODEL_LIST } from './content'
 
 /**
  * The SINGLE model-resolution point (R7 / C4). Derived (player-created)
@@ -59,14 +59,53 @@ export function targetAxis(target: PostTrainTarget): CapabilityAxis {
   return gainAxis(target) ?? 'general'
 }
 
+/** A body may be trained up to this far past the best base model at most twice its size. */
+export const CAPACITY_MARGIN = 6
+/** Peers that bound a body's capacity: roster base models up to this multiple of its total params. */
+export const CAPACITY_PEER_SIZE = 2
+/** The roster is fixed after load, so each (body size, axis) ceiling is computed once. */
+const CEILING_MEMO = new Map<string, number>()
+
+/**
+ * §1.4 the CAPACITY CEILING of a deploy body on one axis: post-training cannot push a
+ * checkpoint past what models of its size class reach. It is the best qualityBy[axis]
+ * among the roster's BASE models (never derived ones) with at most CAPACITY_PEER_SIZE ×
+ * its total params, plus CAPACITY_MARGIN. It depends only on the body, so stacking runs
+ * cannot ratchet it (RL/distill gains on small models are bounded by base capacity —
+ * the DeepSeek-R1 distill results; agentic/SWE is the axis where scale still separates).
+ */
+export function capacityCeiling(paramsTotalB: number, axis: CapabilityAxis): number {
+  const key = `${paramsTotalB}|${axis}`
+  const hit = CEILING_MEMO.get(key)
+  if (hit !== undefined) return hit
+  let best = 0
+  for (const m of MODEL_LIST) {
+    if (m.paramsTotalB > CAPACITY_PEER_SIZE * paramsTotalB) continue
+    if (m.qualityBy[axis] > best) best = m.qualityBy[axis]
+  }
+  const ceil = Math.min(Q_HI, best + CAPACITY_MARGIN)
+  CEILING_MEMO.set(key, ceil)
+  return ceil
+}
+
+/** The recipe's gain on its axis BEFORE the body's capacity ceiling (depth damp + headroom cap only). */
+function uncappedGain(base: ModelDef, recipe: MethodRecipe, axis: CapabilityAxis, effort: number, depth: number): number {
+  const depthDamp = 1 / (1 + 0.15 * depth)
+  const rawGain = recipe.gainScale * Math.sqrt(effort) * depthDamp
+  const headroom = Math.max(0, (Q_HI - base.qualityBy[axis]) / Q_HI)
+  return Math.min(rawGain, recipe.gainCap * headroom)
+}
+
 /**
  * §1.4 — the quality delta a recipe produces on its target axis.
- *   depthDamp = 1 / (1 + 0.15 × depth)          // deep chains: diminishing returns
- *   rawGain   = gainScale × √effort × depthDamp  // curated-data returns + depth decay
- *   headroom  = (130 − base[axis]) / 130         // harder to push near the ceiling
- *   gain      = min(rawGain, gainCap × headroom) // PEFT capacity cap (cpt's high cap can exceed it)
+ *   depthDamp = 1 / (1 + 0.15 × depth)            // deep chains: diminishing returns
+ *   rawGain   = gainScale × √effort × depthDamp    // curated-data returns + depth decay
+ *   headroom  = (130 − base[axis]) / 130           // harder to push near the ceiling
+ *   gain      = min(rawGain, gainCap × headroom)   // PEFT capacity cap (cpt's high cap can exceed it)
+ *   gain      = min(gain, ceil(body) − base[axis]) // the body's capacity ceiling (never below 0)
  * Returns the positive gain to add to the target axis (≥0). A `safety` target has
  * no quality axis (gainAxis null) → 0 here (the gain is the alignment.safety boost).
+ * Distillation is bounded by its own student-capacity cap instead (computeDerivedFields).
  */
 export function deriveQuality(
   base: ModelDef,
@@ -77,11 +116,18 @@ export function deriveQuality(
 ): number {
   const axis = gainAxis(target)
   if (axis === null) return 0
-  const depthDamp = 1 / (1 + 0.15 * depth)
-  const rawGain = recipe.gainScale * Math.sqrt(effort) * depthDamp
-  const headroom = Math.max(0, (Q_HI - base.qualityBy[axis]) / Q_HI)
-  const gain = Math.min(rawGain, recipe.gainCap * headroom)
+  let gain = uncappedGain(base, recipe, axis, effort, depth)
+  if (recipe.id !== 'distill') gain = Math.min(gain, capacityCeiling(base.paramsTotalB, axis) - base.qualityBy[axis])
   return Math.max(0, gain)
+}
+
+/**
+ * §2.1/§2.8 catastrophic forgetting compounds with lineage depth: every run on an
+ * already-derived checkpoint forgets more of what the base knew (×1 for the first run,
+ * ×1.5 for the second, ×2 for the third…), so a deep chain erodes its non-target axes.
+ */
+export function forgetDepthMul(depth: number): number {
+  return 1 + 0.5 * Math.max(0, depth - 1)
 }
 
 /** §1.4 alignment-tax weight by method (rlhf is the crudest → highest tax). */
@@ -247,7 +293,7 @@ export function computeDerivedFields(
   const qualityBy: Record<CapabilityAxis, number> = { ...base.qualityBy }
 
   if (method === 'merge' && other) {
-    // merge: average the two upstreams' axes — no gain, no forgetting.
+    // merge: average the two same-base upstreams' axes — no gain, no forgetting.
     for (const a of CAP_AXES) qualityBy[a] = clampQ((base.qualityBy[a] + other.qualityBy[a]) / 2)
   } else {
     if (axis !== null) {
@@ -260,8 +306,9 @@ export function computeDerivedFields(
       const tax = recipe.taxScale * alignmentTaxFactor(method) * Math.sqrt(effort)
       if (axis !== 'general') qualityBy.general = clampQ(qualityBy.general - tax)
     }
-    // catastrophic forgetting (§2.1/§2.8): every NON-target capability axis drifts down.
-    const forget = recipe.forgetScale * FORGET_SPREAD * Math.sqrt(effort)
+    // catastrophic forgetting (§2.1/§2.8): every NON-target capability axis drifts down,
+    // more the deeper the chain.
+    const forget = recipe.forgetScale * FORGET_SPREAD * Math.sqrt(effort) * forgetDepthMul(depth)
     if (forget > 0) {
       for (const a of CAP_AXES) {
         if (a === axis) continue
@@ -275,7 +322,16 @@ export function computeDerivedFields(
   let instructFollow = base.instructFollow
   let isReasoning = base.isReasoning
 
-  if (target === 'safety' || method === 'rlhf' || method === 'cai') {
+  if (method === 'merge' && other) {
+    // weight averaging interpolates alignment too (DOSSIER §2.6): the merged checkpoint
+    // lands at the mean safety / over-refusal / instruction-following of its parents —
+    // never one parent's profile verbatim. A refusal style survives only if both share it.
+    alignment.safety = (base.alignment.safety + other.alignment.safety) / 2
+    alignment.overRefusal = (base.alignment.overRefusal + other.alignment.overRefusal) / 2
+    alignment.refusalStyle =
+      base.alignment.refusalStyle === other.alignment.refusalStyle ? base.alignment.refusalStyle : 'hard-refusal'
+    instructFollow = (base.instructFollow + other.instructFollow) / 2
+  } else if (target === 'safety' || method === 'rlhf' || method === 'cai') {
     const safetyGain = (method === 'rlhf' ? 28 : method === 'cai' ? 26 : 18) * Math.sqrt(effort)
     alignment.safety = Math.min(100, alignment.safety + safetyGain)
     if (method === 'cai') {
@@ -310,10 +366,9 @@ export function computeDerivedFields(
     body = { ...body, nativeWeightBytes: 0.5 }
     for (const a of CAP_AXES) qualityBy[a] = clampQ(qualityBy[a] - 2)
   } else if (method === 'merge' && other) {
-    // a merge inherits the larger of the two bodies (the union must fit), materialized at
-    // the higher of the two release precisions (merging dequantizes a low-bit parent).
-    if (other.paramsTotalB > body.paramsTotalB) body = bodyOf(other)
-    body = { ...body, isMoE: body.isMoE || other.isMoE, nativeWeightBytes: Math.max(base.nativeWeightBytes, other.nativeWeightBytes) }
+    // both parents share one body (mergeCompatible); the merge is materialized at the
+    // higher of the two release precisions (averaging dequantizes a low-bit parent).
+    body = { ...body, nativeWeightBytes: Math.max(base.nativeWeightBytes, other.nativeWeightBytes) }
     isReasoning = isReasoning || other.isReasoning
     contextWindowK = Math.min(contextWindowK, other.contextWindowK)
   }
@@ -374,6 +429,51 @@ function bodyOf(m: ModelDef): DeployBody {
 }
 
 /**
+ * The roster base a checkpoint descends from: follow each derived model's first parent
+ * back to a base (sim fields only — `lineage`, never `m.real`).
+ */
+export function lineageRoot(s: GameState, m: ModelDef): ModelDef {
+  let cur = m
+  for (let guard = 0; guard < 64 && cur.lineage; guard++) {
+    const parent = resolveModel(s, cur.lineage.baseModelIds[0])
+    if (!parent || parent === cur) break
+    cur = parent
+  }
+  return cur
+}
+
+/** Why two checkpoints cannot be weight-averaged (null = they can). */
+export type MergeBlock = 'missing' | 'self' | 'root' | 'body'
+
+/**
+ * §2.6 weight averaging only works across fine-tunes of ONE base (model soups / TIES /
+ * DARE): the two checkpoints must be distinct, descend from the same roster base, and
+ * share an identical body (params, layers, KV heads, head dim, attention) — a distilled
+ * student or a different architecture has no weights to average with.
+ */
+export function mergeBlock(s: GameState, aId: string, bId: string | undefined): MergeBlock | null {
+  if (!bId) return 'missing'
+  if (aId === bId) return 'self'
+  const a = resolveModel(s, aId)
+  const b = resolveModel(s, bId)
+  if (!a || !b) return 'missing'
+  if (lineageRoot(s, a).id !== lineageRoot(s, b).id) return 'root'
+  const same =
+    a.paramsTotalB === b.paramsTotalB &&
+    a.paramsActiveB === b.paramsActiveB &&
+    a.layers === b.layers &&
+    a.kvHeads === b.kvHeads &&
+    a.headDim === b.headDim &&
+    a.attn === b.attn
+  return same ? null : 'body'
+}
+
+/** Can these two checkpoints be merged (same base, same body, distinct)? */
+export function mergeCompatible(s: GameState, aId: string, bId: string | undefined): boolean {
+  return mergeBlock(s, aId, bId) === null
+}
+
+/**
  * §1.2 — create a derived ModelDef from a post-training run. NON-RECURSIVE
  * snapshot: the base is fully resolved here and the final qualityBy / alignment /
  * deploy fields are FIXED into the new def (via the SHARED `computeDerivedFields`);
@@ -385,9 +485,9 @@ export function deriveModel(s: GameState, meta: PostTrainMeta): ModelDef | null 
   if (!recipe) return null
   const base = resolveModel(s, meta.baseIds[0])
   if (!base) return null
-  // merge needs a second upstream model; everyone else has exactly one base.
-  const other = meta.method === 'merge' ? resolveModel(s, meta.baseIds[1] ?? meta.baseIds[0]) : null
-  if (meta.method === 'merge' && !other) return null
+  // merge needs a second, same-base upstream model; everyone else has exactly one base.
+  const other = meta.method === 'merge' ? resolveModel(s, meta.baseIds[1] ?? '') : null
+  if (meta.method === 'merge' && (!other || !mergeCompatible(s, meta.baseIds[0], meta.baseIds[1]))) return null
 
   const { method, target, effort } = meta
   const f = computeDerivedFields(base, recipe, target, effort, other)
@@ -468,6 +568,13 @@ export interface StudioPreview {
   computeCost: number
   /** estimated waves to finish, given the fleet's requisition throughput (0 if no fleet). */
   estWaves: number
+  /** why a merge cannot run with this partner (null when not a merge, or compatible). */
+  mergeBlock: MergeBlock | null
+  /**
+   * The body's capacity ceiling on the target axis WHEN it limits this run (the recipe
+   * would add more than the body can hold), else null — so the UI can say why the gain is small.
+   */
+  ceiling: { axis: CapabilityAxis; value: number } | null
   /** alignment.safety / over-refusal movement (for the safety chips). */
   safetyDelta: number
   overRefusalDelta: number
@@ -492,8 +599,10 @@ export function studioPreview(
   const recipe = METHOD_RECIPES[method]
   const base = resolveModel(s, baseId)
   if (!recipe || !base) return null
-  const other = method === 'merge' ? resolveModel(s, otherId ?? baseId) : null
-  if (method === 'merge' && !other) return null
+  // a merge previews only with a compatible same-base partner; otherwise it shows the base
+  // unchanged with ok:false and the reason, so the UI can say which partner to pick.
+  const block = method === 'merge' ? mergeBlock(s, baseId, otherId) : null
+  const other = method === 'merge' && !block && otherId ? resolveModel(s, otherId) : null
 
   const fields = computeDerivedFields(base, recipe, target, effort, other)
   const before = { ...base.qualityBy }
@@ -505,9 +614,18 @@ export function studioPreview(
   const computeCost = Math.max(1, postTrainComputeCost(recipe, base.paramsActiveB, effort, previewDepth, base.paramsTotalB))
   const estWaves = requisitionPerWave > 0 ? Math.max(1, Math.ceil(computeCost / requisitionPerWave)) : 0
 
+  // does the body's capacity ceiling clip this run's gain? (distill / merge have their own rules)
+  const axis = gainAxis(target)
+  let ceiling: StudioPreview['ceiling'] = null
+  if (axis && method !== 'merge' && method !== 'distill') {
+    const value = capacityCeiling(base.paramsTotalB, axis)
+    const uncapped = uncappedGain(base, recipe, axis, effort, previewDepth + 1)
+    if (base.qualityBy[axis] + uncapped > value + 1e-9) ceiling = { axis, value }
+  }
+
   const okTarget = recipe.allowedTargets.includes(target)
   return {
-    ok: okTarget,
+    ok: okTarget && !block,
     base,
     other,
     fields,
@@ -516,6 +634,8 @@ export function studioPreview(
     dataCost,
     computeCost,
     estWaves,
+    mergeBlock: block,
+    ceiling,
     safetyDelta: fields.alignment.safety - base.alignment.safety,
     overRefusalDelta: fields.alignment.overRefusal - base.alignment.overRefusal,
   }

@@ -6,7 +6,7 @@
 import { GRID_COLS, GRID_ROWS } from '../config'
 import type { GameState, Outcome, SafetyHazard, TowerDef, WaveReport } from '../core/types'
 import { buildCost, hardwareUpgradeCost, isLastWave, nextHardware, towerValue } from '../sim/actions'
-import { CAMPAIGN_THEMES } from '../sim/campaign'
+import { CAMPAIGN_THEMES, contractPayout } from '../sim/campaign'
 import {
   BUILD_ORDER,
   HARDWARE_DEFS,
@@ -22,7 +22,7 @@ import { guardLatencyMs, hasLab, hasLiquidLoop, hwNeedsLiquid, loadout, serverFi
 import { guardCoveredLanes } from '../sim/guards'
 import { EFFORT_NOTCHES, postTrainDataCost, resolveModel } from '../sim/models'
 import { CORE_TILE, isBuildable, isPathTile } from '../sim/pathing'
-import { methodUnlocked, researchUnlocked } from '../sim/research'
+import { methodUnlocked, requisitionPreview, researchUnlocked } from '../sim/research'
 import { alignmentTax, categoryUnlocked, effRecall, overRefuse, overrefMul, redteamRecallBonus } from '../sim/safety'
 import { surgeLaneOf } from '../sim/spawn'
 
@@ -149,6 +149,8 @@ export interface AgentSnapshot {
   meters: { cash: number; trust: number; sla: number; data: number }
   power: { used: number; cap: number }
   cooling: { used: number; cap: number }
+  /** the Liquid Cooling Loops' own pool (inside `cooling`): it cools only liquid-cooled racks. */
+  coolingLiquid: { used: number; cap: number }
   flags: { hasLab: boolean; hasLiquidLoop: boolean }
   modifiers: {
     buildCost: number
@@ -157,6 +159,12 @@ export interface AgentSnapshot {
     safetyDamage: number
     volume: number
     reward: number
+    /** usable share of the power feed (a grid curtailment order cuts it). */
+    powerCap: number
+    /** 0 = no new Power Plant can be connected (interconnection freeze). */
+    powerBuild: number
+    /** multiplier on every SLA penalty (an enterprise pilot). */
+    slaDamage: number
   }
   incident: { id: string; name: string; desc: string; good: boolean } | null
   nextWave:
@@ -164,6 +172,7 @@ export interface AgentSnapshot {
         wave: number
         name: string
         brief: string
+        /** the wave's SLA contract in credits at 100% Goodput; the paid bonus is this × Goodput. */
         clearBonus: number
         totalRequests: number
         mix: Array<{ typeId: string; count: number }>
@@ -187,6 +196,8 @@ export interface AgentSnapshot {
     posttrain: string | null
     eval: string | null
     options: AgentResearchOption[]
+    /** what starting one more project would lend right now (strongest racks that fit the cap). */
+    requisition: { rackIds: number[]; lentTflops: number; capTflops: number; servingLossPct: number; blocked: boolean }
   }
   studio: {
     available: boolean
@@ -214,6 +225,18 @@ export interface AgentSnapshot {
 }
 
 const round2 = (v: number): number => Math.round(v * 100) / 100
+
+/** The racks one more research / Studio project would lend right now (research.ts requisitionPreview). */
+function requisitionView(s: GameState): AgentSnapshot['research']['requisition'] {
+  const rq = requisitionPreview(s, 0, true)
+  return {
+    rackIds: rq.rackIds,
+    lentTflops: Math.round(rq.lentTflops),
+    capTflops: Math.round(rq.capTflops),
+    servingLossPct: Math.round(rq.servingLoss * 1000) / 10,
+    blocked: rq.blocked,
+  }
+}
 
 function roundLedger<K extends string>(l: Partial<Record<K, number>> | undefined): Partial<Record<K, number>> {
   const out: Partial<Record<K, number>> = {}
@@ -443,7 +466,7 @@ export function serializeState(s: GameState): AgentSnapshot {
       wave: upcomingIdx + 1,
       name: upcoming.name,
       brief: upcoming.brief,
-      clearBonus: upcoming.clearBonus,
+      clearBonus: contractPayout(upcoming.clearBonus, 100),
       totalRequests: total,
       mix: Object.entries(mixMap)
         .map(([typeId, count]) => ({ typeId, count }))
@@ -470,6 +493,7 @@ export function serializeState(s: GameState): AgentSnapshot {
     // live in every phase: the sim recomputes power after each build action (refreshPower)
     power: { used: round2(s.power.used), cap: round2(s.power.cap) },
     cooling: { used: round2(s.cooling.used), cap: round2(s.cooling.cap) },
+    coolingLiquid: { used: round2(s.coolingLiquid.used), cap: round2(s.coolingLiquid.cap) },
     flags: { hasLab: labReady, hasLiquidLoop: liquidReady },
     modifiers: {
       buildCost: s.modifiers.buildCost,
@@ -478,6 +502,9 @@ export function serializeState(s: GameState): AgentSnapshot {
       safetyDamage: s.modifiers.safetyDamage,
       volume: s.modifiers.volume,
       reward: s.modifiers.reward,
+      powerCap: s.modifiers.powerCap,
+      powerBuild: s.modifiers.powerBuild,
+      slaDamage: s.modifiers.slaDamage,
     },
     incident: s.pendingIncident
       ? {
@@ -505,6 +532,7 @@ export function serializeState(s: GameState): AgentSnapshot {
       posttrain: s.research.posttrain?.id ?? null,
       eval: s.research.eval?.id ?? null,
       options: researchOptions,
+      requisition: requisitionView(s),
     },
     studio: {
       available: labReady,

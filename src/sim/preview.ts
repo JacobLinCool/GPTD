@@ -11,7 +11,7 @@
  *  generated (RNG) only when it starts, so its mix stays unknown here.  *
  * ------------------------------------------------------------------ */
 
-import { CLEAR_BONUS_SCALE, LANE_SPEED, TILE } from '../config'
+import { LANE_SPEED, TILE } from '../config'
 import type {
   CapabilityAxis,
   GameState,
@@ -21,11 +21,12 @@ import type {
   SafetyProfile,
   WaveDef,
 } from '../core/types'
-import { CAMPAIGN_THEMES } from './campaign'
+import { CAMPAIGN_THEMES, contractPayout } from './campaign'
 import { REQUEST_TYPES, WAVES } from './content'
 import { loadoutOf, rackOperatingCostPerSec } from './effects'
 import { LANE_COUNT, pathLength } from './pathing'
 import { ALL_HAZARDS } from './safety'
+import { escalatedHazards } from './spawn'
 
 /** One archetype of the upcoming wave, resolved exactly as spawnRequest will spawn it. */
 export interface WavePreviewEntry {
@@ -42,9 +43,11 @@ export interface WavePreviewEntry {
   /** real prompt / answer lengths at this point of the campaign (ISL / OSL). */
   inputTokens: number
   outputTokens: number
-  /** hazards this archetype carries (severity > 0). */
+  /** hazards this archetype carries (severity > 0), after the era's hazard pressure. */
   hazards: SafetyHazard[]
   hazardSeverity: SafetyProfile
+  /** share (0..1) of its attacks that are NOVEL variants classifier guards mostly miss. */
+  novelShare: number
   /** the ingress lanes it arrives on. */
   lanes: number[]
 }
@@ -76,7 +79,7 @@ export interface WavePreview {
   burnPerSec: number
   /** burnPerSec × estDurationSec — the bill the wave costs before any income. */
   projectedBill: number
-  /** the authored clear bonus in credits (paid on clearing the wave). */
+  /** the wave's SLA contract in credits at 100% Goodput (the paid bonus scales with Goodput). */
   clearBonus: number
 }
 
@@ -151,7 +154,9 @@ export function previewNextWave(s: GameState): WavePreview | null {
     const longest = Math.max(...lanes.map((l) => pathLength(l)))
     duration = Math.max(duration, g.delay + Math.max(0, count - 1) * g.interval + (speed > 0 ? longest / speed : 0))
 
-    const hazardSeverity: SafetyProfile = { ...(rt.hazards ?? {}) }
+    // the same hazard profile spawnRequest arms: the wave's override (or the def's), × era pressure
+    const hazardSeverity = escalatedHazards(g.hazards ?? rt.hazards ?? {}, g.hazardMul ?? 1)
+    const hazards = ALL_HAZARDS.filter((h) => (hazardSeverity[h] ?? 0) > 0)
     const e = byType.get(g.typeId)
     if (e) {
       e.count += count
@@ -168,8 +173,9 @@ export function previewNextWave(s: GameState): WavePreview | null {
       // the same token math spawnRequest applies (input follows √work; embed stays prefill-only)
       inputTokens: Math.max(1, Math.round(rt.inputTokens * contextMul * Math.max(1, Math.sqrt(workMul)))),
       outputTokens: Math.max(rt.outputTokens > 0 ? 1 : 0, Math.round(rt.outputTokens * workMul)),
-      hazards: ALL_HAZARDS.filter((h) => (hazardSeverity[h] ?? 0) > 0),
+      hazards,
       hazardSeverity,
+      novelShare: hazards.length ? (g.novelShare ?? 0) : 0,
       lanes: [...lanes],
     })
   }
@@ -197,6 +203,6 @@ export function previewNextWave(s: GameState): WavePreview | null {
     estDurationSec: duration,
     burnPerSec,
     projectedBill: burnPerSec * duration,
-    clearBonus: Math.round(def.clearBonus * CLEAR_BONUS_SCALE),
+    clearBonus: contractPayout(def.clearBonus, 100),
   }
 }

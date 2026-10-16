@@ -2,15 +2,16 @@
  *  CAMPAIGN — the 100-wave real-history escalation gauntlet.          *
  * ------------------------------------------------------------------ *
  *
- * The campaign dramatizes the real 2023→2026 data-center-inference era as a
- * MONOTONICALLY escalating elimination gauntlet: each wave is a specific real
- * event (GPT-4, the H100 shortage, Mixtral MoE, Claude 3, Gemini 1.5's 1M
- * window, GPT-4o, o1 reasoning, Llama-3.1-405B, Blackwell GB200, DeepSeek R1 +
- * the Jan-2025 crash, Stargate, the nuclear deals, the EU AI Act, agentic
- * coding, MCP, the inference price war…). Difficulty climbs from wave 1 (early
- * 2023, tier 1) to wave 100 (2026+, tier 12). Reaching wave 100 is the apex;
- * most runs die mid-campaign; endless mode (endless.ts) continues procedurally
- * beyond it.
+ * The campaign replays the real 2023→2026 data-center-inference era as a
+ * MONOTONICALLY escalating elimination gauntlet. Every wave is a real event that
+ * hit providers — a DEMAND SHIFT (the ChatGPT boom, the RAG and coding-assistant
+ * waves, the DeepSeek-R1 reasoning flood, the agent majority) or an OPERATING
+ * SHOCK (the H100 shortage, cable cuts, grid emergencies, export bans, the EU AI
+ * Act, the inference price war, outages and agent attacks). Model and chip
+ * launches are not waves: those are the player's tools. Difficulty climbs from
+ * wave 1 (early 2023, tier 1) to wave 100 (late 2026, tier 12). Reaching wave 100
+ * is the apex; most runs end mid-campaign; endless mode (endless.ts) resumes at
+ * the wave-100 load and keeps climbing.
  *
  * To keep 100 waves CONSISTENT and re-tunable, the campaign is generated from a
  * compact authored theme table (CAMPAIGN_THEMES, one row per wave) by a pure,
@@ -21,7 +22,8 @@
  * system (sim.ts, seeded by s.rng). Nothing here uses RNG — the table is static.
  */
 
-import type { RequestTypeDef, SpawnGroup, WaveDef } from '../core/types'
+import { CLEAR_BONUS_SCALE } from '../config'
+import type { RequestTypeDef, SafetyProfile, SpawnGroup, WaveDef } from '../core/types'
 import { LANE_COUNT } from './pathing'
 
 // the 100 authored real-history waves (generated from the research synthesis).
@@ -32,17 +34,25 @@ export interface WaveMixEntry {
   typeId: string
   /** relative prominence (0.1..3) — splits the wave's request budget. */
   weight: number
+  /**
+   * Authored prompt-length stretch for this lane on top of the era curve (a companion
+   * wave's long chat histories, a long-document wave's whole files). Default 1.
+   */
+  contextMul?: number
+  /** Authored hazard override: arms a lane the event weaponised (RAG-borne injection). */
+  hazards?: SafetyProfile
 }
 
 export type WaveVolume = 'trickle' | 'steady' | 'heavy' | 'flood' | 'extreme'
 
 /**
  * The authored special event a wave dramatizes. `single-lane-surge` is structural
- * (the builder funnels the heaviest bursts through one ingress — a cable cut /
- * regional outage); the others name a DETERMINISTIC between-wave incident that
- * sim.ts forces for that wave (overriding the random roll), so a real event lands
- * its signature consequence (DeepSeek's price war, a power-grid crunch, the EU AI
- * Act audit…). `none` leaves the wave to the random incident roll.
+ * (the builder funnels every burst through one ingress — a cable cut / regional
+ * outage); the others name the category of a DETERMINISTIC between-wave incident
+ * that sim.ts forces for that wave (overriding the random roll), so a real event
+ * lands its signature consequence (DeepSeek's price war, a grid emergency, the EU
+ * AI Act audit…). A theme's explicit `incident` picks the exact incident inside the
+ * category. `none` leaves the wave to the random incident roll.
  */
 export type WaveSpecial =
   | 'none'
@@ -56,13 +66,14 @@ export type WaveSpecial =
   | 'viral-bonus'
   | 'enterprise-demo'
   | 'price-war'
+  | 'jailbreak-storm'
 
 /** One authored campaign wave (a real event), expanded into a WaveDef by buildCampaign. */
 export interface WaveTheme {
-  /** e.g. "2023 Q1", "2025 Q2", "2026+", "near-future" */
+  /** e.g. "2023 Q1", "2025 Q2", "2026 Q3" */
   era: string
   name: string
-  /** the real event this wave dramatizes (named + roughly dated). */
+  /** the real event this wave dramatizes (named + dated). */
   realEvent: string
   /** in-game brief that explicitly references + dates the real event. */
   brief: string
@@ -73,7 +84,13 @@ export interface WaveTheme {
   /** difficulty band 1..12, monotonically non-decreasing across the table. */
   tier: number
   special?: WaveSpecial
-  /** boss-grade mixed-everything spike (≈ every 10th wave); widens the mix + bonus. */
+  /**
+   * The exact INCIDENTS id this wave forces, overriding the special's default mapping
+   * (e.g. a cooling wave caused by drought forces the water restriction, not a loop
+   * fault). A single-lane surge can also carry its named outage this way.
+   */
+  incident?: string
+  /** boss-grade spike (≈ every 10th wave): a bigger budget, a forced hard incident, a bigger contract. */
   boss?: boolean
 }
 
@@ -82,7 +99,7 @@ export interface WaveTheme {
  * ------------------------------------------------------------------ */
 
 /** Overall request-volume feel → a budget multiplier on the wave's burst count. */
-const VOLUME_FACTOR: Record<WaveVolume, number> = {
+export const VOLUME_FACTOR: Record<WaveVolume, number> = {
   trickle: 0.6,
   steady: 1.0,
   heavy: 1.55,
@@ -90,20 +107,24 @@ const VOLUME_FACTOR: Record<WaveVolume, number> = {
   extreme: 3.2,
 }
 
+/** A boss wave's request budget over a regular wave of the same tier and volume. */
+export const BOSS_BUDGET_MUL = 1.25
+
 /**
  * Total sprite budget for a wave: grows with tier and volume. Elimination is
  * primarily THROUGHPUT-bound — the board is finite, so a flood eventually
- * outruns even a maxed fleet. Tier 1 steady ≈ 16 sprites; tier 12 extreme ≈ 210.
+ * outruns even a maxed fleet. Tier 1 steady ≈ 15 sprites; tier 12 extreme ≈ 189
+ * (a boss ×1.25).
  */
-function waveBudget(tier: number, volume: WaveVolume): number {
+export function waveBudget(tier: number, volume: WaveVolume, boss = false): number {
   const base = 11 + tier * 4.0
-  return Math.round(base * VOLUME_FACTOR[volume])
+  return Math.round(base * VOLUME_FACTOR[volume] * (boss ? BOSS_BUDGET_MUL : 1))
 }
 
 /**
  * Per-request generation load (decode tokens). Ramps CONVEXLY — gentle early,
  * steep late — toward ~3× by tier 12 before the late-load amplifier is applied
- * in buildWave. Early waves stay near 1.0×. Throughput pressure scales, but a
+ * in groupMuls. Early waves stay near 1.0×. Throughput pressure scales, but a
  * maxed fleet + long-context tech keeps single requests servable (validated by
  * the autoplay depth gate).
  */
@@ -118,7 +139,7 @@ function tierWork(tier: number): number {
  * specialist (the apex requires the full tech tree, not an impossible model).
  * Capped at +20% (tier ≥ 11) — e.g. reason 82 → ~98, still inside frontier reach.
  */
-function tierComplexity(tier: number): number {
+export function tierComplexity(tier: number): number {
   return 1 + Math.min(tier - 1, 10) * 0.02
 }
 
@@ -135,9 +156,55 @@ function tierContext(tier: number): number {
   return 1 + Math.pow(r, 1.5) * 1.9
 }
 
-/** Clear bonus (pre-CLEAR_BONUS_SCALE): a meaningful kicker that grows with tier. */
-function tierBonus(tier: number, boss: boolean): number {
-  return Math.round(60 + tier * 45 + (boss ? 320 : 0))
+/**
+ * Era HAZARD PRESSURE (§3.6): attack sophistication rose over 2023→2026 — manual DAN
+ * role-play, then GCG transferable suffixes, many-shot jailbreaks, then indirect and
+ * agentic injection (EchoLeak 2025, the 2026 agent intrusions). Every hazard severity
+ * an archetype carries is multiplied by this (and clamped to 1): +3.5% per tier, so a
+ * tier-12 injection lands ≈1.4× its 2023 severity and a model's alignment self-handles
+ * less of it.
+ */
+export function hazardMulOf(tier: number): number {
+  return Math.min(1.4, 1 + 0.035 * (tier - 1))
+}
+
+/**
+ * The share of an era's attacks that are NOVEL — adaptive variants a classifier guard
+ * never trained on (guards.ts: an encoder keeps ~45% of its recall on them, a moderation
+ * endpoint ~70%, a generative judge all of it). Zero through 2023 Q1 (tier ≤ 2), then
+ * +5% per tier to half of all attacks by tier 12: late safety needs a generative judge
+ * or a well-aligned model, not just more copies of one classifier.
+ */
+export function novelShareOf(tier: number): number {
+  return Math.max(0, Math.min(0.5, 0.05 * (tier - 2)))
+}
+
+/** Tiers over which the SLA contracts ramp in (the 2023 customers are free-tier consumers). */
+export const CONTRACT_RAMP_TIERS = 5
+
+/**
+ * The SLA-contract value of clearing a wave at 100% Goodput (pre-CLEAR_BONUS_SCALE).
+ * It grows with tier (bigger customers, bigger contracts) and RAMPS IN over the first
+ * CONTRACT_RAMP_TIERS tiers, so the opening waves are funded by token revenue — clean,
+ * on-time serving is what pays first, not the clear bonus. A boss wave carries a large
+ * premium (it is also harder). Past tier 10 the contract tapers (−12% per tier): late
+ * token income dwarfs it, and cash is no longer the binding constraint there.
+ */
+export function tierBonus(tier: number, boss: boolean): number {
+  const ramp = Math.min(1, tier / CONTRACT_RAMP_TIERS)
+  const lateTaper = tier <= 10 ? 1 : 1 - 0.12 * (tier - 10)
+  return Math.round((40 * tier + (boss ? 320 : 0)) * ramp * lateTaper)
+}
+
+/**
+ * The cash a cleared wave's SLA contract actually pays: the authored contract value ×
+ * CLEAR_BONUS_SCALE × the wave's Goodput (clean serves ÷ every request). A wave that
+ * served 60% cleanly collects 60% of the contract — late, wrong, unsafe, refused,
+ * rejected and dropped requests all forfeit their share.
+ */
+export function contractPayout(clearBonus: number, goodputPct: number): number {
+  const share = Math.max(0, Math.min(1, goodputPct / 100))
+  return Math.round(clearBonus * CLEAR_BONUS_SCALE * share)
 }
 
 /**
@@ -160,7 +227,7 @@ const LENGTH_SENS: Record<string, number> = {
   jailbreak: 0.3,
 }
 
-/** The authored campaign tier ceiling (wave 100 ≈ 2026+, tier 12). */
+/** The authored campaign tier ceiling (wave 100 ≈ late 2026, tier 12). */
 export const MAX_TIER = 12
 
 /**
@@ -181,6 +248,34 @@ export function lateLoadMul(tier: number): number {
   return 1 + t * t * LATE_LOAD_GAIN
 }
 
+/** The per-request scaling a burst of one archetype carries at a tier. */
+export interface GroupMuls {
+  /** decode (and, via √, prefill) load. */
+  workMul: number
+  /** prompt-length / long-context demand. */
+  contextMul: number
+  /** quality-line hardness. */
+  complexityMul: number
+}
+
+/**
+ * The ONE place the era's per-request scaling is computed — buildWave AND the endless
+ * generator call it, so endless resumes exactly where wave 100 leaves off. Amplifies the
+ * late-game COMPUTE demand via workMul only: workMul drives decode output tokens AND (via
+ * √work) prefill input tokens, i.e. real prefill+decode SERVING TIME, WITHOUT touching
+ * `context` (the quality-window difficulty). Inflating contextMul too would blow up the
+ * contextGap quality penalty (bad answers → trust death) instead of creating the intended
+ * throughput pressure, so contextMul keeps its authored curve.
+ */
+export function groupMuls(tier: number, typeId: string): GroupMuls {
+  const sens = LENGTH_SENS[typeId] ?? 0.7
+  return {
+    workMul: Math.round((1 + (tierWork(tier) - 1) * sens * lateLoadMul(tier)) * 100) / 100,
+    contextMul: Math.round((1 + (tierContext(tier) - 1) * sens) * 100) / 100,
+    complexityMul: Math.round(tierComplexity(tier) * 100) / 100,
+  }
+}
+
 /**
  * The late-game (max-tier) spawn token counts for an archetype — the SAME math
  * buildWave + spawnRequest apply at the end of the campaign (tier scaling ×
@@ -188,18 +283,15 @@ export function lateLoadMul(tier: number): number {
  * this as the "base → era" range so the displayed numbers aren't read as fixed.
  */
 export function eraTokenRange(def: RequestTypeDef, tier = MAX_TIER): { input: number; output: number } {
-  const sens = LENGTH_SENS[def.id] ?? 0.7
-  const lateMul = lateLoadMul(tier)
-  const ctx = 1 + (tierContext(tier) - 1) * sens
-  const wrk = 1 + (tierWork(tier) - 1) * sens * lateMul
+  const m = groupMuls(tier, def.id)
   return {
-    input: Math.round(def.inputTokens * ctx * Math.max(1, Math.sqrt(wrk))),
-    output: Math.round(def.outputTokens * wrk),
+    input: Math.round(def.inputTokens * m.contextMul * Math.max(1, Math.sqrt(m.workMul))),
+    output: Math.round(def.outputTokens * m.workMul),
   }
 }
 
 /** Natural per-archetype cadence (seconds between spawns) at steady volume. */
-const BASE_INTERVAL: Record<string, number> = {
+export const BASE_INTERVAL: Record<string, number> = {
   embed: 0.32,
   chat: 0.72,
   comp: 0.95,
@@ -211,6 +303,11 @@ const BASE_INTERVAL: Record<string, number> = {
   jailbreak: 0.95,
 }
 
+/** Seconds between a wave's staggered bursts (high-tier waves overlap more: sustained pressure). */
+export function burstSpacing(tier: number): number {
+  return Math.max(3, 7 - tier * 0.25)
+}
+
 /* ------------------------------------------------------------------ *
  *  Builder — pure theme → WaveDef expansion.                          *
  * ------------------------------------------------------------------ */
@@ -219,13 +316,10 @@ const BASE_INTERVAL: Record<string, number> = {
 export function buildWave(theme: WaveTheme): WaveDef {
   const { tier, volume } = theme
   const boss = theme.boss ?? false
-  const budget = waveBudget(tier, volume)
+  const budget = waveBudget(tier, volume, boss)
   const vf = VOLUME_FACTOR[volume]
-  const workMul = tierWork(tier)
-  const complexityMul = tierComplexity(tier)
-  const contextMul = tierContext(tier)
-  // late-game per-request compute amplifier (1.0 through tier ≤ 6; steep over tiers 10-12)
-  const lateMul = lateLoadMul(tier)
+  const hazardMul = Math.round(hazardMulOf(tier) * 1000) / 1000
+  const novelShare = Math.round(novelShareOf(tier) * 100) / 100
 
   const mix = theme.mix.length ? theme.mix : [{ typeId: 'chat', weight: 1 }]
   const totalWeight = mix.reduce((n, m) => n + m.weight, 0) || 1
@@ -242,28 +336,20 @@ export function buildWave(theme: WaveTheme): WaveDef {
     const count = Math.max(1, Math.round(budget * share))
     // denser cadence at higher volume; the dominant (first) bursts arrive sooner.
     const interval = (BASE_INTERVAL[m.typeId] ?? 1.0) / Math.sqrt(vf)
-    // stagger the bursts; high-tier waves overlap more (sustained pressure).
-    const spacing = Math.max(3, 7 - tier * 0.25)
-    const delay = Math.round(i * spacing * 10) / 10
-    // per-archetype length sensitivity: damp token inflation on the tight-SLO
-    // interactive lanes, let long-context / offline lanes scale fully (REALISM §1.8).
-    const sens = LENGTH_SENS[m.typeId] ?? 0.7
-    // Amplify the late-game COMPUTE demand via gWork only: workMul drives decode output
-    // tokens AND (via √work) prefill input tokens, i.e. real prefill+decode SERVING TIME,
-    // WITHOUT touching `context` (the quality-window difficulty). Inflating contextMul too
-    // would blow up the contextGap quality penalty (bad answers → trust death) instead of
-    // creating the intended throughput pressure, so contextMul keeps its authored curve.
-    const gWork = 1 + (workMul - 1) * sens * lateMul
-    const gContext = 1 + (contextMul - 1) * sens
+    const delay = Math.round(i * burstSpacing(tier) * 10) / 10
+    const muls = groupMuls(tier, m.typeId)
     const g: SpawnGroup = {
       typeId: m.typeId,
       count,
       interval: Math.round(interval * 100) / 100,
       delay,
-      workMul: Math.round(gWork * 100) / 100,
-      complexityMul: Math.round(complexityMul * 100) / 100,
-      contextMul: Math.round(gContext * 100) / 100,
+      workMul: muls.workMul,
+      complexityMul: muls.complexityMul,
+      contextMul: Math.round(muls.contextMul * (m.contextMul ?? 1) * 100) / 100,
+      hazardMul,
+      novelShare,
     }
+    if (m.hazards) g.hazards = { ...m.hazards }
     // a surge wave pins EVERY burst onto the one ingress lane — all traffic
     // crashes into one region while the other three sit idle (the spatial test).
     if (surge) g.lane = surgeLane
@@ -292,10 +378,11 @@ export function buildCampaign(themes: WaveTheme[]): WaveDef[] {
 }
 
 /**
- * Map a wave's authored `special` to a DETERMINISTIC between-wave incident id
- * (forced by sim.ts for that wave, overriding the random roll). `none` and
- * `single-lane-surge` (structural) return null → the random incident roll
- * applies. Returns the incident id present in INCIDENTS (content.ts).
+ * Map a wave's authored `special` to its DEFAULT between-wave incident id (forced by
+ * sim.ts for that wave, overriding the random roll); a theme's own `incident` field
+ * takes precedence (themedIncidentForWave in content.ts). `none` and
+ * `single-lane-surge` (structural) return null → the random incident roll applies.
+ * Returns an incident id present in INCIDENTS (content.ts).
  */
 export function themedIncidentId(special: WaveSpecial | undefined): string | null {
   switch (special) {
@@ -317,9 +404,17 @@ export function themedIncidentId(special: WaveSpecial | undefined): string | nul
       return 'inc_enterprise_demo'
     case 'price-war':
       return 'inc_price_war'
+    case 'jailbreak-storm':
+      return 'inc_jailbreak_storm'
     // single-lane-surge is structural (every burst pinned to one lane); none/unset
     // leaves the wave to the random incident roll (the per-run variability layer).
     default:
       return null
   }
+}
+
+/** The incident a theme forces: its explicit `incident`, else its special's default (null = random roll). */
+export function themeIncidentId(theme: WaveTheme | undefined): string | null {
+  if (!theme) return null
+  return theme.incident ?? themedIncidentId(theme.special)
 }

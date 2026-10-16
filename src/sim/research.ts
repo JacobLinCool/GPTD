@@ -6,10 +6,18 @@ import type {
   ResearchDef,
   ResearchSlot,
   ResearchTrack,
+  Tower,
 } from '../core/types'
-import { HARDWARE_DEFS, INFRA_NODES, METHOD_RECIPES, RESEARCH_DEFS, RESEARCH_MAX_SHARE } from './content'
+import {
+  HARDWARE_DEFS,
+  INFRA_NODES,
+  METHOD_RECIPES,
+  RESEARCH_DEFS,
+  RESEARCH_MAX_SHARE,
+  RESEARCH_TARGET_SECONDS,
+} from './content'
 import { hasLab, lvl } from './effects'
-import { deriveModel, postTrainComputeCost, postTrainDataCost, resolveModel } from './models'
+import { deriveModel, mergeCompatible, postTrainComputeCost, postTrainDataCost, resolveModel } from './models'
 
 /** Tech/eval nodes sharing a techId stack levels; a node's level is its position. */
 export function researchLevelOf(def: ResearchDef): number {
@@ -112,6 +120,8 @@ export function canPostTrain(
     const id = baseIds[i]
     if (!resolveModel(s, id) || !s.models[id]) return false // base not resolvable / not owned
   }
+  // §2.6 a merge averages two DISTINCT checkpoints of one base with one body
+  if (method === 'merge' && !mergeCompatible(s, baseIds[0], baseIds[1])) return false
   return true
 }
 
@@ -167,20 +177,102 @@ function fleetFlops(s: GameState): number {
 }
 
 /**
- * The shared requisition pool across all active tracks: capped at
- * RESEARCH_MAX_SHARE of the fleet so serving never fully stops (§4.5 / C7).
+ * The ceiling of the shared requisition pool across all active tracks: RESEARCH_MAX_SHARE
+ * of the fleet's FLOPS, so serving never fully stops (§4.5 / C7).
  */
-export function requisitionTarget(s: GameState): number {
-  if (!anyResearchActive(s)) return 0
+function poolCap(s: GameState): number {
   return fleetFlops(s) * RESEARCH_MAX_SHARE
 }
 
 /**
- * Advance every active track by one wave tick. The three tracks SHARE one
- * requisition pool (§4.5 / C7): requisition the strongest ONLINE racks up to
- * the pool (browned-out racks can neither serve nor train and don't eat the
- * budget), then split the requisitioned rate EQUALLY across the active tracks —
- * so running two tracks halves each one's speed (compute is genuinely shared).
+ * WHICH racks research lends (§4.5 / C7): whole racks, strongest first, that FIT under the
+ * RESEARCH_MAX_SHARE pool — a rack that would push the lent FLOPS past the cap is skipped
+ * (the granularity rounds DOWN, never over the cap). If nothing fits (e.g. two equal
+ * racks), the weakest online rack is lent so research can still move — but never the last
+ * one: a single-rack datacenter keeps serving and its research waits. Browned-out racks
+ * can neither serve nor train and are never picked.
+ */
+export function requisitionPick(s: GameState): Tower[] {
+  const online = s.towers
+    .filter((t) => t.def.kind === 'server' && t.online)
+    .sort((a, b) => rackFlops(b.hwId) - rackFlops(a.hwId) || a.id - b.id)
+  const pool = poolCap(s)
+  const pick: Tower[] = []
+  let taken = 0
+  for (const t of online) {
+    const f = rackFlops(t.hwId)
+    if (taken + f <= pool) {
+      pick.push(t)
+      taken += f
+    }
+  }
+  if (!pick.length && online.length >= 2) pick.push(online[online.length - 1])
+  return pick
+}
+
+/** What lending racks to research would look like right now (pure; the R&D / Studio preview). */
+export interface RequisitionPreview {
+  /** the racks that would train (strongest that fit the cap). */
+  rackIds: number[]
+  /** bf16 TFLOPS those racks contribute (at their current thermal throttle). */
+  lentTflops: number
+  /** the fleet's total bf16 TFLOPS and the RESEARCH_MAX_SHARE cap on lending. */
+  fleetTflops: number
+  capTflops: number
+  /** share (0..1) of the fleet's serving compute that goes dark while training. */
+  servingLoss: number
+  /** concurrent research tracks that would share the lent compute (incl. the new project). */
+  tracks: number
+  /** this project's training rate (TFLOPS, after the per-track split). */
+  ratePerSec: number
+  /** board seconds of wave time the project needs, and that as waves of ~RESEARCH_TARGET_SECONDS. */
+  seconds: number
+  waves: number
+  /** true when the fleet cannot lend anything (fewer than two online racks). */
+  blocked: boolean
+}
+
+/**
+ * Preview the requisition for a project of `compute` TF·s (pure — no state change): which
+ * racks would be lent, the serving compute lost while they train, and how long it would
+ * take. `includeNew` adds the project as one more track (a run not yet started); pass
+ * false to preview a project that is already running. Research only advances during waves,
+ * so `waves` divides the board seconds by `waveSeconds` (the caller may pass the next
+ * wave's projected length; RESEARCH_TARGET_SECONDS otherwise).
+ */
+export function requisitionPreview(
+  s: GameState,
+  compute: number,
+  includeNew = true,
+  waveSeconds: number = RESEARCH_TARGET_SECONDS,
+): RequisitionPreview {
+  const pick = requisitionPick(s)
+  const fleet = fleetFlops(s)
+  const lent = pick.reduce((n, t) => n + rackFlops(t.hwId) * (t.throttle > 0 ? t.throttle : 1), 0)
+  const running = (['infra', 'posttrain', 'eval'] as const).filter((tr) => s.research[tr] != null).length
+  const tracks = Math.max(1, running + (includeNew ? 1 : 0))
+  const ratePerSec = lent / tracks
+  const seconds = ratePerSec > 0 ? Math.max(0, compute) / ratePerSec : Infinity
+  return {
+    rackIds: pick.map((t) => t.id),
+    lentTflops: lent,
+    fleetTflops: fleet,
+    capTflops: poolCap(s),
+    servingLoss: fleet > 0 ? pick.reduce((n, t) => n + rackFlops(t.hwId), 0) / fleet : 0,
+    tracks,
+    ratePerSec,
+    seconds,
+    waves: Number.isFinite(seconds) ? seconds / Math.max(1, waveSeconds) : Infinity,
+    blocked: pick.length === 0,
+  }
+}
+
+/**
+ * Advance every active track by one wave tick. The three tracks SHARE one requisition
+ * pool (§4.5 / C7): lend the strongest online racks that fit under the cap
+ * (requisitionPick), then split exactly the lent rate EQUALLY across the active tracks —
+ * so running two tracks halves each one's speed (compute is genuinely shared), and
+ * nothing lent is ever wasted.
  */
 export function updateResearch(s: GameState, dt: number): void {
   const tracks: ResearchTrack[] = ['infra', 'posttrain', 'eval']
@@ -190,29 +282,14 @@ export function updateResearch(s: GameState, dt: number): void {
     return
   }
 
-  const pool = requisitionTarget(s)
-  const servers = s.towers
-    .filter((t) => t.def.kind === 'server')
-    .sort((a, b) => rackFlops(b.hwId) - rackFlops(a.hwId) || a.id - b.id)
-  let taken = 0
+  const pick = new Set(requisitionPick(s))
   let rate = 0
-  for (const t of servers) {
-    // a browned-out rack can neither serve nor train — it must not eat the
-    // requisition budget (else dark racks block live ones from training)
-    if (!t.online) {
-      t.training = false
-      continue
-    }
-    if (taken < pool) {
-      t.training = true
-      taken += rackFlops(t.hwId)
-      rate += rackFlops(t.hwId) * t.throttle
-    } else {
-      t.training = false
-    }
+  for (const t of s.towers) {
+    if (t.def.kind !== 'server') continue
+    t.training = pick.has(t)
+    if (t.training) rate += rackFlops(t.hwId) * t.throttle
   }
-  // the requisitioned rate never exceeds the shared pool, split equally per track
-  const perTrackRate = Math.min(rate, pool) / active.length
+  const perTrackRate = rate / active.length
   for (const tr of active) {
     const slot = s.research[tr]
     if (!slot) continue
