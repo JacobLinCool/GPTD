@@ -988,6 +988,32 @@ export const zhTW: Record<string, string> = {
   // ===== [/ws:economy] =====
 
   // ===== [ws:render] board FX: outcome popups, banners, rack/request state =====
+  "fx.served": "成功",
+  "fx.sloMiss": "太晚",
+  "fx.bad": "答錯",
+  "fx.unsafe": "不安全",
+  "fx.overRefused": "誤拒",
+  "fx.unservable": "過長",
+  "fx.leaked": "504",
+  "fx.withCause": "{label}·{cause}",
+  "fx.cause.ttft": "TTFT",
+  "fx.cause.tpot": "TPOT",
+  "fx.cause.e2el": "E2E",
+  "fx.cause.ttfat": "思考",
+  "fx.by.model": "模型",
+  "fx.by.guard": "guardrail",
+  "fx.cash": "+${v}",
+  "fx.refund": "退款 +${v}",
+  "fx.cacheHit": "Cache 命中",
+  "fx.blocked": "已攔截",
+  "fx.selfSafe": "模型自擋",
+  "fx.wave": "第 {n} 波",
+  "fx.waveClear": "第 {n} 波完成",
+  "fx.clearBonus": "過關獎勵 +${v}",
+  "fx.goodput": "Goodput {v}%",
+  "fx.boss": "BOSS",
+  "world.noRackInRange": "範圍內沒有機架",
+  "world.powerPreview": "電力 {used}/{cap} kW",
   // ===== [/ws:render] =====
 
   // ===== [ws:audio] audio: cue names, settings labels =====

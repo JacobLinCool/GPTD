@@ -2,7 +2,6 @@ import { Application, Container, Graphics } from 'pixi.js'
 import { AudioEngine } from './audio/audio'
 import { DESIGN_H, DESIGN_W, MAX_STEPS, SIM_DT } from './config'
 import type { GameEvent, GameState, PostTrainMethod, PostTrainTarget } from './core/types'
-import { FxManager } from './render/fx'
 import { TextureFactory } from './render/textures'
 import { WorldRenderer } from './render/world'
 import {
@@ -50,8 +49,7 @@ export class Game {
   readonly root = new Container()
   private state: GameState
   private factory: TextureFactory
-  private fx = new FxManager()
-  private world: WorldRenderer
+  readonly world: WorldRenderer
   private hud: Hud
   private metricsHistory = new MetricsHistory()
   private metrics = new MetricsPanel()
@@ -104,7 +102,7 @@ export class Game {
   constructor(app: Application) {
     this.state = createState((Math.floor(performance.now()) ^ 0x5f3759df) >>> 0)
     this.factory = new TextureFactory(app.renderer)
-    this.world = new WorldRenderer(this.factory, this.fx)
+    this.world = new WorldRenderer(this.factory)
 
     this.hud = new Hud({
       onPause: () => this.togglePause(),
@@ -184,6 +182,7 @@ export class Game {
       this.requestInspect.view,
       this.hud.view,
       this.buildbar.view,
+      this.world.screen, // FX chips that fly up to the HUD meters
       this.metrics.view,
       this.codex.view,
       this.training.view,
@@ -745,7 +744,6 @@ export class Game {
     }
 
     this.consumeEvents()
-    this.fx.update(dt)
 
     if (s.phase === 'wave' && isBrownout(s)) {
       this.brownoutCd -= dt
@@ -772,7 +770,9 @@ export class Game {
       buildDef: this.selectedDefId ? TOWER_DEFS[this.selectedDefId] : null,
       canAfford: this.selectedDefId ? s.meters.cash >= buildCost(s, TOWER_DEFS[this.selectedDefId]) : false,
     }
-    this.world.sync(s, wv, dt)
+    // alpha = the unconsumed fraction of a sim step: the board interpolates between steps
+    const alpha = simRunning ? Math.min(1, this.acc / SIM_DT) : 1
+    this.world.sync(s, wv, dt, { alpha, speed: this.speed, running: simRunning })
     this.hud.update(s, {
       paused: this.paused,
       speed: this.speed,
@@ -843,22 +843,17 @@ export class Game {
   }
 
   private dispatch(ev: GameEvent): void {
+    this.world.onEvent(ev, this.state)
     switch (ev.type) {
-      case 'fire':
-        this.fx.fire(ev.fx.x, ev.fx.y, ev.tx, ev.ty, ev.color)
-        break
       case 'serve':
-        this.fx.serve(ev.x, ev.y, ev.kind, ev.amount)
         if (ev.kind === 'good') this.audio.serveGood()
         else if (ev.kind === 'bad' || ev.kind === 'over_refused') this.audio.serveBad()
         else this.audio.serveUnsafe()
         break
       case 'cache':
-        this.fx.cache(ev.x, ev.y)
         this.audio.cache()
         break
       case 'leak':
-        this.fx.leak(ev.x, ev.y, ev.unsafe)
         this.audio.leak()
         break
       case 'place':

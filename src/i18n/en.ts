@@ -624,6 +624,32 @@ export const en: Record<string, string> = {
   // ===== [/ws:economy] =====
 
   // ===== [ws:render] board FX: outcome popups, banners, rack/request state =====
+  'fx.served': 'OK',
+  'fx.sloMiss': 'LATE',
+  'fx.bad': 'WRONG',
+  'fx.unsafe': 'UNSAFE',
+  'fx.overRefused': 'REFUSED',
+  'fx.unservable': 'TOO LONG',
+  'fx.leaked': '504',
+  'fx.withCause': '{label} · {cause}',
+  'fx.cause.ttft': 'TTFT',
+  'fx.cause.tpot': 'TPOT',
+  'fx.cause.e2el': 'E2E',
+  'fx.cause.ttfat': 'THINKING',
+  'fx.by.model': 'MODEL',
+  'fx.by.guard': 'GUARD',
+  'fx.cash': '+${v}',
+  'fx.refund': '+${v} refund',
+  'fx.cacheHit': 'CACHE HIT',
+  'fx.blocked': 'BLOCKED',
+  'fx.selfSafe': 'MODEL SAFE',
+  'fx.wave': 'WAVE {n}',
+  'fx.waveClear': 'WAVE {n} CLEARED',
+  'fx.clearBonus': 'Clear bonus +${v}',
+  'fx.goodput': 'Goodput {v}%',
+  'fx.boss': 'BOSS',
+  'world.noRackInRange': 'no rack in range',
+  'world.powerPreview': 'power {used}/{cap} kW',
   // ===== [/ws:render] =====
 
   // ===== [ws:audio] audio: cue names, settings labels =====
