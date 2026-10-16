@@ -3,18 +3,13 @@ import type { GameState, IncidentDef, LoseMeter, ModifierTarget } from '../core/
 import { updateCombat } from './combat'
 import { INCIDENTS, WAVES, themedIncidentForWave } from './content'
 import { LANE_COUNT } from './pathing'
-import {
-  loadoutOf,
-  rackOperatingCostPerSec,
-  serverAggDecodeTokS,
-  serverTargets,
-} from './effects'
+import { loadoutOf, serverAggDecodeTokS, serverTargets, towerOpexPerSec } from './effects'
 import { updateMovement } from './movement'
 import { refreshPower } from './power'
 import { updateResearch } from './research'
 import { allSpawned, updateSpawns } from './spawn'
 import { defaultModifiers } from './state'
-import { finalizeReport, pruneRecent, recordPowerCost } from './telemetry'
+import { finalizeReport, pruneRecent, recordOpex } from './telemetry'
 
 /** Advance the simulation by one fixed step. Only does work during a wave. */
 export function step(s: GameState, dt: number = SIM_DT): void {
@@ -43,31 +38,37 @@ export function step(s: GameState, dt: number = SIM_DT): void {
 }
 
 /**
- * Real economy tick (§6.6 / §6.7 step 7). Operating cost is a REAL $/GPU-hr bill
- * by wall-clock — every ONLINE rack burns its rate whether it served anything or
- * not. Income is token-priced (charged in resolveServe). Because cost is fixed by
- * time and income is by tokens served, an idle / over-provisioned rack bleeds
- * credits → the utilization penalty EMERGES (no artificial ×10, §6.6).
+ * Real economy tick (§6.6 / §6.7 step 7). The operating bill runs by wall-clock in two
+ * lines, for every ONLINE rack whether it served anything or not:
+ *   · GPU-hours — the rack's real per-GPU-hour rate minus the electricity it embeds
+ *     (amortization, maintenance, colo, network);
+ *   · energy — the kW it actually draws (idle racks draw less; a requisitioned training
+ *     rack runs flat out) × PUE × $/kWh, the only line power-price incidents scale.
+ * The generative guardrail's own GPU rack pays both lines too. Income is token-priced
+ * (charged in resolveOutcome), so an idle / over-provisioned rack bleeds credits and the
+ * utilization penalty EMERGES (§6.6).
  *
- * Also updates the rolling `utilization` (served decode tok/s vs theoretical max)
- * and `fleetCapexUsd` telemetry. The power-price incident still scales the bill.
+ * Also updates the rolling `utilization` (served decode tok/s vs theoretical max) and
+ * `fleetCapexUsd` telemetry.
  */
 function updateEconomy(s: GameState, dt: number): void {
-  // dual clock: an online rack lives `dt` board seconds; its real $/GPU-hr bill is
-  // already mapped to board time and credits inside rackOperatingCostPerSec.
-  let opCost = 0
+  // dual clock: an online rack lives `dt` board seconds; its real $/hour bill is mapped to
+  // board time and credits (for all RACKS_PER_TILE real racks) inside the effects getters.
+  let gpuCost = 0
+  let energyCost = 0
   let fleetCapexUsd = 0
   let servedTokS = 0
   let theoreticalTokS = 0
   for (const t of s.towers) {
-    if (t.def.kind !== 'server') continue
-    const lo = loadoutOf(s, t)
-    if (lo.hw) fleetCapexUsd += lo.hw.capexUsd
     // a browned-out / frozen rack draws no operating bill (it is dark), but a
     // requisitioned (training) rack still burns — it is powered and computing.
-    if (!t.online || t.throttle <= 0) continue
-    if (lo.hw) opCost += rackOperatingCostPerSec(lo.hw) * dt
-    if (t.training || !lo.model) continue
+    const op = towerOpexPerSec(s, t)
+    gpuCost += op.gpu * dt
+    energyCost += op.energy * dt
+    fleetCapexUsd += op.capexUsd
+    if (t.def.kind !== 'server' || !t.online || t.throttle <= 0 || t.training) continue
+    const lo = loadoutOf(s, t)
+    if (!lo.hw || !lo.model) continue
     // utilization: a rack's theoretical max aggregate decode throughput vs how
     // much of its batch was actually busy last combat tick (§6.6).
     const maxBatch = serverTargets(s, lo)
@@ -75,9 +76,8 @@ function updateEconomy(s: GameState, dt: number): void {
     theoreticalTokS += roof
     servedTokS += roof * t.load
   }
-  opCost *= s.modifiers.powerPrice
-  s.meters.cash -= opCost
-  recordPowerCost(s, opCost)
+  s.meters.cash -= gpuCost + energyCost
+  recordOpex(s, gpuCost, energyCost)
   s.fleetCapexUsd = fleetCapexUsd
   const inst = theoreticalTokS > 0 ? servedTokS / theoreticalTokS : 0
   // rolling utilization (EMA) for telemetry — smooths the per-tick spikiness.

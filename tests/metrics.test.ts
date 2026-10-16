@@ -1,25 +1,32 @@
 import { describe, expect, it } from 'vitest'
+import { CREDIT_USD, MBU_DECODE, MFU_DECODE, SIM_DT, STEP_OVERHEAD_MS, TRAFFIC_SCALE } from '../src/config'
 import { createState } from '../src/sim/state'
-import { loadout } from '../src/sim/effects'
+import { loadout, loadoutOf, rackHourlyUsd, rackLoadEstimate, rackPlan, spritesPerLane, towerOpexPerSec } from '../src/sim/effects'
 import {
   dollarsPerMtoken,
   effectiveBatch,
+  ESTIMATE_SPRITES_PER_LANE,
   fleetMetrics,
   fmtDollarsPerMtoken,
   fmtLatencyMs,
   fmtTokS,
   latencyOf,
   rackDollarsPerMtoken,
+  REF_IN_TOKENS,
+  REF_OUT_TOKENS,
   rooflineOf,
   sparsityOf,
   vramOf,
 } from '../src/ui/metrics'
-import { decodeTokSb1, serverAggDecodeTokS, serverPerUserDecodeTokS, serverFitsMemory } from '../src/sim/effects'
+import { decodeTokSb1, serverFitsMemory } from '../src/sim/effects'
 import { finalizeReport, goodputPctOf, newWaveStats } from '../src/sim/telemetry'
+import { startGame, tryBuild, upgradeHardware, deployModel } from '../src/sim/actions'
+import { spawnRequest } from '../src/sim/spawn'
+import { updateCombat } from '../src/sim/combat'
 
 /**
  * Bring s.infra to the modern serving era (continuous batching + paged KV + FP8)
- * so a 70B fits a single 80 GB H100 and the metrics match a real deploy.
+ * so a 31B fits a single 80 GB H100 and the metrics match a real deploy.
  */
 import { INFRA_NODES, MODEL_DEFS } from '../src/sim/content'
 import { applyInfraEffects } from '../src/sim/research'
@@ -32,44 +39,43 @@ function modernEra(s: ReturnType<typeof createState>): void {
 
 const H100 = 'hw_perf' // 989 bf16 / 1979 fp8 TFLOPS, 80 GB, 3.35 TB/s, $3/GPU-hr
 const BIG = 'g_gemma_4_31b_2' // 31B dense (the largest dense model in the active roster)
+const INSTANT = 'g_nvidia_nemotron_3_nano_4b_2' // a non-thinking 4B
+
+/** The sprites a busy rack holds in the estimates (ESTIMATE_SPRITES_PER_LANE per lane). */
+function busy(s: ReturnType<typeof createState>, lo: ReturnType<typeof loadout>): number {
+  return rackPlan(s, lo).lanes * Math.min(spritesPerLane(s), ESTIMATE_SPRITES_PER_LANE)
+}
 
 describe('ui/metrics — worked-example parity (§5.7 / §5.8)', () => {
   it('H100 / 31B FP8 deployed: roofline matches the §5.7 physics', () => {
     const s = createState(1)
-    modernEra(s) // FP8 → bytesPerParam = 1, 31B (≈31 GB) fits an 80 GB H100
+    modernEra(s) // FP8 → 1 byte/param, 31B (≈31 GB) fits an 80 GB H100
     const lo = loadout(s, H100, BIG)
     const rf = rooflineOf(s, lo)
+    const m = MODEL_DEFS[BIG]
     expect(rf.fits).toBe(true)
-    // decodeTokSb1 = HBM_BW / (2 × activeB × bytes) = 3.35e12 / (2×31e9×1) ≈ 54.0
-    // (the §5.7 FP16 doubles at FP8; this is the bytesPerParam halving, §5.6).
-    expect(rf.decodeTokSb1).toBeGreaterThan(50)
-    expect(rf.decodeTokSb1).toBeLessThan(58)
-    // computeRoofTokS uses the FP8 tensor rate 1979e12 / (2×31e9) ≈ 31919 tok/s.
-    expect(rf.computeRoofTokS).toBeGreaterThan(30000)
-    expect(rf.computeRoofTokS).toBeLessThan(34000)
-    // b=1 decode is far below the compute roof → the rack is bandwidth-bound.
+    // one stream reads the active weights once per token at HBM bandwidth × MBU (+ the step overhead)
+    const stepSec = (m.paramsActiveB * 1e9 * 1) / (3.35e12 * MBU_DECODE) + STEP_OVERHEAD_MS / 1000
+    expect(rf.decodeTokSb1).toBeCloseTo(1 / stepSec, 6)
+    // the compute roof uses the FP8 tensor rate at decode MFU: 1979e12 × MFU / (2 × activeB)
+    expect(rf.computeRoofTokS).toBeCloseTo((1979e12 * MFU_DECODE) / (2 * m.paramsActiveB * 1e9), 3)
+    // a busy 31B rack is still bound by HBM reads (weights + every stream's KV), not compute
     expect(rf.binding).toBe('bandwidth')
+    expect(rf.plan.g).toBe(1)
   })
 
-  it('§5.7 FP16 raw formula: H100 / 31B decode b=1 ≈ 27 tok/s', () => {
-    // The raw §5.7 physics (independent of fit/quant): 3.35e12 / (2×31e9×2) ≈ 27.0.
-    const hbmBytesPerSec = 3.35e12
-    const activeB = 31
-    const bytesFp16 = 2
-    const b1 = hbmBytesPerSec / (2 * activeB * 1e9 * bytesFp16)
-    expect(b1).toBeGreaterThan(26)
-    expect(b1).toBeLessThan(28)
-    // and the sim's getter agrees once the model fits (FP8 path), differing only by
-    // the bytes-per-param halving — exactly the §5.6 quant effect (on the model's real
-    // 30.7B active params).
+  it('the sim getter is the §5.7 formula: activeB × bytes / (BW × MBU) per token at batch 1', () => {
     const s = createState(11)
     modernEra(s)
-    const fp8 = hbmBytesPerSec / (2 * MODEL_DEFS[BIG].paramsActiveB * 1e9 * 1)
-    expect(decodeTokSb1(s, loadout(s, H100, BIG))).toBeCloseTo(fp8, 0)
+    const m = MODEL_DEFS[BIG]
+    const fp8 = 1 / ((m.paramsActiveB * 1e9 * 1) / (3.35e12 * MBU_DECODE) + STEP_OVERHEAD_MS / 1000)
+    expect(decodeTokSb1(s, loadout(s, H100, BIG))).toBeCloseTo(fp8, 6)
+    // the canonical 70B-on-H100 figure: 3.35 TB/s × 0.7 / 140 GB (BF16) ≈ 17 tok/s for one user
+    expect((3.35e12 * MBU_DECODE) / (70e9 * 2)).toBeCloseTo(16.75, 1)
   })
 
   it('$3/GPU-hr at 500 tok/s ≈ $1.67/Mtoken (§5.8)', () => {
-    // $/Mtoken = ($/GPU-hr × 1e6) / (aggTokS × 3600) = (3×1e6)/(500×3600) ≈ 1.667
+    // $/Mtoken = ($/hour × 1e6) / (aggTokS × 3600) = (3×1e6)/(500×3600) ≈ 1.667
     const dpm = dollarsPerMtoken(3, 500)
     expect(dpm).toBeCloseTo(1.667, 2)
     // monotonic: halve throughput → double unit cost.
@@ -77,40 +83,92 @@ describe('ui/metrics — worked-example parity (§5.7 / §5.8)', () => {
     expect(dollarsPerMtoken(3, 0)).toBe(Infinity)
   })
 
-  it('rackDollarsPerMtoken matches the ($/GPU-hr × 1e6)/(aggTokS × 3600) identity', () => {
+  it('rackDollarsPerMtoken is the ($/hour × 1e6)/(aggTokS × 3600) identity on a busy rack', () => {
     const s = createState(2)
-    modernEra(s) // FP8 → 70B fits one 80 GB H100
+    modernEra(s)
     const lo = loadout(s, H100, BIG)
     expect(serverFitsMemory(s, lo)).toBe(true)
-    const batch = effectiveBatch(s, lo)
-    const agg = serverAggDecodeTokS(s, lo, batch)
-    const expected = (lo.hw!.gpuHrUsd * 1e6) / (agg * 3600)
-    expect(rackDollarsPerMtoken(s, lo)).toBeCloseTo(expected, 6)
+    const agg = latencyOf(s, lo, REF_IN_TOKENS, REF_OUT_TOKENS).aggDecodeTokS
+    const expected = (rackHourlyUsd(s, lo, 1) * 1e6) / (agg * 3600)
+    expect(rackDollarsPerMtoken(s, lo)).toBeCloseTo(expected, 9)
+  })
+
+  it('the $/Mtoken a rack card shows is the rate its cash flow obeys (the cohort identity)', () => {
+    // keep one H100 busy with the representative request and measure what the bill
+    // actually cost per generated token, against the card's number
+    const s = createState(3)
+    modernEra(s)
+    s.meters.cash = 1e9
+    startGame(s)
+    tryBuild(s, 'srv_edge', 1, 2)
+    const t = s.towers[s.towers.length - 1]
+    upgradeHardware(s, t.id)
+    upgradeHardware(s, t.id) // → H100
+    deployModel(s, t.id, INSTANT)
+    s.phase = 'wave'
+    s.waveActive = true
+    s.waveStats = newWaveStats(0)
+    const model = MODEL_DEFS[INSTANT]
+    const lo = loadoutOf(s, t)
+    const want = busy(s, lo)
+    let usd = 0
+    let tokens = 0
+    const seen = new Map<number, number>()
+    const calm = { ...model.alignment, overRefusal: 0 }
+    const saved = model.alignment
+    model.alignment = calm
+    try {
+      for (let i = 0; i < 1500; i++) {
+        while (s.requests.filter((r) => r.alive).length < want) {
+          const r = spawnRequest(s, 'chat')
+          r.speed = 0 // parked at the ingress, in the rack's range
+          r.tokensIn = r.prefill = r.contextLen = REF_IN_TOKENS
+          r.tokensOut = r.work = r.maxWork = REF_OUT_TOKENS
+        }
+        updateCombat(s, SIM_DT)
+        s.time += SIM_DT
+        const op = towerOpexPerSec(s, t, 1)
+        if (i >= 300) usd += (op.gpu + op.energy) * SIM_DT * CREDIT_USD
+        for (const r of s.requests) {
+          const g = r.maxWork - Math.max(0, r.work)
+          if (i >= 300) tokens += g - (seen.get(r.id) ?? 0)
+          seen.set(r.id, g)
+        }
+        s.requests = s.requests.filter((r) => r.alive)
+      }
+    } finally {
+      model.alignment = saved
+    }
+    const effective = (usd / (tokens * TRAFFIC_SCALE)) * 1e6
+    const shown = rackDollarsPerMtoken(s, lo)
+    // within the tick granularity (a finished sprite frees its slot at the next tick)
+    expect(effective / shown).toBeGreaterThan(0.85)
+    expect(effective / shown).toBeLessThan(1.15)
   })
 })
 
-describe('ui/metrics — latency (effLatencyMs §0.4) parity with the sim', () => {
-  it('tpotMs = 1000 / perUserDecode at the effective batch', () => {
+describe('ui/metrics — latency parity with the sim', () => {
+  it('tpotMs = 1000 / the per-user decode rate of a busy rack', () => {
     const s = createState(3)
     modernEra(s)
     const lo = loadout(s, H100, BIG)
     const inTok = 512
     const outTok = 256
     const lat = latencyOf(s, lo, inTok, outTok)
-    const batch = effectiveBatch(s, lo, inTok + outTok)
-    const perUser = serverPerUserDecodeTokS(s, lo, batch)
-    expect(lat.tpotMs).toBeCloseTo(1000 / perUser, 3)
+    const est = rackLoadEstimate(s, lo, busy(s, lo), inTok + outTok / 2, { inputTokens: inTok, outputTokens: outTok })
+    expect(lat.tpotMs).toBeCloseTo(1000 / est.perUserTokS, 6)
     // e2el = ttft + (out−1)×tpot (the §0.4 chain)
-    expect(lat.e2elMs).toBeCloseTo(lat.ttftMs + (outTok - 1) * lat.tpotMs, 3)
-    expect(lat.batch).toBe(batch)
+    expect(lat.e2elMs).toBeCloseTo(lat.ttftMs + (outTok - 1) * lat.tpotMs, 6)
+    expect(lat.batch).toBe(Math.round(est.streams))
+    expect(lat.batch).toBe(effectiveBatch(s, lo, inTok + outTok / 2))
   })
 
-  it('per-user decode rate equals aggregate / batch (§5.7)', () => {
+  it('per-user decode rate equals aggregate / streams (§5.7)', () => {
     const s = createState(4)
     modernEra(s)
     const lo = loadout(s, H100, BIG)
     const lat = latencyOf(s, lo, 512, 256)
-    expect(lat.perUserDecodeTokS).toBeCloseTo(lat.aggDecodeTokS / lat.batch, 6)
+    expect(lat.perUserDecodeTokS).toBeCloseTo(lat.aggDecodeTokS / lat.batch, 3)
   })
 })
 
@@ -125,7 +183,6 @@ describe('ui/metrics — VRAM / sparsity', () => {
     expect(v.weightsGb).toBeCloseTo(31, 0)
     expect(v.totalGb).toBe(80)
   })
-
   it('dense model has sparsity ratio 1, MoE far below', () => {
     const s = createState(6)
     expect(sparsityOf(loadout(s, H100, BIG)).ratio).toBeCloseTo(1, 6)

@@ -13,6 +13,7 @@ import {
   serverComputeCeiling,
   serverFitsMemory,
   serverTargets,
+  servingStackKey,
 } from '../sim/effects'
 import { clamp01, easeInQuad, easeOutBack, easeOutCubic, reducedMotion } from './anim'
 import type { FxManager } from './fx'
@@ -505,7 +506,7 @@ export class RackLayer {
 
   /** Expert roofline tag (CMP / BW / FIT? / T), recomputed on loadout change or at 4 Hz. */
   private refreshTag(s: GameState, tw: Tower, v: TowerVis): void {
-    const key = `${tw.hwId}|${tw.modelId}|${tw.role ?? ''}|${tw.training ? 1 : 0}|${s.infra.weightQuantBytes}`
+    const key = `${tw.hwId}|${tw.modelId}|${tw.role ?? ''}|${tw.precision ?? ''}|${tw.training ? 1 : 0}|${servingStackKey(s)}`
     if (key !== v.tagText || !v.tag) {
       v.tagText = key
       const lo = loadoutOf(s, tw)

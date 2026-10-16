@@ -74,12 +74,21 @@ describe('ui/metrics — per-archetype fit and the deploy picker', () => {
     const s = buildPhase()
     const dense = MODEL_LIST.filter((m) => !m.isMoE && m.paramsActiveB >= 8 && serverFitsMemory(s, loadout(s, 'hw_edge', m.id)))
     expect(dense.length).toBeGreaterThan(0)
+    // judge the per-token physics on the body run without its thinking mode
+    const instant = { ...dense[0], isReasoning: false, thinkTokens: 0 }
     const chat = { def: REQUEST_TYPES.chat, count: 1, difficulty: 18, context: 8, inputTokens: 512, outputTokens: 256 }
-    const fit = typeFit(s, loadout(s, 'hw_edge', dense[0].id), chat)
+    const fit = typeFit(s, { hw: HARDWARE_DEFS.hw_edge, model: instant }, chat)
     expect(fit.fast).toBe(false)
     expect(fit.slowBy).toBe('tpot')
     // the same model on an H100 keeps up
-    expect(typeFit(s, loadout(s, 'hw_perf', dense[0].id), chat).fast).toBe(true)
+    expect(typeFit(s, { hw: HARDWARE_DEFS.hw_perf, model: instant }, chat).fast).toBe(true)
+    // with its thinking on, the hidden reasoning blows chat's first-answer bound even there
+    if (dense[0].thinkTokens > 0) {
+      const thinking = typeFit(s, loadout(s, 'hw_perf', dense[0].id), chat)
+      expect(thinking.slowBy).toBe('ttfat')
+      expect(thinking.thinkTokens).toBeGreaterThan(0)
+      expect(thinking.ttfatMs).toBeGreaterThan(thinking.lat.ttftMs)
+    }
   })
 
   it('scores every owned checkpoint on the rack, marks one ★, and names the rack a big model needs', () => {

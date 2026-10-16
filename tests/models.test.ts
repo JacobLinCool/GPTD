@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest'
 import type { GameState } from '../src/core/types'
 import { pwl, ROSTER_FRONTIER_TOLERANCE, THINK_TOKENS_FALLBACK, thinkingOf, thinkingVariantName } from '../src/sim/calibrate'
 import { DEFAULT_MODEL_ID, HARDWARE_DEFS, INFRA_NODES, MODEL_CANDIDATES, MODEL_DEFS } from '../src/sim/content'
-import { int4ContextPenalty, kvPerReqGb, serverFitsMemory, serverQuality } from '../src/sim/effects'
+import { kvPerReqGb, longContextPenalty, serverFitsMemory, serverQuality } from '../src/sim/effects'
 import { applyInfraEffects } from '../src/sim/research'
 import { MODEL_ARCH } from '../src/sim/roster.arch.generated'
 import { AA_BENCH, AA_BENCH_SOURCE } from '../src/sim/roster.bench.generated'
@@ -135,6 +135,7 @@ describe('architecture from config.json (KV layout, native precision)', () => {
 
   it('a checkpoint is resident at its NATIVE release precision (no PTQ needed, no PTQ tax)', () => {
     const s = createState(25) // no quant research: everything at its release precision
+    infraOn(s, 'inf_par_tp') // a checkpoint may span the GPUs of one node (tensor parallel)
     const fits = (hwId: string, id: string) => serverFitsMemory(s, { hw: HARDWARE_DEFS[hwId], model: candidate(id) })
     // gpt-oss-120b ships MXFP4 MoE weights: all 117B fit ONE 80 GB H100 (its model card's claim)
     expect(candidate('gptoss_120b').nativeWeightBytes).toBeLessThan(0.6)
@@ -149,14 +150,18 @@ describe('architecture from config.json (KV layout, native precision)', () => {
     expect(fits('hw_pod', 'deepseek_v31')).toBe(true)
     // a BF16 release does NOT shrink until PTQ is researched (Qwen3.5-122B: 244 GB > 141 GB)
     expect(fits('hw_frontier', 'qwen35_122b')).toBe(false)
-    // and INT4 PTQ taxes only a model quantized BELOW its release precision
+    // and an INT4 rack taxes only a model quantized BELOW its release precision
     const int4 = createState(25)
-    infraOn(int4, 'inf_batching', 'inf_wq_fp8', 'inf_wq_int4')
-    const q = (st: GameState, hwId: string, id: string) => serverQuality(st, { hw: HARDWARE_DEFS[hwId], model: candidate(id) })
-    expect(q(int4, 'hw_perf', 'gptoss_120b')).toBe(q(s, 'hw_perf', 'gptoss_120b')) // MXFP4 → INT4: free
-    expect(q(int4, 'hw_pod', 'qwen35_122b')).toBe(q(s, 'hw_pod', 'qwen35_122b') - 2) // BF16 → INT4: the flat tax
-    expect(int4ContextPenalty(int4, 16000, candidate('gptoss_120b'))).toBe(0)
-    expect(int4ContextPenalty(int4, 16000, candidate('qwen35_122b'))).toBe(6)
+    infraOn(int4, 'inf_batching', 'inf_wq_fp8', 'inf_wq_int4', 'inf_par_tp')
+    const at = (hwId: string, id: string, precision?: 'int4') => ({ hw: HARDWARE_DEFS[hwId], model: candidate(id), precision })
+    const q = (st: GameState, hwId: string, id: string, precision?: 'int4') => serverQuality(st, at(hwId, id, precision))
+    expect(q(int4, 'hw_perf', 'gptoss_120b', 'int4')).toBe(q(s, 'hw_perf', 'gptoss_120b')) // MXFP4 → INT4: free
+    expect(q(int4, 'hw_pod', 'qwen35_122b', 'int4')).toBe(q(s, 'hw_pod', 'qwen35_122b') - 2) // BF16 → INT4: the flat tax
+    // the long-context weak spot of a 4-bit PTQ (>8K tokens) is the same split
+    const ctxTax = (hwId: string, id: string) =>
+      longContextPenalty(int4, at(hwId, id, 'int4'), 16000) - longContextPenalty(int4, at(hwId, id), 16000)
+    expect(ctxTax('hw_perf', 'gptoss_120b')).toBeCloseTo(0, 9)
+    expect(ctxTax('hw_pod', 'qwen35_122b')).toBeCloseTo(6, 9)
   })
 })
 

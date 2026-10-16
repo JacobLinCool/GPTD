@@ -23,7 +23,7 @@ import type {
 } from '../core/types'
 import { CAMPAIGN_THEMES } from './campaign'
 import { REQUEST_TYPES, WAVES } from './content'
-import { loadoutOf, rackOperatingCostPerSec } from './effects'
+import { towerOpexPerSec } from './effects'
 import { LANE_COUNT, pathLength } from './pathing'
 import { ALL_HAZARDS } from './safety'
 import { surgeLaneOf } from './spawn'
@@ -84,18 +84,18 @@ export interface WavePreview {
 const ALL_LANES = Array.from({ length: LANE_COUNT }, (_, i) => i)
 
 /**
- * The fleet's operating bill per board second, exactly as updateEconomy charges it:
- * every online, un-frozen rack bills its $/GPU-hr (a requisitioned training rack is
- * powered and computing, so it bills too), scaled by the power-price incident.
+ * The fleet's operating bill per board second, as updateEconomy charges it during a busy
+ * wave: every online, un-frozen rack bills its GPU-hours plus the energy of a fully loaded
+ * rack (a requisitioned training rack is powered and computing too), the generative
+ * guardrail's own rack included; the power-price incident scales the energy line.
  */
 export function fleetBurnPerSec(s: GameState): number {
   let burn = 0
   for (const t of s.towers) {
-    if (t.def.kind !== 'server' || !t.online || t.throttle <= 0) continue
-    const hw = loadoutOf(s, t).hw
-    if (hw) burn += rackOperatingCostPerSec(hw)
+    const op = towerOpexPerSec(s, t, 1)
+    burn += op.gpu + op.energy
   }
-  return burn * s.modifiers.powerPrice
+  return burn
 }
 
 /** The wave START would launch from the current state, or null when no wave follows. */

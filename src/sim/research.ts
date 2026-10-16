@@ -8,7 +8,7 @@ import type {
   ResearchTrack,
 } from '../core/types'
 import { HARDWARE_DEFS, INFRA_NODES, METHOD_RECIPES, RESEARCH_DEFS, RESEARCH_MAX_SHARE } from './content'
-import { hasLab, lvl } from './effects'
+import { hasLab, isBlackwell, lvl } from './effects'
 import { deriveModel, postTrainComputeCost, postTrainDataCost, resolveModel } from './models'
 
 /** Tech/eval nodes sharing a techId stack levels; a node's level is its position. */
@@ -49,9 +49,33 @@ export function researchPrereqsMet(s: GameState, def: ResearchDef): boolean {
   })
 }
 
-/** Can the project be started right now (ignoring the Data bill)? */
+/** A researched node this one is mutually exclusive with (§4.3 chunked ⟂ disagg, §4.9 SGLang ⟂ TensorRT-LLM), if any. */
+export function researchConflict(s: GameState, def: ResearchDef): string | null {
+  for (const id of INFRA_NODES[def.id]?.conflicts ?? []) {
+    const other = RESEARCH_DEFS[id]
+    if (other && researchOwned(s, other)) return id
+  }
+  return null
+}
+
+/** A Blackwell-only technique (NVFP4) needs a Blackwell rack on the board to be worth anything. */
+export function researchNeedsBlackwell(s: GameState, def: ResearchDef): boolean {
+  if (!INFRA_NODES[def.id]?.requiresBlackwell) return false
+  return !s.towers.some((t) => t.def.kind === 'server' && isBlackwell(t.hwId ? HARDWARE_DEFS[t.hwId] : null))
+}
+
+/**
+ * Can the project be started right now (ignoring the Data bill)? Prerequisites met, not a
+ * conflicting alternative of something already researched, and — for a Blackwell-only
+ * technique — a Blackwell rack to run it on. One rule for the UI, the agent bridge and the demo.
+ */
 export function researchUnlocked(s: GameState, def: ResearchDef): boolean {
-  return !researchOwned(s, def) && researchPrereqsMet(s, def)
+  return (
+    !researchOwned(s, def) &&
+    researchPrereqsMet(s, def) &&
+    researchConflict(s, def) === null &&
+    !researchNeedsBlackwell(s, def)
+  )
 }
 
 /**
@@ -234,18 +258,16 @@ export function applyInfraEffects(s: GameState, effects: InfraNodeDef['effects']
       case 'multiStep': inf.scheduling.multiStep += v; break
       case 'chunked': inf.scheduling.chunked = true; break
       case 'disagg': inf.disagg = true; break
-      // throughput lift (multi-step / engine / data-parallel)
-      case 'throughput': inf.throughput += v; break
       // kv-memory
       case 'kvUtilization': inf.kv.utilization = Math.max(inf.kv.utilization, v); break
       case 'prefixHitCeil': inf.kv.prefixHitCeil = Math.max(inf.kv.prefixHitCeil, v); break
       case 'kvQuantBytes': inf.kv.quantBytes = Math.min(inf.kv.quantBytes, v); break
       case 'offloadGb': inf.kv.offloadGb += v; break
       case 'flash': inf.kv.flash += v; break
-      // weight-quant (PTQ)
-      case 'weightQuantBytes':
-        inf.weightQuantBytes = Math.min(inf.weightQuantBytes, v) as 2 | 1 | 0.5
-        break
+      // weight formats (PTQ): each rack then picks its own precision among the researched ones
+      case 'quantFp8': inf.quant.fp8 = true; break
+      case 'quantInt4': inf.quant.int4 = true; break
+      case 'quantNvfp4': inf.quant.nvfp4 = true; break
       // decoding
       case 'specEnabled': inf.spec.enabled = true; break
       case 'specLevel': inf.spec.level = Math.max(inf.spec.level, v); break

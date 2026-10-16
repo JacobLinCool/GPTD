@@ -3,6 +3,7 @@ import { SIM_DT } from '../src/config'
 import { startGame, startWave, tryBuild } from '../src/sim/actions'
 import { CAMPAIGN_THEMES } from '../src/sim/campaign'
 import { WAVES } from '../src/sim/content'
+import { towerOpexPerSec } from '../src/sim/effects'
 import { fleetBurnPerSec, previewNextWave } from '../src/sim/preview'
 import { step } from '../src/sim/sim'
 import { createState } from '../src/sim/state'
@@ -60,7 +61,7 @@ describe('next-wave preview (sim/preview.ts)', () => {
     expect(p.lanes).toEqual([2])
   })
 
-  it('bills the fleet exactly like the wave economy tick', () => {
+  it('bills the fleet like the wave economy tick, at a busy rack’s energy draw', () => {
     const s = createState(7)
     startGame(s)
     expect(tryBuild(s, 'srv_edge', TILE.col, TILE.row)).toBe(true)
@@ -68,10 +69,22 @@ describe('next-wave preview (sim/preview.ts)', () => {
     expect(burn).toBeGreaterThan(0)
     const p = previewNextWave(s)!
     expect(p.projectedBill).toBeCloseTo(burn * p.estDurationSec, 6)
+    // the busy-wave burn = every tower's GPU-hour line + its energy line at full load
+    const busy = s.towers.reduce((n, t) => {
+      const op = towerOpexPerSec(s, t, 1)
+      return n + op.gpu + op.energy
+    }, 0)
+    expect(burn).toBeCloseTo(busy, 12)
     startWave(s)
     const cash = s.meters.cash
+    const live = s.towers.reduce((n, t) => {
+      const op = towerOpexPerSec(s, t)
+      return n + op.gpu + op.energy
+    }, 0)
     step(s)
-    // the first tick earns nothing yet, so the cash drop is the operating bill alone
-    expect(cash - s.meters.cash).toBeCloseTo(burn * SIM_DT, 9)
+    // the first tick earns nothing yet, so the cash drop is the operating bill alone — an idle
+    // rack still pays its GPU-hours, but draws (and pays) less energy than a busy one
+    expect(cash - s.meters.cash).toBeCloseTo(live * SIM_DT, 12)
+    expect(live).toBeLessThan(burn)
   })
 })

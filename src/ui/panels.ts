@@ -13,6 +13,7 @@ import {
   type SloCause,
   type Tower,
   type WaveReport,
+  type WeightFormat,
 } from '../core/types'
 import { getMode, isExpert, setMode } from '../mode'
 import { OUTCOME_STYLE, outcomeColor } from '../outcomes'
@@ -66,7 +67,10 @@ import {
   hwUpgradeDelta,
   latencyOf,
   modelThinkTokens,
+  nextFormatChoice,
+  parallelSummary,
   rackDollarsPerMtoken,
+  rackFormatChoices,
   rolloutTargets,
   rooflineOf,
   sameTierTargets,
@@ -110,6 +114,8 @@ export interface InspectCallbacks {
   onDeploy: (id: number, modelId: string) => void
   onUpgradeHw: (id: number) => void
   onRole: (id: number) => void
+  /** set the rack's weight format (undefined = auto) — between waves. */
+  onPrecision: (id: number, fmt: WeightFormat | undefined) => void
 }
 
 type InspectTab = 'overview' | 'deploy' | 'stats'
@@ -312,9 +318,13 @@ class DeployRow extends Container {
       this.safeT.text = t('inspect.dep.safe', { s: c.safety.toFixed(0), p: Math.round(c.overRefusal * 100) })
       this.safeT.style.fill = c.overRefusal <= 0.05 ? COLORS.good : c.overRefusal <= 0.12 ? COLORS.trust : COLORS.warn
     } else {
-      this.speedT.text = c.needHw
-        ? t('inspect.dep.needs', { gb: c.needGb.toFixed(0), hw: hwShort(c.needHw) })
-        : t('inspect.dep.needsNone', { gb: c.needGb.toFixed(0) })
+      // a model that would span this rack's GPUs is blocked by the parallelism research, not VRAM
+      this.speedT.text =
+        c.blocker === 'tp' || c.blocker === 'pp'
+          ? t(c.blocker === 'tp' ? 'inspect.dep.needsTp' : 'inspect.dep.needsPp', { g: c.spanGpus })
+          : c.needHw
+            ? t('inspect.dep.needs', { gb: c.needGb.toFixed(0), hw: hwShort(c.needHw) })
+            : t('inspect.dep.needsNone', { gb: c.needGb.toFixed(0) })
       this.speedT.style.fill = COLORS.textDim
       this.smartT.text = ''
       this.safeT.text = ''
@@ -378,13 +388,14 @@ export class InspectPanel {
   private sellWide: UIButton
   private upAllBtn: UIButton
   private roleBtn: UIButton
+  private fmtBtn: UIButton
   private tabBtns: { tab: InspectTab; narrow: UIButton; wide: UIButton }[] = []
   // body: free text rows (Normal overview, next-wave fit, non-server lines)
   private lines: Text[] = []
   private sparksHead = label('', 10, COLORS.textDim, 'bold')
   private sparks = new QualitySparks(BODY_W - 16, 13)
   // expert cards
-  private cardHw = new Card(BODY_W, 3, COLORS.power)
+  private cardHw = new Card(BODY_W, 4, COLORS.power)
   private cardModel = new Card(BODY_W, 5, COLORS.data)
   private cardRoof = new Card(BODY_W, 0, COLORS.cooling)
   private cardLive = new Card(BODY_W, 7, COLORS.good)
@@ -451,13 +462,16 @@ export class InspectPanel {
     this.sellWide = new UIButton({ w: BODY_W, h: 32, accent: COLORS.warn, onTap: () => this.doSell() })
     this.upAllBtn = new UIButton({ w: BAR_WIDE, h: 30, accent: COLORS.power, onTap: () => this.doUpgradeAll() })
     this.roleBtn = new UIButton({ w: BAR_NARROW, h: 30, accent: COLORS.cooling, onTap: () => this.doRole() })
+    this.fmtBtn = new UIButton({ w: BODY_W, h: 30, accent: COLORS.data, onTap: () => this.doPrecision() })
     this.hwBtn.x = BODY_X
     this.sellBtn.x = BODY_X + BAR_WIDE + BAR_GAP
     this.sellWide.x = BODY_X
     this.upAllBtn.x = BODY_X
     this.roleBtn.x = BODY_X + BAR_WIDE + BAR_GAP
-    this.view.addChild(this.hwBtn, this.sellBtn, this.sellWide, this.upAllBtn, this.roleBtn)
+    this.fmtBtn.x = BODY_X
+    this.view.addChild(this.hwBtn, this.sellBtn, this.sellWide, this.upAllBtn, this.roleBtn, this.fmtBtn)
     addTooltip(this.hwBtn, () => this.hwTooltip())
+    addTooltip(this.fmtBtn, () => ({ title: t('inspect.fmt.tip.title'), body: t('inspect.fmt.tip.body') }))
 
     INSPECT_TABS.forEach((tab, i) => {
       const narrowW = (BODY_W - 2 * BAR_GAP) / 3
@@ -579,6 +593,15 @@ export class InspectPanel {
     if (tw) this.cb.onRole(tw.id)
   }
 
+  /** Cycle the rack's weight format: auto → each researched format the model fits in → auto. */
+  private doPrecision(): void {
+    const s = this.state
+    const tw = this.selected
+    if (!s || !tw || s.phase !== 'build') return
+    const next = nextFormatChoice(s, tw)
+    if (next) this.cb.onPrecision(tw.id, next.setting)
+  }
+
   /** Deploy picker row tap: this rack; Shift → every rack of the tier; Shift+Ctrl/⌘ → every rack it fits. */
   private onRowTap(row: DeployRow, e: FederatedPointerEvent): void {
     if (this.drag.swallowTap) return
@@ -593,7 +616,7 @@ export class InspectPanel {
     else if (e.shiftKey) this.rollout(c.model.id, 'tier')
     else {
       const tw = this.selected
-      if (tw && this.state?.phase === 'build') this.cb.onDeploy(tw.id, c.model.id)
+      if (tw && (this.state?.phase === 'build' || c.hotSwap)) this.cb.onDeploy(tw.id, c.model.id)
     }
   }
 
@@ -755,6 +778,21 @@ export class InspectPanel {
         }
         y += 36
       }
+      // §4.5 the rack's weight format, once more than one is on the table
+      const fmts = rackFormatChoices(s, tw)
+      this.fmtBtn.visible = fmts.length > 2
+      if (this.fmtBtn.visible) {
+        const cur = fmts.find((c) => c.setting === tw.precision) ?? fmts[0]
+        const name = t('fmt.' + cur.format)
+        setButton(
+          this.fmtBtn,
+          t(tw.precision === undefined ? 'inspect.fmt.auto' : 'inspect.fmt', { fmt: name }),
+          cur.tax > 0 ? t('inspect.fmt.sub.tax', { q: cur.tax }) : t('inspect.fmt.sub.lossless'),
+        )
+        this.fmtBtn.y = y
+        this.fmtBtn.setActive(tw.precision !== undefined).setEnabled(s.phase === 'build' && !!nextFormatChoice(s, tw))
+        y += 36
+      }
       const tabs = expert ? INSPECT_TABS : INSPECT_TABS.filter((x) => x !== 'stats')
       const fitting = this.cands.reduce((n, c) => n + (c.fits ? 1 : 0), 0)
       for (const tb of this.tabBtns) {
@@ -771,6 +809,7 @@ export class InspectPanel {
     } else {
       this.upAllBtn.visible = false
       this.roleBtn.visible = false
+      this.fmtBtn.visible = false
       for (const tb of this.tabBtns) {
         tb.narrow.visible = false
         tb.wide.visible = false
@@ -890,7 +929,7 @@ export class InspectPanel {
 
   /** Per-archetype verdicts for the loaded model on this rack (memoized on rack + research + traffic). */
   private rackFits(s: GameState, tw: Tower, lo: Loadout): { entry: TrafficEntry; fit: TypeFit }[] {
-    const key = `${tw.id}|${tw.hwId}|${tw.modelId}|${JSON.stringify(s.infra)}|${this.trafficKey}`
+    const key = `${tw.id}|${tw.hwId}|${tw.modelId}|${tw.precision ?? ''}|${JSON.stringify(s.infra)}|${this.trafficKey}`
     if (key !== this.fitKey) {
       this.fitKey = key
       const entries = this.traffic?.entries.length ? this.traffic.entries : typicalTraffic()
@@ -990,6 +1029,23 @@ export class InspectPanel {
           cool: t('rack.cool.' + hw.cooling),
         }),
       )
+      // §4.7 how the model spreads over the GPUs: copies add concurrency, TP splits a stream
+      const ps = parallelSummary(s, lo)
+      this.cardHw.set(
+        3,
+        !model
+          ? ''
+          : ps.blocker
+            ? t('rack.hw.planNone')
+            : t('rack.hw.plan', {
+                g: ps.g,
+                tp: ps.tpDeg,
+                pp: ps.stages > 1 ? t('rack.hw.planPp', { stages: ps.stages }) : '',
+                copies: ps.replicas,
+                fmt: t('fmt.' + ps.format),
+              }),
+        ps.blocker ? COLORS.warn : COLORS.text,
+      )
     }
     y += this.cardHw.draw(cx, y, t('rack.card.hw')) + 4
 
@@ -1087,7 +1143,7 @@ export class InspectPanel {
     this.cardLive.set(
       5,
       tw.batch !== undefined
-        ? t('inspect.est.live', { b: tw.batch, kv: Math.round((tw.kvFrac ?? 0) * 100), u: Math.round(tw.load * 100) })
+        ? t('inspect.est.live', { b: tw.streams ?? tw.batch, kv: Math.round((tw.kvFrac ?? 0) * 100), u: Math.round(tw.load * 100) })
         : t('rack.live.util', { v: Math.round(tw.load * 100), batch }),
       tw.load >= 1 ? COLORS.warn : COLORS.text,
     )
@@ -1123,9 +1179,10 @@ export class InspectPanel {
   /** Recompute + sort the candidates when the rack, fleet, research, traffic or sort changes. */
   private refreshCandidates(s: GameState, tw: Tower): void {
     let fleet = ''
-    for (const t2 of s.towers) if (t2.def.kind === 'server') fleet += `${t2.id}:${t2.hwId}:${t2.modelId};`
+    for (const t2 of s.towers) if (t2.def.kind === 'server') fleet += `${t2.id}:${t2.hwId}:${t2.modelId}:${t2.precision ?? ''};`
     const key = [
       tw.id,
+      s.phase, // a mid-wave Multi-LoRA hot swap is offered only while the wave runs
       Object.keys(s.models).length,
       s.derivedSeq,
       JSON.stringify(s.infra),
@@ -1167,7 +1224,6 @@ export class InspectPanel {
     const last = Math.min(this.cands.length - 1, Math.ceil((this.scroll + this.bodyH - this.listTop) / DEP_ROW_STEP))
     const need = Math.max(0, last - first + 1)
     while (this.rows.length < need) this.addRow()
-    const canAct = s.phase === 'build'
     for (let k = 0; k < this.rows.length; k++) {
       const row = this.rows[k]
       const i = first + k
@@ -1176,6 +1232,8 @@ export class InspectPanel {
         row.visible = false
         continue
       }
+      // between waves anything that fits; mid-wave only a Multi-LoRA adapter swap
+      const canAct = s.phase === 'build' || c.hotSwap
       row.visible = true
       row.y = this.listTop + i * DEP_ROW_STEP
       row.bind(c, `${this.candKey}#${i}#${canAct}`, this.allCounts.get(c.model.id) ?? 0, canAct)

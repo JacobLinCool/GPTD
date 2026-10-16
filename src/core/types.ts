@@ -131,6 +131,8 @@ export interface ServerHardwareDef {
   // --- per-GPU real specs (§5.2–5.5) ---
   bf16TflopsPerGpu: number
   fp8TflopsPerGpu: number
+  /** dense FP4 tensor rate per GPU (Blackwell 5th-gen Tensor Cores only; 0 = no FP4 hardware). */
+  fp4TflopsPerGpu: number
   hbmGbPerGpu: number
   /** HBM bandwidth per GPU in TB/s. */
   hbmTbsPerGpu: number
@@ -142,6 +144,7 @@ export interface ServerHardwareDef {
   // --- aggregate (perGpu × gpus), filled at load ---
   bf16Tflops: number
   fp8Tflops: number
+  fp4Tflops: number
   hbmGb: number
   /** aggregate HBM bandwidth in TB/s. */
   hbmTbs: number
@@ -150,8 +153,6 @@ export interface ServerHardwareDef {
   /** aggregate operating rate in USD per hour (gpuHrUsdPerGpu × gpus, §5.8/§6.6). */
   gpuHrUsd: number
   // --- engineering / display fields ---
-  /** Baseline concurrent decode slots before serving upgrades. */
-  targets: number
   /**
    * LEGACY abstract power/heat numbers. As of P2 (§6.5) the power SYSTEM ignores
    * these for servers and uses real `tdpWatts` via serverPower()/serverHeat(); they
@@ -305,6 +306,12 @@ export interface ModelDef {
   nativeWeightBytes: number
   /** real context window in thousands of tokens (the hard window gate, §1.2). */
   contextWindowK: number
+  /**
+   * §1.2 long-context skill, 0..1: how much answer quality survives as a prompt fills the
+   * window. Calibrated at load from the AA long-context-reasoning cell (calibrate.ts
+   * `longCtxOf`); combat turns window fill into a quality penalty scaled by (1 − skill).
+   */
+  longCtx: number
   // --- intrinsic state (§3, R3): post-training methods MODIFY these; P3d consumes them ---
   /** first-layer alignment profile (safety / refusal style / over-refusal). */
   alignment: AlignmentProfile
@@ -387,27 +394,38 @@ export interface ResearchTracks {
  * field is a typed switch/level set by an `InfraNodeDef` via `applyInfraEffects`.
  */
 export interface InfraState {
-  /** scheduling.batch=continuous batching unlocked; multiStep/throughput lift tok/s; chunked=Sarathi. */
+  /**
+   * scheduling.batch = continuous batching (iteration-level scheduling); multiStep = steps run
+   * per scheduler call (amortizes the per-step overhead, delays admission); chunked = Sarathi.
+   */
   scheduling: { batch: boolean; multiStep: number; chunked: boolean }
-  /** KV memory: paged utilization, prefix-cache hit ceiling, KV element bytes, CPU/SSD offload, FlashAttention level. */
+  /** KV memory: paged utilization, prefix-cache hit ceiling, KV element bytes, CPU/SSD offload tier (GB), FlashAttention. */
   kv: { utilization: number; prefixHitCeil: number; quantBytes: number; offloadGb: number; flash: number }
   /** P/D disaggregation (DistServe); hard-conflicts chunked prefill (§4.3). */
   disagg: boolean
-  /** Speculative decoding (EAGLE): batch-dependent decode speedup (§4.4). */
+  /** Speculative decoding (EAGLE): a draft head proposes tokens the target verifies (§4.4). */
   spec: { enabled: boolean; level: number }
-  /** PTQ weight quant; feeds §6.2 bytesPerParam (2=FP16, 1=FP8, 0.5=INT4). */
-  weightQuantBytes: 2 | 1 | 0.5
-  /** TP=+prefill roof (NVLink), PP=memory, DP=throughput, EP=MoE serving-efficiency (§4.7). */
+  /**
+   * §4.5 the weight formats researched for serving (BF16 always). Each rack picks its own
+   * precision among these (Tower.precision; auto = the best one that costs no quality).
+   */
+  quant: { fp8: boolean; int4: boolean; nvfp4: boolean }
+  /**
+   * §4.7 parallelism: tp = a model may span up to 8 GPUs of one rack (tensor parallel);
+   * pp = beyond 8 (pipeline stages); dp = a rack's replicas are load-balanced per request;
+   * ep = MoE experts are sharded across a rack's replicas (wide expert parallelism).
+   */
   par: { tp: boolean; pp: boolean; dp: boolean; ep: boolean }
-  /** KV-aware request routing (Dynamo, ~2×, §4.10). */
+  /** KV-aware request routing (Dynamo): routed cacheable traffic finds its prefix (§4.10). */
   routing: { kvAware: boolean }
-  /** S-LoRA adapter slots served from one base copy (§4.10). */
+  /** S-LoRA: adapter checkpoints stay unmerged beside their base, so they hot-swap mid-wave (§4.10). */
   loraSlots: number
-  /** inference engine tier 0=vLLM / 1=SGLang / 2=TRT-LLM → engine throughput mul (§4.9). */
+  /** inference engine 0 = vLLM / 1 = SGLang (RadixAttention prefix reuse) / 2 = TensorRT-LLM (faster kernels) (§4.9). */
   engineTier: 0 | 1 | 2
-  /** aggregate throughput lift (multi-step scheduling + bigger-rack utilization, §4.1). */
-  throughput: number
 }
+
+/** §4.5 a serving weight format: resident bytes, the tensor rate it runs at, and its PTQ quality cost. */
+export type WeightFormat = 'bf16' | 'fp8' | 'int4' | 'nvfp4'
 
 /** §4 InfraCategory — the nine serving-stack categories the tech tree groups by. */
 export type InfraCategory =
@@ -430,12 +448,12 @@ export interface InfraNodeDef {
   category: InfraCategory
   name: string
   i18nKey: string
-  /** flat effect bag (e.g. {schedBatch:1}, {kvUtilization:0.96}, {weightQuantBytes:1}). */
+  /** flat effect bag (e.g. {schedBatch:1}, {kvUtilization:0.96}, {quantFp8:1}). */
   effects: Partial<Record<string, number>>
   level: number
   /** prerequisite infra-node ids. */
   requires: string[]
-  /** mutually-exclusive infra-node ids (§4.3 chunked ⟂ disagg). */
+  /** mutually-exclusive infra-node ids (§4.3 chunked ⟂ disagg, §4.9 one engine), enforced by researchUnlocked. */
   conflicts?: string[]
   dataCost: number
   compute: number
@@ -505,6 +523,19 @@ export interface RequestTypeDef {
   /** §1.3 per-type SLO overrides (ms). `agent` rides E2EL only (latClass TO + e2elSloMs). */
   ttftSloMs?: number
   e2elSloMs?: number
+  /**
+   * §1.3 time to first ANSWER token (ms) for interactive traffic: a thinking model's hidden
+   * reasoning runs before the answer starts, so TTFT stays the engine's first token while
+   * this bound catches the thinking wait (SloCause 'ttfat'). Unset = no such bound.
+   */
+  ttfatSloMs?: number
+  /**
+   * §1.4 how much of a thinking model's hidden-reasoning budget (ModelDef.thinkTokens) this
+   * archetype triggers: 1 = a full think before answering, 0 = none (an embedding emits no
+   * text; a long-CoT request's output already IS its reasoning). Hidden tokens cost decode
+   * time, KV and E2EL like any token, but are not billed.
+   */
+  thinkMul: number
   /** path-tiles per second */
   speed: number
   /**
@@ -643,11 +674,25 @@ export interface Request {
   /** real seconds for the full answer (ttft + decode + output guards), accumulated as decode runs (§0.4). */
   e2elReal: number
   /**
-   * real decode seconds after the first token, at the rack's effective per-token time
-   * (throttle, P/D role, prefill time-share and stalls). TPOT is judged once, at delivery:
-   * decodeSec / (tokensOut − 1).
+   * real decode seconds after the first token, at the per-token time of the streams in
+   * flight (throttle, P/D role, prefill time-share and stalls). TPOT is judged once, at
+   * delivery: decodeSec / (tokens generated − 1), hidden reasoning tokens included.
    */
   decodeSec: number
+  /**
+   * §1.4 hidden reasoning tokens this answer carries, latched at the first token from the
+   * model that produced it (thinkTokens × the archetype's thinkMul). They decode BEFORE the
+   * answer, so they are the first `hiddenTokens` of `maxWork`, and they are never billed.
+   */
+  hiddenTokens: number
+  /** real seconds to the first ANSWER token (TTFT + the hidden reasoning), latched when the answer starts. */
+  ttfatReal: number
+  /** the model that holds this request's KV (latched at its first token); a decode-pinned rack only takes its own model's KV. */
+  kvModelId?: string
+  /** the rack that produced the first token; a P/D decode-pool rack elsewhere pays the KV transfer from it. */
+  kvTowerId?: number
+  /** real seconds of KV transfer still owed when a decode pool picks the request up (P/D disaggregation). */
+  kvTransferSec: number
   /** latched true once this request misses a latency bound of its class SLO (cause in `sloCause`). */
   sloViolated: boolean
   /**
@@ -758,6 +803,19 @@ export interface Tower {
   training?: boolean
   /** P/D disaggregation role (requires the research; undefined = auto) */
   role?: 'prefill' | 'decode'
+  /** §4.5 the weight format this rack serves its model in (researched formats only; undefined = auto). */
+  precision?: WeightFormat
+  /**
+   * §4.10 multi-LoRA: the rack hot-swapped between adapter siblings mid-wave, so it serves
+   * them unmerged (the S-LoRA kernel overhead applies) until the next build phase re-merges.
+   */
+  loraHot?: boolean
+  /**
+   * §4.3 P/D disaggregation: real lane-seconds of prompt prefill this rack owes the decode
+   * pools that took its KV (their cohorts' other prompts). A prefill pool pays it out of its
+   * lane time before it starts new prompts; 0 for every other rack. Reset at wave start.
+   */
+  prefillDebtSec: number
   // ---- display-only, refreshed each combat tick (render/UI read; the sim never branches on these) ----
   /** request ids this rack decoded last tick. */
   decodeIds?: number[]
@@ -765,8 +823,12 @@ export interface Tower {
   prefillId?: number | null
   /** fraction of this rack's KV budget in use last tick (0..1). */
   kvFrac?: number
-  /** real decode batch last tick. */
+  /** request sprites decoding on this rack last tick. */
   batch?: number
+  /** real concurrent streams last tick (Σ of the admitted sprites' cohorts, §5.7). */
+  streams?: number
+  /** per-user decode tok/s of a stream on this rack last tick (0 = not decoding). */
+  tokS?: number
 }
 
 export interface Meters {
@@ -986,8 +1048,12 @@ export interface WaveStats {
   cacheHits: number
   /** token-priced request revenue earned during the wave (excludes the clear bonus) */
   cashIn: number
-  /** real operating cost (Σ online racks' $/GPU-hr × wall-clock) paid during the wave */
+  /** the whole operating bill paid during the wave (= gpuCost + energyCost) */
   powerCost: number
+  /** §6.6 the GPU-hour line: hardware amortization, maintenance, colo — every online rack, busy or idle */
+  gpuCost: number
+  /** §6.6 the energy line: kW drawn × PUE × $/kWh (power-price incidents scale only this) */
+  energyCost: number
   /** first-hardware-contact→answer latencies (seconds) of every answered request */
   latencies: number[]
   /** first-hardware-contact→first-token latencies (TTFT, seconds) of every prefilled request */
@@ -1032,7 +1098,11 @@ export interface WaveReport {
   cacheHits: number
   cashIn: number
   clearBonus: number
+  /** the whole operating bill (= gpuCost + energyCost). */
   powerCost: number
+  /** §6.6 the GPU-hour line and the energy line of the bill. */
+  gpuCost?: number
+  energyCost?: number
   avgLatency: number
   p95Latency: number
   /** time-to-first-token stats, measured from first hardware contact */

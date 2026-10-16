@@ -6,11 +6,10 @@
  * The module is PURE (no PixiJS / DOM) and is unit-tested against the §6 worked
  * examples. It must NEVER mutate GameState; it only reads it (AGENTS.md §2).
  *
- * Latency is reported as `effLatencyMs` (§0.4) — the concurrency-amortized
- * EQUIVALENT latency the sim judges SLOs against (per-user decode = aggregate
- * throughput / batch), NOT the bare b=1 latency. That is why a high-concurrency,
- * low-OSL chat request can fall back inside its SLO while a long-OSL reasoning
- * request stays tight — exactly the function Goodput is.
+ * Latency estimates assume a BUSY rack — ESTIMATE_SPRITES_PER_LANE request cohorts on every
+ * decode lane (§5.7), the load an SLO has to survive in a wave: per-user decode speed falls
+ * as the batch (and its KV) grows, while the rack's aggregate climbs toward its compute roof.
+ * Queueing and contention with other racks are runtime state and are left out.
  */
 import { FRAMEWORK_GB, LAT_CLASS_SLO, TILE } from '../config'
 import type {
@@ -25,40 +24,49 @@ import type {
   ServerHardwareDef,
   SloCause,
   Tower,
+  WeightFormat,
 } from '../core/types'
 import {
+  admissionDelaySec,
+  availableFormats,
   computeRoofTokS,
-  decodeThrottle,
   decodeTokSb1,
+  deployBlocker,
+  dollarsPerMtokenAt,
+  frameworkGbPerGpu,
   guardLatencyMs,
   hasLiquidLoop,
+  hiddenTokensFor,
   hwNeedsLiquid,
-  int4ContextPenalty,
   kvFreeGb,
   kvPerReqGb,
   type Loadout,
   loadout,
   loadoutOf,
-  rackOperatingCostPerSec,
+  longContextPenalty,
+  loraSiblings,
+  type ParallelPlan,
+  ptqTax,
+  rackLoadEstimate,
+  rackPlan,
   resolveModel,
-  serverAggDecodeTokS,
-  serverComputeCeiling,
   serverBandwidthCeiling,
-  serverContext,
+  serverComputeCeiling,
   serverCtxWindowTokens,
   serverDeployable,
   serverFitsMemory,
   serverModelMemory,
-  serverPerUserDecodeTokS,
   serverPower,
   serverPrefillSpeed,
   serverQuality,
   serverQualityVs,
-  serverTargets,
+  spritesPerLane,
+  servingFormat,
+  towerOpexPerSec,
   towerRangeTiles,
 } from '../sim/effects'
 import { goodputPctOf } from '../sim/telemetry'
-import { HARDWARE_DEFS, HARDWARE_TIERS, REQUEST_TYPES, WAVES } from '../sim/content'
+import { HARDWARE_DEFS, HARDWARE_TIERS, WAVES, REQUEST_TYPES } from '../sim/content'
 import { hardwareUpgradeCost, nextHardware } from '../sim/actions'
 import {
   ALL_HAZARDS,
@@ -74,43 +82,139 @@ import { CREDIT_USD } from '../config'
 /** The five capability axes, in display order. `agentic` is the discriminative one (§6.4). */
 export const AXES: CapabilityAxis[] = ['chat', 'coding', 'reasoning', 'general', 'agentic']
 
-/** Which roof binds the rack at the deploy precision (§5.7). */
+/** Which roof binds the rack at a busy batch (§5.7). */
 export type BindingRoof = 'compute' | 'bandwidth'
+
+/** The representative request the rack cards quote (the ESTIMATE card: 1.5K in / 256 out). */
+export const REF_IN_TOKENS = 1500
+export const REF_OUT_TOKENS = 256
+
+/**
+ * The busy load the estimates assume: request cohorts per decode lane (each COHORT_STREAMS
+ * real streams — 2 ≈ 56 concurrent users per model copy), capped by the engine's batch.
+ */
+export const ESTIMATE_SPRITES_PER_LANE = 2
+
+/** Request sprites a busy rack holds: ESTIMATE_SPRITES_PER_LANE on every lane (one before Continuous Batching). */
+function busySprites(s: GameState, lo: Loadout): number {
+  const p = rackPlan(s, lo)
+  return Math.max(1, p.lanes * Math.min(spritesPerLane(s), ESTIMATE_SPRITES_PER_LANE))
+}
+
+/**
+ * The mean sequence a decoding stream holds over its answer: its prompt plus half of what it
+ * generates (streams in a batch sit at every point of their answers) — the KV the step re-reads.
+ */
+function midDecodeContext(inputTokens: number, outputTokens: number): number {
+  return Math.max(1, Math.round(inputTokens + Math.max(0, outputTokens) / 2))
+}
 
 /* ------------------------------------------------------------------ *
  *  Per-rack roofline / throughput metrics                            *
  * ------------------------------------------------------------------ */
 
 export interface RooflineMetrics {
-  /** raw b=1 decode tok/s (bandwidth-bound, §5.7) — the §6 worked-example basis. */
+  /** single-stream decode ceiling (tok/s): one user alone on a lane, bandwidth-bound (§5.7). */
   decodeTokSb1: number
-  /** raw compute roof tok/s (the ceiling decode hits as batch grows, §5.7). */
+  /** the rack's aggregate compute roof (tok/s) — what decode approaches as the batch grows. */
   computeRoofTokS: number
-  /** prefill tok/s for a representative prompt (compute-bound GEMM, super-linear). */
+  /** prefill tok/s of a representative prompt on one lane (compute-bound GEMM, super-linear). */
   prefillTokS: number
-  /** UI compute ceiling (compute roof × engine/throughput muls). */
+  /** UI compute ceiling (the aggregate compute roof). */
   computeCeiling: number
-  /** UI bandwidth ceiling (b=1 decode × FlashAttn + spec-decode muls). */
+  /** UI bandwidth ceiling (the single-stream ceiling, speculative decoding included). */
   bandwidthCeiling: number
-  /** which roof binds at the deploy precision: compute (low) vs bandwidth (high b=1). */
+  /** which roof binds a busy batch: compute (a big batch of a small model) vs HBM bandwidth. */
   binding: BindingRoof
-  /** fits VRAM (weights + framework ≤ HBM). */
+  /** fits VRAM in an allowed GPU group (weights + draft + framework). */
   fits: boolean
+  /** how the model spreads over the rack's GPUs (§4.7). */
+  plan: ParallelPlan
 }
 
-export function rooflineOf(s: GameState, lo: Loadout, sampleInputTokens = 1500): RooflineMetrics {
-  const fits = serverFitsMemory(s, lo)
-  const cc = serverComputeCeiling(s, lo)
-  const bc = serverBandwidthCeiling(s, lo)
+export function rooflineOf(s: GameState, lo: Loadout, sampleInputTokens = REF_IN_TOKENS): RooflineMetrics {
+  const plan = rackPlan(s, lo)
+  const full = rackLoadEstimate(s, lo, busySprites(s, lo), midDecodeContext(REF_IN_TOKENS, REF_OUT_TOKENS))
   return {
     decodeTokSb1: decodeTokSb1(s, lo),
     computeRoofTokS: computeRoofTokS(s, lo),
     prefillTokS: serverPrefillSpeed(s, lo, sampleInputTokens),
-    computeCeiling: cc,
-    bandwidthCeiling: bc,
-    // the rack is compute-bound when its compute roof is the lower ceiling.
-    binding: cc <= bc ? 'compute' : 'bandwidth',
-    fits,
+    computeCeiling: serverComputeCeiling(s, lo),
+    bandwidthCeiling: serverBandwidthCeiling(s, lo),
+    binding: full.computeBound ? 'compute' : 'bandwidth',
+    fits: plan.fits,
+    plan,
+  }
+}
+
+/** One weight-format setting a rack can take (undefined = auto) and what it does to the loaded model. */
+export interface FormatChoice {
+  /** the rack setting (undefined = auto). */
+  setting: WeightFormat | undefined
+  /** the format the rack would actually serve in. */
+  format: WeightFormat
+  /** the loaded model fits the rack in it. */
+  fits: boolean
+  /** flat quality points it costs the loaded model (0 = lossless). */
+  tax: number
+}
+
+/**
+ * The weight-format settings a rack can switch between (between waves): auto, then every
+ * researched format its hardware runs (and the model's own release format). Mirrors
+ * actions.setRackPrecision — a choice the model does not fit in is listed but refused there.
+ */
+export function rackFormatChoices(s: GameState, tw: Tower): FormatChoice[] {
+  if (tw.def.kind !== 'server' || !tw.hwId) return []
+  const hw = HARDWARE_DEFS[tw.hwId] ?? null
+  const model = tw.modelId ? resolveModel(s, tw.modelId) : null
+  // a checkpoint released below 16 bits never inflates to BF16: that setting would only
+  // repeat its own release format, so it is not offered
+  const formats = availableFormats(s, hw, model).filter((f) => !(f === 'bf16' && model && model.nativeWeightBytes < 1.5))
+  const settings: (WeightFormat | undefined)[] = [undefined, ...formats]
+  return settings.map((setting) => {
+    const lo = loadout(s, tw.hwId, tw.modelId, setting)
+    return {
+      setting,
+      format: model ? servingFormat(s, lo) : (setting ?? 'bf16'),
+      fits: !model || serverFitsMemory(s, lo),
+      tax: model ? ptqTax(s, lo) : 0,
+    }
+  })
+}
+
+/** The next setting a rack's format button cycles to (skipping ones the model would not fit in); null = none. */
+export function nextFormatChoice(s: GameState, tw: Tower): FormatChoice | null {
+  const choices = rackFormatChoices(s, tw)
+  if (choices.length < 2) return null
+  const cur = Math.max(0, choices.findIndex((c) => c.setting === tw.precision))
+  for (let k = 1; k < choices.length; k++) {
+    const c = choices[(cur + k) % choices.length]
+    if (c.fits) return c
+  }
+  return null
+}
+
+/** How a model spreads over a rack (Expert readout): GPUs per copy, tensor-parallel degree, stages, copies, format. */
+export interface ParallelSummary {
+  g: number
+  tpDeg: number
+  stages: number
+  replicas: number
+  format: WeightFormat
+  /** why it does not deploy here (null = it does). */
+  blocker: 'vram' | 'tp' | 'pp' | null
+}
+
+export function parallelSummary(s: GameState, lo: Loadout): ParallelSummary {
+  const p = rackPlan(s, lo)
+  return {
+    g: p.g,
+    tpDeg: p.tpDeg,
+    stages: p.stages,
+    replicas: p.replicas,
+    format: lo.model ? servingFormat(s, lo) : 'bf16',
+    blocker: deployBlocker(s, lo),
   }
 }
 
@@ -121,23 +225,26 @@ export function rooflineOf(s: GameState, lo: Loadout, sampleInputTokens = 1500):
 export interface VramBreakdown {
   /** total HBM (GB) on the rack. */
   totalGb: number
-  /** resident weight memory (GB) = paramsTotalB × bytesPerParam. */
+  /** resident weight memory (GB) of every model copy on the rack (+ speculative draft heads). */
   weightsGb: number
-  /** framework / activation overhead (GB) before KV. */
+  /** framework / activation overhead (GB) of the GPUs the copies run on. */
   frameworkGb: number
-  /** usable KV budget (GB) = (HBM − weights − framework) × allocator quality. */
+  /** usable KV budget (GB) of every copy = (group HBM − weights − framework) × allocator quality. */
   kvFreeGb: number
-  /** unused headroom (GB) the allocator does not reclaim. */
+  /** unused headroom (GB): allocator waste plus GPUs no whole copy fits on. */
   headroomGb: number
 }
 
 export function vramOf(s: GameState, lo: Loadout): VramBreakdown {
   const totalGb = lo.hw?.hbmGb ?? 0
-  const weightsGb = serverModelMemory(s, lo)
+  const p = rackPlan(s, lo)
+  const copies = p.fits ? p.replicas : 0
+  const weightsGb = copies > 0 ? copies * (p.weightGb + p.draftGb) : serverModelMemory(s, lo)
+  const frameworkGb = (copies > 0 ? copies * p.g : 1) * frameworkGbPerGpu(s)
   const kvUsable = kvFreeGb(s, lo)
-  // headroom = whatever HBM the KV allocator does not turn into usable KV.
-  const headroomGb = Math.max(0, totalGb - weightsGb - FRAMEWORK_GB - kvUsable)
-  return { totalGb, weightsGb, frameworkGb: FRAMEWORK_GB, kvFreeGb: kvUsable, headroomGb }
+  // headroom = whatever HBM the KV allocator does not turn into usable KV (and idle GPUs).
+  const headroomGb = Math.max(0, totalGb - weightsGb - frameworkGb - kvUsable)
+  return { totalGb, weightsGb, frameworkGb, kvFreeGb: kvUsable, headroomGb }
 }
 
 /* ------------------------------------------------------------------ *
@@ -164,60 +271,65 @@ export function sparsityOf(lo: Loadout): Sparsity {
 }
 
 /* ------------------------------------------------------------------ *
- *  Effective batch — mirrors combat.ts admission (serverTargets ∩ KV) *
+ *  Effective batch — mirrors combat.ts admission (slots ∩ KV)        *
  * ------------------------------------------------------------------ */
 
 /**
- * The effective decode batch a rack would run at a representative sequence length,
- * matching combat.ts: the scheduler offers `serverTargets` slots, the KV budget
- * caps it further (each in-flight request reserves kvPerReqGb at its contextLen).
- * Pass `contextLen` (default a mid-length 8K seq) to size the KV reservation.
+ * The real concurrent streams a rack holds when busy (ESTIMATE_SPRITES_PER_LANE cohorts per lane) at a representative sequence
+ * length, matching combat.ts: every scheduler slot takes a request cohort (COHORT_STREAMS
+ * streams), the KV of the copy it lands on caps the cohort further, and a stream whose KV
+ * alone exceeds a copy is never admitted (0).
  */
-export function effectiveBatch(s: GameState, lo: Loadout, contextLen = 8000): number {
-  if (!lo.hw || !lo.model || !serverFitsMemory(s, lo)) return 0
-  const slots = serverTargets(s, lo)
-  if (slots <= 1) return slots
-  const budget = kvFreeGb(s, lo)
-  const per = kvPerReqGb(s, lo.model, contextLen)
-  if (per <= 0) return slots
-  // the first admit is always allowed (combat.ts), so KV caps at floor(budget/per) but ≥1.
-  const kvCap = Math.max(1, Math.floor(budget / per))
-  return Math.max(1, Math.min(slots, kvCap))
+export function effectiveBatch(
+  s: GameState,
+  lo: Loadout,
+  contextLen = midDecodeContext(REF_IN_TOKENS, REF_OUT_TOKENS),
+): number {
+  if (!serverFitsMemory(s, lo)) return 0
+  return Math.round(rackLoadEstimate(s, lo, busySprites(s, lo), contextLen).streams)
 }
 
 /* ------------------------------------------------------------------ *
- *  effLatencyMs (§0.4) — concurrency-amortized equivalent latency     *
+ *  Latency on a busy rack (§0.4 / §5.7)                               *
  * ------------------------------------------------------------------ */
 
 export interface LatencyMetrics {
-  /** time-to-first-token (ms): prefill of the input prompt at the rack's prefill rate. */
+  /** time-to-first-token (ms): the prompt's prefill on one lane + the admission wait (pipeline bubble, multi-step). */
   ttftMs: number
-  /** time-per-output-token (ms): 1 / per-user decode rate at the effective batch. */
+  /** time-per-output-token (ms): 1 / per-user decode rate on a busy rack. */
   tpotMs: number
   /** end-to-end latency (ms): ttft + (outputTokens − 1) × tpot. */
   e2elMs: number
-  /** per-user decode rate (tok/s) at the effective batch (§5.7). */
+  /** per-user decode rate (tok/s) on a busy rack (§5.7). */
   perUserDecodeTokS: number
-  /** aggregate decode rate (tok/s) across the whole batch (§5.7). */
+  /** aggregate decode rate (tok/s) of the whole rack at that batch (§5.7). */
   aggDecodeTokS: number
-  /** the effective batch this latency assumes. */
+  /** the real concurrent streams this latency assumes. */
   batch: number
 }
 
 /**
- * The §0.4 concurrency-amortized latency of serving one request of (input,output)
- * tokens on this rack, at the effective batch. This is the EXACT quantity the sim
- * judges SLOs against (combat.ts: `tpotReal = 1/perUserDecode`, `e2elReal` accrues
- * at that rate). TTFT excludes lane transit / queue contention (those are runtime
- * state) — it is the rack's own prefill time for the prompt.
+ * The latency of serving one request of (input, output) tokens on this rack on a busy rack
+ * of such requests — the same lane step combat runs (weights + every stream's KV re-read,
+ * the cohorts' background prompts, speculative decoding while it pays) and the same TTFT
+ * terms (prefill + admission wait). `axis` sets the speculative acceptance (default chat).
  */
-export function latencyOf(s: GameState, lo: Loadout, inputTokens: number, outputTokens: number): LatencyMetrics {
-  const contextLen = inputTokens + Math.max(0, outputTokens)
-  const batch = Math.max(1, effectiveBatch(s, lo, contextLen))
+export function latencyOf(
+  s: GameState,
+  lo: Loadout,
+  inputTokens: number,
+  outputTokens: number,
+  axis: CapabilityAxis = 'chat',
+): LatencyMetrics {
+  const est = rackLoadEstimate(s, lo, busySprites(s, lo), midDecodeContext(inputTokens, outputTokens), {
+    inputTokens,
+    outputTokens,
+    axis,
+  })
   const prefillRate = serverPrefillSpeed(s, lo, inputTokens)
-  const perUser = serverPerUserDecodeTokS(s, lo, batch)
-  const agg = serverAggDecodeTokS(s, lo, batch)
-  const ttftSec = prefillRate > 0 ? inputTokens / prefillRate : Infinity
+  const perUser = est.perUserTokS
+  const ttftSec =
+    prefillRate > 0 ? inputTokens / prefillRate + admissionDelaySec(s, lo, Number.isFinite(est.stepSec) ? est.stepSec : 0) : Infinity
   const tpotSec = perUser > 0 ? 1 / perUser : Infinity
   const decodeSec = outputTokens > 0 ? (outputTokens - 1) * tpotSec : 0
   return {
@@ -225,14 +337,14 @@ export function latencyOf(s: GameState, lo: Loadout, inputTokens: number, output
     tpotMs: tpotSec * 1000,
     e2elMs: (ttftSec + decodeSec) * 1000,
     perUserDecodeTokS: perUser,
-    aggDecodeTokS: agg,
-    batch,
+    aggDecodeTokS: est.aggTokS,
+    batch: Math.round(est.streams),
   }
 }
 
-/** Whether a rack would meet a request type's SLO at the effective batch (§6.4). */
+/** Whether a rack would meet a request type's SLO on a busy rack (§6.4). */
 export function meetsSlo(s: GameState, lo: Loadout, def: RequestTypeDef): boolean {
-  const lat = latencyOf(s, lo, def.inputTokens, def.outputTokens)
+  const lat = latencyOf(s, lo, def.inputTokens, def.outputTokens, def.primaryAxis)
   const cls = LAT_CLASS_SLO[def.latClass]
   const ttftBound = def.ttftSloMs ?? cls.ttftMs
   if (lat.ttftMs > ttftBound) return false
@@ -242,36 +354,41 @@ export function meetsSlo(s: GameState, lo: Loadout, def: RequestTypeDef): boolea
 }
 
 /* ------------------------------------------------------------------ *
- *  $/Mtoken (§5.8) — ($/GPU-hr × 3600) / (aggTokS × 1e6)             *
+ *  $/Mtoken (§5.8) — ($/hour × 1e6) / (aggTokS × 3600)               *
  * ------------------------------------------------------------------ */
 
 /**
  * Unit serving cost in real USD per MILLION tokens (§5.8). The identity is the
- * GPU-hour bill amortized over the tokens that hour produces:
+ * hourly bill amortized over the tokens that hour produces:
  *   tokens/hour = aggTokS × 3600
- *   $/Mtoken    = ($/GPU-hr / (aggTokS × 3600)) × 1e6
- *               = ($/GPU-hr × 1e6) / (aggTokS × 3600)
- * Worked example (§5.8): $3/GPU-hr at 500 tok/s, 100% util → 3/(500×3600)×1e6
- *   = $1.667/Mtoken. `aggTokS` is the AGGREGATE decode throughput (all batch
- * slots), since the wall-clock bill is shared across every token the rack emits.
+ *   $/Mtoken    = ($/hour × 1e6) / (aggTokS × 3600)
+ * Worked example (§5.8): $3/hour at 500 tok/s, 100% util → 3/(500×3600)×1e6
+ *   = $1.667/Mtoken. `aggTokS` is the AGGREGATE decode throughput (every stream
+ * the rack serves), since the wall-clock bill is shared across every token it emits.
  */
-export function dollarsPerMtoken(gpuHrUsd: number, aggTokS: number): number {
+export function dollarsPerMtoken(usdPerHour: number, aggTokS: number): number {
   if (aggTokS <= 0) return Infinity
-  return (gpuHrUsd * 1e6) / (aggTokS * 3600)
+  return (usdPerHour * 1e6) / (aggTokS * 3600)
 }
 
 /**
- * The rack's serving cost in $/Mtoken at its effective batch — the real number the
- * S3/S5 dashboards show. Uses the rack's $/GPU-hr and aggregate decode throughput.
+ * The rack's serving cost in $/Mtoken (output) on a busy rack of the representative request
+ * — the real number the dashboards show AND the rate its cash flow obeys: a board rack bills
+ * RACKS_PER_TILE real racks' GPU-hours + energy, and earns on TRAFFIC_SCALE × the tokens its
+ * sprites progress, which is those racks' aggregate (the cohort identity, config.ts).
  */
-export function rackDollarsPerMtoken(s: GameState, lo: Loadout, contextLen = 8000): number {
+export function rackDollarsPerMtoken(
+  s: GameState,
+  lo: Loadout,
+  contextLen = midDecodeContext(REF_IN_TOKENS, REF_OUT_TOKENS),
+): number {
   if (!lo.hw) return Infinity
-  const batch = Math.max(1, effectiveBatch(s, lo, contextLen))
-  const agg = serverAggDecodeTokS(s, lo, batch)
-  return dollarsPerMtoken(lo.hw.gpuHrUsd, agg)
+  const est = rackLoadEstimate(s, lo, busySprites(s, lo), contextLen, {
+    inputTokens: REF_IN_TOKENS,
+    outputTokens: REF_OUT_TOKENS,
+  })
+  return dollarsPerMtokenAt(s, lo, est.aggTokS, 1)
 }
-
-/** The §5.8 worked example uses the H100 $/GPU-hr (per-GPU, not aggregate) basis. */
 
 /* ------------------------------------------------------------------ *
  *  Power vs cooling headroom (§5.5) + fleet aggregates               *
@@ -322,7 +439,7 @@ export interface FleetMetrics {
   kvUtilPct: number
   /** fleet utilization = servedTokS / theoreticalMax (rolling, §6.6). */
   fleetUtilPct: number
-  /** real operating burn in credits per board-second (Σ online racks' $/GPU-hr). */
+  /** real operating burn in credits per board-second right now (GPU-hours + energy, as updateEconomy bills it). */
   burnPerSec: number
 }
 
@@ -346,11 +463,9 @@ export function fleetMetrics(s: GameState): FleetMetrics {
   ages.sort((a, b) => a - b)
   const p95WaitSec = ages.length ? ages[Math.min(ages.length - 1, Math.ceil(ages.length * 0.95) - 1)] : 0
 
-  const servers = onlineServers(s)
   let dpmSum = 0
   let dpmN = 0
-  let burn = 0
-  for (const tw of servers) {
+  for (const tw of onlineServers(s)) {
     const lo = loadoutOf(s, tw)
     if (!lo.hw || !lo.model || !serverFitsMemory(s, lo)) continue
     const dpm = rackDollarsPerMtoken(s, lo)
@@ -358,7 +473,13 @@ export function fleetMetrics(s: GameState): FleetMetrics {
       dpmSum += dpm
       dpmN++
     }
-    burn += rackOperatingCostPerSec(lo.hw)
+  }
+  // the bill exactly as updateEconomy charges it this tick (training racks and the
+  // generative guardrail's own rack included; the power price scales the energy line)
+  let burn = 0
+  for (const tw of s.towers) {
+    const op = towerOpexPerSec(s, tw)
+    burn += op.gpu + op.energy
   }
   return {
     goodputPct,
@@ -368,7 +489,7 @@ export function fleetMetrics(s: GameState): FleetMetrics {
     dollarsPerMtoken: dpmN ? dpmSum / dpmN : 0,
     kvUtilPct: s.infra.kv.utilization * 100,
     fleetUtilPct: s.utilization * 100,
-    burnPerSec: burn * s.modifiers.powerPrice,
+    burnPerSec: burn,
   }
 }
 
@@ -467,14 +588,9 @@ export function upcomingTraffic(s: GameState): UpcomingTraffic | null {
   return { waveIndex, live, entries, total: entries.reduce((n, e) => n + e.count, 0) }
 }
 
-/** Hidden reasoning tokens a model emits per answer (0 = an instruct model). */
+/** Hidden reasoning tokens a model emits per answer at full effort (0 = an instruct model). */
 export function modelThinkTokens(m: ModelDef | null | undefined): number {
-  return (m as (ModelDef & { thinkTokens?: number }) | null | undefined)?.thinkTokens ?? 0
-}
-
-/** How much of a thinking model's budget an archetype triggers (0 until the sim defines `thinkMul`). */
-function typeThinkMul(def: RequestTypeDef): number {
-  return (def as RequestTypeDef & { thinkMul?: number }).thinkMul ?? 0
+  return m?.thinkTokens ?? 0
 }
 
 /** Every latency bound a request class is judged against (ms; Infinity = no bound). */
@@ -492,12 +608,12 @@ export function sloBoundsOf(def: RequestTypeDef): SloBounds {
     ttftMs: def.ttftSloMs ?? cls.ttftMs,
     tpotMs: cls.tpotMs,
     e2elMs: def.e2elSloMs ?? Infinity,
-    ttfatMs: (def as RequestTypeDef & { ttfatSloMs?: number }).ttfatSloMs ?? Infinity,
+    ttfatMs: def.ttfatSloMs ?? Infinity,
   }
 }
 
 export interface TypeFit {
-  /** meets every latency bound of its class at the rack's effective batch. */
+  /** meets every latency bound of its class on a busy rack. */
   fast: boolean
   /** the first bound it would miss (null = on time). */
   slowBy: SloCause | null
@@ -505,52 +621,71 @@ export interface TypeFit {
   smart: boolean
   /** effQ − difficulty (≥ 0 = a correct answer). */
   margin: number
-  /** effective quality on the judged axis after the long-context and INT4 penalties. */
+  /** effective quality on the judged axis after the long-context and quantization penalties. */
   effQ: number
-  /** the prompt fits the context window (else the request is unservable). */
+  /** prompt + hidden reasoning + answer fit the context window and one model copy's KV (else unservable). */
   window: boolean
   lat: LatencyMetrics
-  /** time to the first answer token (ms): TTFT plus any hidden thinking. */
+  /** hidden reasoning tokens this rack's model thinks before answering it (0 = instruct). */
+  thinkTokens: number
+  /** time to the first answer token (ms): TTFT plus the hidden thinking. */
   ttfatMs: number
   /** end-to-end time (ms) including hidden thinking tokens. */
   e2elMs: number
 }
 
 /**
- * Would this rack serve this archetype cleanly? The same three gates combat
- * applies — the latency bounds of its class (TTFT/TPOT/E2E, plus time to first
- * answer for thinking models), the judged-axis quality margin (combat's
- * scoreQuality: qualityBy − contextGap×0.45 − INT4 long-context tax), and the
- * hard context window — evaluated at the rack's effective batch.
+ * Would this rack serve one request of an archetype cleanly? The same gates combat applies,
+ * on a busy rack: the latency bounds of its class (TTFT, time to first ANSWER token with a
+ * thinking model's hidden reasoning, TPOT over every generated token, E2E), the judged-axis
+ * quality margin (qualityBy − the format and alignment taxes − the long-context penalty at the
+ * answer's mean sequence), and the hard capacity gates (the full sequence inside the window,
+ * one stream's KV inside one model copy).
  */
-export function typeFit(s: GameState, lo: Loadout, e: TrafficEntry): TypeFit {
-  const lat = latencyOf(s, lo, e.inputTokens, e.outputTokens)
-  const think = modelThinkTokens(lo.model) * typeThinkMul(e.def)
-  const thinkMs = Number.isFinite(lat.tpotMs) ? think * lat.tpotMs : think > 0 ? Infinity : 0
+export function rackFit(
+  s: GameState,
+  lo: Loadout,
+  def: RequestTypeDef,
+  inputTokens: number,
+  outputTokens: number,
+  difficulty: number,
+): TypeFit {
+  const think = outputTokens > 0 ? hiddenTokensFor(lo.model, def.thinkMul) : 0
+  const generated = outputTokens + think
+  const lat = latencyOf(s, lo, inputTokens, generated, def.primaryAxis)
+  const thinkMs = think > 0 ? (Number.isFinite(lat.tpotMs) ? think * lat.tpotMs : Infinity) : 0
   const ttfatMs = lat.ttftMs + thinkMs
-  const e2elMs = lat.e2elMs + thinkMs
-  const b = sloBoundsOf(e.def)
+  const b = sloBoundsOf(def)
   let slowBy: SloCause | null = null
   if (lat.ttftMs > b.ttftMs) slowBy = 'ttft'
   else if (ttfatMs > b.ttfatMs) slowBy = 'ttfat'
-  else if (e.outputTokens > 0 && lat.tpotMs > b.tpotMs) slowBy = 'tpot'
-  else if (e2elMs > b.e2elMs) slowBy = 'e2el'
-  const ctxGap = Math.max(0, e.context - serverContext(s, lo))
-  const effQ =
-    serverQualityVs(s, lo, e.def.primaryAxis) - ctxGap * 0.45 - int4ContextPenalty(s, e.inputTokens + e.outputTokens)
-  const margin = effQ - e.difficulty
+  else if (generated > 1 && lat.tpotMs > b.tpotMs) slowBy = 'tpot'
+  else if (lat.e2elMs > b.e2elMs) slowBy = 'e2el'
+  const effQ = lo.model
+    ? serverQualityVs(s, lo, def.primaryAxis) - longContextPenalty(s, lo, midDecodeContext(inputTokens, generated))
+    : 0
+  const margin = effQ - difficulty
+  const seq = inputTokens + generated
   const win = serverCtxWindowTokens(s, lo)
+  const plan = rackPlan(s, lo)
+  const fits = (win <= 0 || seq <= win) && (!lo.model || !plan.fits || kvPerReqGb(s, lo.model, seq) <= plan.kvGbPerReplica)
   return {
     fast: slowBy === null,
     slowBy,
     smart: margin >= 0,
     margin,
     effQ,
-    window: win <= 0 || e.inputTokens <= win,
+    window: fits,
     lat,
+    thinkTokens: think,
     ttfatMs,
-    e2elMs,
+    e2elMs: lat.e2elMs,
   }
+}
+
+/** `rackFit` for an archetype in the upcoming traffic (its hardest instance). */
+export function typeFit(s: GameState, lo: Loadout, e: TrafficEntry): TypeFit {
+  return rackFit(s, lo, e.def, e.inputTokens, e.outputTokens, e.difficulty)
 }
 
 /** The smallest rack tier on the upgrade ladder that holds this model at the current quant. */
@@ -572,7 +707,16 @@ export interface DeployCandidate {
   needGb: number
   /** the smallest rack tier that would hold it (null = nothing on the ladder). */
   needHw: ServerHardwareDef | null
-  /** per-user decode tok/s on this rack at its effective batch (a 1.5K-in / 256-out request). */
+  /**
+   * why it does not deploy on THIS rack: 'vram' (no GPU group holds it), or the parallelism
+   * research it needs to span this rack's GPUs ('tp' Tensor / 'pp' Pipeline). null = it fits.
+   */
+  blocker: 'vram' | 'tp' | 'pp' | null
+  /** GPUs one copy would span on this rack (the group the parallelism research must unlock); 0 when it fits. */
+  spanGpus: number
+  /** mid-wave, a Multi-LoRA adapter swap on the loaded base: deployable now without a weight reload. */
+  hotSwap: boolean
+  /** per-user decode tok/s on a busy rack of this tier (a 1.5K-in / 256-out request). */
   perUserTokS: number
   tpotMs: number
   /** count-weighted effective quality on the judged axes of the upcoming traffic. */
@@ -603,10 +747,11 @@ export function deployCandidates(s: GameState, tw: Tower, traffic: UpcomingTraff
   const out: DeployCandidate[] = []
   const entries = traffic?.entries ?? []
   const totalCount = entries.reduce((n, e) => n + e.count, 0)
+  const loaded = tw.modelId ? resolveModel(s, tw.modelId) : null
   for (const id of Object.keys(s.models)) {
     const m = resolveModel(s, id)
     if (!m) continue
-    const lo = loadout(s, tw.hwId, id)
+    const lo = loadout(s, tw.hwId, id, tw.precision)
     const current = tw.modelId === id
     const fits = current || serverDeployable(s, lo)
     const think = modelThinkTokens(m)
@@ -614,8 +759,11 @@ export function deployCandidates(s: GameState, tw: Tower, traffic: UpcomingTraff
       model: m,
       fits,
       current,
+      hotSwap: s.phase === 'wave' && fits && !current && loraSiblings(s, loaded, m),
       needGb: serverModelMemory(s, { hw: null, model: m }) + FRAMEWORK_GB,
       needHw: fits ? null : smallestRackFor(s, m),
+      blocker: fits ? null : deployBlocker(s, lo),
+      spanGpus: fits ? 0 : rackPlan(s, lo).g,
       perUserTokS: 0,
       tpotMs: Infinity,
       judgedQ: 0,
@@ -630,7 +778,7 @@ export function deployCandidates(s: GameState, tw: Tower, traffic: UpcomingTraff
       fit: [],
     }
     if (fits && serverFitsMemory(s, lo)) {
-      const ref = latencyOf(s, lo, 1500, 256)
+      const ref = latencyOf(s, lo, REF_IN_TOKENS, REF_OUT_TOKENS)
       c.perUserTokS = ref.perUserDecodeTokS
       c.tpotMs = ref.tpotMs
       if (entries.length) {
@@ -685,10 +833,10 @@ export function hwUpgradeDelta(s: GameState, tw: Tower): HwUpgradeDelta | null {
   const from = tw.hwId ? HARDWARE_DEFS[tw.hwId] : null
   if (!to || !from) return null
   const model = tw.modelId ? resolveModel(s, tw.modelId) : null
-  const a: Loadout = { hw: from, model }
-  const b: Loadout = { hw: to, model }
-  const pa = latencyOf(s, a, 1500, 256).perUserDecodeTokS
-  const pb = latencyOf(s, b, 1500, 256).perUserDecodeTokS
+  const a: Loadout = { hw: from, model, precision: tw.precision }
+  const b: Loadout = { hw: to, model, precision: tw.precision }
+  const pa = latencyOf(s, a, REF_IN_TOKENS, REF_OUT_TOKENS).perUserDecodeTokS
+  const pb = latencyOf(s, b, REF_IN_TOKENS, REF_OUT_TOKENS).perUserDecodeTokS
   return {
     from,
     to,
@@ -708,13 +856,15 @@ function serversById(s: GameState): Tower[] {
 /** Racks of `tw`'s hardware tier (itself included) that could take `modelId` now and do not already run it. */
 export function sameTierTargets(s: GameState, tw: Tower, modelId: string): Tower[] {
   return serversById(s).filter(
-    (t) => t.hwId === tw.hwId && t.modelId !== modelId && serverDeployable(s, loadout(s, t.hwId, modelId)),
+    (t) => t.hwId === tw.hwId && t.modelId !== modelId && serverDeployable(s, loadout(s, t.hwId, modelId, t.precision)),
   )
 }
 
 /** Every rack on the board where `modelId` fits and is not already deployed (the one-click rollout). */
 export function rolloutTargets(s: GameState, modelId: string): Tower[] {
-  return serversById(s).filter((t) => t.modelId !== modelId && serverDeployable(s, loadout(s, t.hwId, modelId)))
+  return serversById(s).filter(
+    (t) => t.modelId !== modelId && serverDeployable(s, loadout(s, t.hwId, modelId, t.precision)),
+  )
 }
 
 /** UPGRADE ALL: every rack of `tw`'s tier, the per-rack price, and how many the cash covers in id order. */
@@ -845,14 +995,21 @@ export function diagnoseRequest(s: GameState, r: Request): RequestDiagnosis {
 
   let tpotMs: number | null = null
   if (rack && lo && fits && prefillDone && r.maxWork > 0) {
-    const batch = Math.max(1, rack.batch ?? effectiveBatch(s, lo, r.contextLen))
-    const perUser = serverPerUserDecodeTokS(s, lo, batch) * decodeThrottle(rack.throttle)
+    // the per-user rate the rack's streams decoded at last tick; else the cohort estimate
+    const live = rack.tokS ?? 0
+    const perUser =
+      live > 0
+        ? live
+        : rackLoadEstimate(s, lo, Math.max(1, rack.batch ?? 1), r.contextLen, {
+            axis: r.def.primaryAxis,
+            throttle: rack.throttle,
+          }).perUserTokS
     tpotMs = perUser > 0 ? 1000 / perUser : Infinity
   }
   let rackQ: number | null = null
   let ctxPenalty = 0
   if (lo && fits) {
-    ctxPenalty = Math.max(0, r.context - serverContext(s, lo)) * 0.45 + int4ContextPenalty(s, r.contextLen)
+    ctxPenalty = longContextPenalty(s, lo, r.contextLen)
     rackQ = serverQualityVs(s, lo, r.def.primaryAxis) - ctxPenalty
   }
   const judged = r.bestQuality > -900
