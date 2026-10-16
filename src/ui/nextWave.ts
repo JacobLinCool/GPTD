@@ -10,8 +10,9 @@
  *   SAFE  — every hazard it carries is caught by a guard covering its lanes (with
  *           the detection category unlocked) or self-handled by every covering model.
  *
- * Estimates only: they read the same getters the sim serves with, but ignore
- * queueing and contention. Pure presentation — reads state, never mutates it.
+ * Estimates only: SMART / FAST / FITS read the shared load forecast (the wave's mixed load on
+ * each rack — the estimate the deploy picker's ★ and the demo autoplay use); contention between
+ * racks is left out. Pure presentation — reads state, never mutates it.
  */
 import { Container, Graphics, Sprite, Text } from 'pixi.js'
 import { BUILDBAR_H, COLORS, DESIGN_H, DESIGN_W, LAT_CLASS_SLO } from '../config'
@@ -27,9 +28,10 @@ import {
   servingStackKey,
 } from '../sim/effects'
 import { guardCoveredLanes } from '../sim/guards'
+import type { DemandLine } from '../sim/loadForecast'
 import type { WavePreview, WavePreviewEntry } from '../sim/preview'
 import { categoryUnlocked, NOVEL_RECALL_MUL, pSelfHandle } from '../sim/safety'
-import { fmtLatencyMs, fmtTokens, rackFit } from './metrics'
+import { fmtLatencyMs, fmtTokens, rackFit, trafficEnv, trafficFits, type TypeFit } from './metrics'
 import { getPref, setPref } from './prefs'
 import { drawPanel, label, UIButton } from './theme'
 import { addTooltip, type TooltipSpec } from './tooltip'
@@ -80,8 +82,47 @@ export function towersCovering(s: GameState, lanes: number[], pred: (t: Tower) =
   return s.towers.filter((t) => pred(t) && guardCoveredLanes(t).some((l) => lanes.includes(l)))
 }
 
-/** The four-check forecast of the current fleet against one upcoming archetype. */
-export function forecastReadiness(s: GameState, e: WavePreviewEntry): Readiness {
+/** A rack's verdict on one upcoming archetype (null = not computed for it). */
+export type RackFitOf = (tw: Tower, typeId: string) => TypeFit | null
+
+/**
+ * The verdicts of every rack against the WHOLE upcoming mix (the shared load forecast — the load
+ * the deploy picker's ★ is judged at), computed once per rack on demand.
+ */
+export function mixedFitsOf(s: GameState, p: WavePreview): RackFitOf {
+  const demand: DemandLine[] = []
+  for (const e of p.entries) {
+    const def = REQUEST_TYPES[e.typeId]
+    if (!def) continue
+    demand.push({
+      def,
+      count: e.count,
+      inputTokens: e.inputTokens,
+      outputTokens: e.outputTokens,
+      difficulty: e.difficulty,
+      hazards: e.hazardSeverity,
+      novelShare: e.novelShare,
+    })
+  }
+  const env = trafficEnv(s, { seconds: Math.max(20, p.estDurationSec), surge: p.surgeLane !== null })
+  const memo = new Map<number, Map<string, TypeFit>>()
+  return (tw, typeId) => {
+    let m = memo.get(tw.id)
+    if (!m) {
+      m = new Map()
+      const fits = trafficFits(s, loadoutOf(s, tw), demand, env)
+      demand.forEach((d, i) => m!.set(d.def.id, fits[i]))
+      memo.set(tw.id, m)
+    }
+    return m.get(typeId) ?? null
+  }
+}
+
+/**
+ * The four-check forecast of the current fleet against one upcoming archetype; `fitOf` supplies
+ * each rack's verdict under the wave's mixed load (default: the archetype alone on a busy rack).
+ */
+export function forecastReadiness(s: GameState, e: WavePreviewEntry, fitOf?: RackFitOf): Readiness {
   const def = REQUEST_TYPES[e.typeId]
   const cls = LAT_CLASS_SLO[e.latClass as LatencyClass]
   const ttftBound = def?.ttftSloMs ?? cls.ttftMs
@@ -115,10 +156,10 @@ export function forecastReadiness(s: GameState, e: WavePreviewEntry): Readiness 
     const lo = loadoutOf(s, tw)
     if (!lo.hw || !lo.model || !serverFitsMemory(s, lo) || !def) continue
     serving++
-    // the same gates combat applies, at a full batch (metrics.rackFit): SMART is the judged-axis
-    // margin after the format / alignment / long-context terms, FAST every latency bound
-    // (time to first answer included for a thinking model), FITS the window + one copy's KV
-    const fit = rackFit(s, lo, def, e.inputTokens, e.outputTokens, e.difficulty)
+    // the same gates combat applies, at the wave's load (the shared load forecast): SMART is the
+    // judged-axis margin after the format / alignment / long-context terms, FAST every latency
+    // bound (time to first answer included for a thinking model), FITS the window + one copy's KV
+    const fit = fitOf?.(tw, e.typeId) ?? rackFit(s, lo, def, e.inputTokens, e.outputTokens, e.difficulty)
     if (fit.margin > out.bestMargin) out.bestMargin = fit.margin
     const lat = fit.lat
     if (lat.ttftMs < out.bestTtftMs) out.bestTtftMs = lat.ttftMs
@@ -399,10 +440,11 @@ export class NextWaveCard {
     })
     y += 14
 
+    const fitOf = mixedFitsOf(s, p)
     entries.forEach((e, i) => {
       const row = this.rows[i]
       const def = REQUEST_TYPES[e.typeId]
-      const ready = forecastReadiness(s, e)
+      const ready = forecastReadiness(s, e, fitOf)
       row.entry = e
       row.ready = ready
       row.view.visible = true

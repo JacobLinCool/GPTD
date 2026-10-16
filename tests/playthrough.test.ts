@@ -35,7 +35,7 @@ import { createState } from '../src/sim/state'
  * test — the demo must get deep by playing well, never by an exploit.
  * ------------------------------------------------------------------------ */
 
-/** The depth every gate seed must reach (the demo reaches ≈W60–70; the floor keeps a margin). */
+/** The depth every gate seed must reach (the demo reaches ≈W70–85; the floor keeps a margin). */
 const GAUNTLET_FLOOR = 45
 /** The gate seeds. */
 const SEEDS = [2026, 101, 202, 303] as const

@@ -1495,9 +1495,12 @@ export const TOWER_DEFS: Record<string, TowerDef> = {
     tagline: 'Prefix cache · skips the shared prefix',
     desc: 'Aura: racks in range can reuse a cached prompt PREFIX on cacheable traffic (Embedding, Chat, Code Completion, RAG, Agentic). A hit skips the shared-prefix part of the prefill (the unique rest still prefills): lower TTFT, less prefill contention. Each request gets one lookup, and overlapping caches do not stack: the best one counts, capped by how much traffic really shares a prefix.',
   },
-  // §3.3 the three external guardrail families — the key real contrast: a BERT
-  // encoder is milliseconds; a generative 12B guardrail is a full (shorter) inference
-  // (one to two orders slower). The single old Safety Gate is replaced by these.
+  // §3.3 the three external guardrail families — the real contrast: a BERT encoder is one
+  // fixed forward (Prompt Guard 2 86M: 92.4 ms per 512-token classification on an A100, longer
+  // prompts split into segments scanned in parallel) that adaptive attacks slip past; a
+  // generative 12B judge is a real inference on a GPU of your own — a prefill of the turn it
+  // reads plus a few verdict tokens (tens of ms on an H100 for a typical prompt, growing with
+  // the turn), on both sides, paying GPU-hours and power.
   guard_encoder: {
     id: 'guard_encoder',
     name: 'Prompt Guard (encoder)',

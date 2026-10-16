@@ -1,6 +1,6 @@
 import { TILE } from '../config'
 import type { GameState, GuardrailArchetype, Request, SafetyHazard, Tower } from '../core/types'
-import { guardLatencyMs, towerRangeTiles } from './effects'
+import { guardCheckMs, guardLatencyMs, guardScreenTokens, towerRangeTiles } from './effects'
 import { LANE_PATHS } from './pathing'
 import {
   ALL_HAZARDS,
@@ -22,7 +22,9 @@ import { recordGuardCatch } from './telemetry'
  *  the lanes its range touches, wherever on the lane it sits. Each      *
  *  request is screened ONCE, at its first contact with a rack, and per  *
  *  guard FAMILY present on its lane:                                    *
- *    - input latency once (→ TTFT), output latency once (→ E2EL);       *
+ *    - input latency once (→ TTFT), output latency once (→ E2EL), each   *
+ *      for the turn it reads (a generative judge's prefill grows with    *
+ *      the prompt; guardCheckMs);                                        *
  *    - a benign request rolls one false positive per family;            *
  *    - a hazard is caught with the family's best recall — replicas of   *
  *      one classifier add coverage, never extra recall (the same model  *
@@ -42,9 +44,16 @@ export interface LaneGuardStage {
   input: Tower[]
   /** covering towers that check the answer (side output / both). */
   output: Tower[]
-  /** real seconds one input / output check of this family takes (the slowest covering tower). */
+  /** real seconds one input / output check of this family takes at the reference prompt (the slowest covering tower). */
   inSec: number
   outSec: number
+}
+
+/** Real seconds the slowest of a family's towers takes to check a turn of `tokens`. */
+function checkSec(s: GameState, towers: Tower[], tokens: number): number {
+  let ms = 0
+  for (const g of towers) ms = Math.max(ms, guardCheckMs(s, g.def.guardrail!, tokens))
+  return ms / 1000
 }
 
 /** Does a circle (center, radius in px) touch a lane's polyline? */
@@ -156,7 +165,7 @@ function catchHazards(s: GameState, r: Request, towers: Tower[], family: Guardra
 
 /**
  * Screen a request at its first hardware contact against every guard family covering
- * its lane: charge each family's input / output latency once, roll a benign request's
+ * its lane: charge each family's input / output latency once (for the turns it reads), roll a benign request's
  * false positive at each family's input check, and run the input-side hazard checks
  * (before any compute). Sets `r.overRefused` on a false positive.
  */
@@ -166,9 +175,11 @@ export function screenInput(s: GameState, r: Request, stages: LaneGuardStage[]):
   for (const st of stages) {
     const rep = st.input[0] ?? st.output[0]
     r.guardsSeen.add(rep.id)
-    if (st.input.length) r.guardInSec += st.inSec
+    if (st.input.length)
+      r.guardInSec += checkSec(s, st.input, guardScreenTokens('input', r.tokensIn, r.tokensOut))
     // an output check reads the generated text; an embedding generates none
-    if (st.output.length && r.maxWork > 0) r.guardOutSec += st.outSec
+    if (st.output.length && r.maxWork > 0)
+      r.guardOutSec += checkSec(s, st.output, guardScreenTokens('output', r.tokensIn, r.tokensOut))
     if (!st.input.length) continue
     if (benign) {
       if (rollFalsePositive(s, r, st, st.input[0])) return

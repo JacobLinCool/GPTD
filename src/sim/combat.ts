@@ -21,11 +21,13 @@ import {
   admissionDelaySec,
   answerMode,
   cacheChance,
+  chunkBudgetTokens,
   cohortFit,
   cohortKvGb,
   cohortPrefillSec,
   hiddenTokensFor,
   kvPerReqGb,
+  type LaneLoad,
   laneStep,
   type Loadout,
   loadoutOf,
@@ -35,6 +37,7 @@ import {
   prefillRateOn,
   prefixHitChance,
   prefixHitTiers,
+  promptOccupancy,
   rackLoadEstimate,
   rackPlan,
   routeBonus,
@@ -56,9 +59,6 @@ import {
   refreshHazardFlags,
 } from './safety'
 import { recordCacheHit, recordSelfHandle, recordTtft } from './telemetry'
-
-/** Chunked prefill (Sarathi-Serve): while decodes are running, a prompt takes at most this share of its lane's time. */
-const CHUNKED_PREFILL_SHARE = 0.35
 
 const rangePx = (t: Tower): number => towerRangeTiles(t) * TILE
 function within(t: Tower, r: Request, r2: number): boolean {
@@ -93,6 +93,7 @@ class Host {
   private tpotCache = -1
   private cacheBestCache = -1
   private stepRefCache = -1
+  private chunkCache = -1
 
   constructor(
     private readonly s: GameState,
@@ -143,6 +144,12 @@ class Host {
       this.stepRefCache = Number.isFinite(est.stepSec) ? est.stepSec : 0
     }
     return this.stepRefCache
+  }
+
+  /** the deployment's chunked-prefill token budget per lane step (§4.3). */
+  get chunkBudget(): number {
+    if (this.chunkCache < 0) this.chunkCache = chunkBudgetTokens(this.s, this.lo, this.plan)
+    return this.chunkCache
   }
 
   /** best covering cache's hit chance — overlapping caches combine as the best one (0 = no aura). */
@@ -642,11 +649,149 @@ function admit(s: GameState, h: Host, prefillClaims: Set<number>): Admitted {
 }
 
 /**
- * One rack's tick (§5.7): every group runs one prompt per lane at the compute roof, then
- * decodes its cohorts at the step time of its lanes — weights (an MoE: the experts its batch
- * touches) and every stream's KV re-read each step, the cohorts' other prompts ingested in
- * the background (added to the step, or hidden under its memory time with chunked prefill),
- * speculative decoding while it still pays. Latency is accounted per token at that physical
+ * PREFILL without chunked prefill — one prompt per lane at the compute roof, run EXCLUSIVELY: the
+ * lane's decodes stall for its busy time (Sarathi-Serve / DistServe, OSDI'24). A prompt that
+ * finishes joins the batch at once (continuous batching admits it into the very next iteration).
+ * Returns the share of the tick the group's decodes keep (in decode steps of any length).
+ */
+function exclusivePrefill(
+  s: GameState,
+  h: Host,
+  g: Group,
+  realDt: number,
+  debtShare: number,
+  prefillGain: number,
+  shown: (r: Request) => void,
+): (stepSec: number) => number {
+  const t = h.t
+  const p = h.plan
+  const thr = t.throttle
+  const cap = 1 - debtShare
+  const lanes = Math.max(1, g.lanes)
+  let busy = 0
+  for (const j of g.prefill.slice(0, lanes)) {
+    const r = j.r
+    shown(r)
+    if (cap <= 1e-9) continue // the lane spent the tick on owed prompts: this one waits
+    // an embedding's cohort is all prompt: its sprite ingests every stream's prompt here
+    const streamsIngesting = r.maxWork <= 0 ? j.k : 1
+    const rate = (prefillRateOn(s, h.lo, p, r.tokensIn) * prefillGain * thr) / streamsIngesting
+    if (rate <= 0) continue
+    const need = r.prefill / rate
+    const b = Math.min(need, cap * realDt)
+    busy += b
+    if (b >= need) {
+      // the fractional completing tick counts: wall time = busy / share (sharing the lane with owed prompts)
+      firstToken(s, r, h, b / cap)
+      // its decode starts in the rest of this tick — unless this rack is a prefill pool
+      // (the KV moves on to a decode pool) or the first token ended it (refusal, embedding)
+      if (t.role !== 'prefill' && r.alive && !r.overRefused && r.work > 0) g.decode.push(j)
+    } else {
+      r.prefill -= rate * b
+    }
+  }
+  const share = Math.max(0, 1 - busy / (lanes * realDt) - debtShare)
+  return () => share
+}
+
+/**
+ * PREFILL with chunked prefill — a token-budget scheduler (Sarathi-Serve, OSDI'24; vLLM / SGLang
+ * chunked prefill): every engine step of a lane carries its running decodes plus up to the
+ * deployment's token budget of prompt chunks (`chunkBudgetTokens`), first-come first-served. A
+ * prompt within the budget prefills in one step; a longer one is split across steps, each a
+ * little longer than a pure decode step (its chunk's compute rides the step, at the small
+ * chunking cost CHUNKED_PREFILL_EFF; a long prompt's chunks cost more — their attention reads the
+ * earlier chunks). The decodes never stall: they emit one token per step, chunk-carrying steps
+ * included, and pay only the longer steps (the TPOT interference). Accounting is fluid per lane:
+ * a prompt fills (its tokens ÷ budget) full-budget steps; its first token comes at the end of the
+ * step carrying its last chunk. Returns the decodes' share of the tick, given the decode-only step.
+ */
+function chunkedPrefill(
+  s: GameState,
+  h: Host,
+  g: Group,
+  realDt: number,
+  debtShare: number,
+  rackStreams: number,
+  prefillGain: number,
+  shown: (r: Request) => void,
+): (stepSec: number) => number {
+  const t = h.t
+  const p = h.plan
+  const lanes = Math.max(1, g.lanes)
+  const avail = realDt * Math.max(0, 1 - debtShare)
+  const pre = decodeLoad(s, h, g, lanes, rackStreams)
+  const budget = h.chunkBudget
+  const used: number[] = new Array(lanes).fill(0)
+  const steps: number[] = new Array(lanes).fill(0)
+  for (const j of g.prefill) {
+    const r = j.r
+    shown(r)
+    // the lane with the most of its tick left takes the next prompt
+    let l = 0
+    for (let i = 1; i < lanes; i++) if (used[i] < used[l]) l = i
+    const left = avail - used[l]
+    if (left <= 1e-9) break // every lane's tick is spent: the rest wait
+    // an embedding's cohort is all prompt: its sprite ingests every stream's prompt here
+    const ingest = r.maxWork <= 0 ? j.k : 1
+    const rate = prefillRateOn(s, h.lo, p, r.tokensIn) * prefillGain
+    if (!(rate > 0)) continue
+    const tokens = r.prefill * ingest
+    const occ = promptOccupancy(s, h.lo, p, tokens, rate, pre, budget)
+    const fluid = occ.steps * occ.stepSec
+    const start = used[l]
+    if (fluid <= left + 1e-12) {
+      used[l] = start + fluid
+      steps[l] += occ.steps
+      firstToken(s, r, h, Math.min(avail, start + occ.wallSec))
+      if (t.role !== 'prefill' && r.alive && !r.overRefused && r.work > 0) g.decode.push(j)
+    } else {
+      const ridden = left / occ.stepSec
+      used[l] = avail
+      steps[l] += ridden
+      r.prefill = Math.max(1e-6, r.prefill - (ridden * budget) / ingest)
+    }
+  }
+  // each lane's tick: its chunk-carrying steps, then decode-only steps (of `stepSec`) in the time
+  // left — every step a token per stream — as a share of the tick in decode-only steps
+  return (stepSec: number): number => {
+    if (!Number.isFinite(stepSec) || stepSec <= 0) return 0
+    let share = 0
+    for (let i = 0; i < lanes; i++) share += (steps[i] * stepSec + Math.max(0, avail - used[i])) / realDt
+    return share / lanes
+  }
+}
+
+/** The decode load one lane of a group carries now (its admitted decodes, spread over the lanes). */
+function decodeLoad(s: GameState, h: Host, g: Group, lanes: number, rackStreams: number): LaneLoad {
+  let streams = 0
+  let kvGb = 0
+  let bgSec = 0
+  let specSum = 0
+  for (const j of g.decode) {
+    streams += j.k
+    kvGb += j.kvGb
+    specSum += j.k * specTokensFor(s, j.r.def.primaryAxis)
+    bgSec += cohortPrefillSec(s, h.lo, h.plan, j.k, j.r.tokensIn, j.shared, j.r.maxWork)
+  }
+  return {
+    streams: streams / lanes,
+    kvGb: kvGb / lanes,
+    bgPrefillSec: bgSec / lanes,
+    overlapPrefill: true,
+    rackStreams,
+    specTokens: streams > 0 ? specSum / streams : 1,
+    throttle: h.t.throttle,
+  }
+}
+
+/**
+ * One rack's tick (§5.7): every group ingests its prompts — one per lane, exclusively, or as
+ * token-budget chunks fused into the decode steps with chunked prefill — then decodes its
+ * cohorts at the step time of its lanes — weights (an MoE: the experts its batch touches) and
+ * every stream's KV re-read each step, the cohorts' other prompts ingested in the background
+ * (added to the step, or fused into it with chunked prefill), speculative decoding while it
+ * still pays. Latency is accounted per token at that physical
  * rate, so several racks working one request never make its tokens faster; a KV-limited
  * cohort's sprite waits for its streams (E2EL), not its TPOT.
  *
@@ -699,38 +844,14 @@ function serveRack(
     kvCap += g.kvCap
     sprites += g.sprites
 
-    // PREFILL — one prompt per lane at the compute roof. Without Chunked Prefill it runs
-    // exclusively and that lane's decodes stall for its busy time (OSDI'24); chunked, it
-    // takes at most a fixed share while decodes keep streaming. A prompt that finishes joins
-    // the batch at once: continuous batching admits it into the very next iteration.
-    const cap =
-      (s.infra.scheduling.chunked && g.decode.length > 0 ? CHUNKED_PREFILL_SHARE : 1) * (1 - debtShare)
     const lanes = Math.max(1, g.lanes)
-    let busy = 0
-    const running = g.prefill.slice(0, lanes)
-    for (const j of running) {
-      const r = j.r
-      if (prefillShown === null) prefillShown = r.id
-      if (cap <= 1e-9) continue // the lane spent the tick on owed prompts: this one waits
-      // an embedding's cohort is all prompt: its sprite ingests every stream's prompt here
-      const streamsIngesting = r.maxWork <= 0 ? j.k : 1
-      const rate = (prefillRateOn(s, h.lo, p, r.tokensIn) * prefillGain * thr) / streamsIngesting
-      if (rate <= 0) continue
-      const need = r.prefill / rate
-      const b = Math.min(need, cap * realDt)
-      busy += b
-      if (b >= need) {
-        // the fractional completing tick counts: wall time = busy / share (time-sliced when
-        // chunked or sharing the lane with owed prompts)
-        firstToken(s, r, h, b / cap)
-        // its decode starts in the rest of this tick — unless this rack is a prefill pool
-        // (the KV moves on to a decode pool) or the first token ended it (refusal, embedding)
-        if (t.role !== 'prefill' && r.alive && !r.overRefused && r.work > 0) g.decode.push(j)
-      } else {
-        r.prefill -= rate * b
-      }
-    }
-    const share = Math.max(0, 1 - busy / (lanes * realDt) - debtShare)
+    const shareOf = overlap
+      ? chunkedPrefill(s, h, g, realDt, debtShare, rackStreams, prefillGain, (r) => {
+          if (prefillShown === null) prefillShown = r.id
+        })
+      : exclusivePrefill(s, h, g, realDt, debtShare, prefillGain, (r) => {
+          if (prefillShown === null) prefillShown = r.id
+        })
     for (const j of g.prefill) if (j.r.prefill > 0) streamsShown += j.k
 
     // DECODE STEP of this group's lanes. A decode pool's cohort prompts are owed to the
@@ -760,6 +881,7 @@ function serveRack(
       specTokens: streams > 0 ? specSum / streams : 1,
       throttle: thr,
     })
+    const share = shareOf(step.stepSec)
 
     // DECODE — each in-flight stream emits tokens at 1/step (×accepted drafts); the sprite
     // advances by its cohort's share of COHORT_STREAMS.

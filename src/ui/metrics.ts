@@ -6,10 +6,12 @@
  * The module is PURE (no PixiJS / DOM) and is unit-tested against the §6 worked
  * examples. It must NEVER mutate GameState; it only reads it (AGENTS.md §2).
  *
- * Latency estimates assume a BUSY rack — ESTIMATE_SPRITES_PER_LANE request cohorts on every
- * decode lane (§5.7), the load an SLO has to survive in a wave: per-user decode speed falls
- * as the batch (and its KV) grows, while the rack's aggregate climbs toward its compute roof.
- * Queueing and contention with other racks are runtime state and are left out.
+ * The rack-card ESTIMATE assumes a BUSY rack — ESTIMATE_SPRITES_PER_LANE request cohorts on
+ * every decode lane (§5.7): per-user decode speed falls as the batch (and its KV) grows, while
+ * the rack's aggregate climbs toward its compute roof. The per-archetype verdicts and the deploy
+ * picker's ★ judge the upcoming wave's MIXED load with the shared load forecast
+ * (sim/loadForecast.ts — the estimate the demo autoplay plays by): the lane step the whole mix
+ * imposes, the prompt queue and its TPOT interference, the guard checks on the lanes.
  */
 import { FRAMEWORK_GB, LAT_CLASS_SLO, TILE } from '../config'
 import type {
@@ -32,6 +34,7 @@ import {
   admissionDelaySec,
   answerMode,
   availableFormats,
+  chunkBudgetTokens,
   computeRoofTokS,
   decodeTokSb1,
   deployBlocker,
@@ -39,16 +42,15 @@ import {
   frameworkGbPerGpu,
   guardLatencyMs,
   hasLiquidLoop,
-  hiddenTokensFor,
   hwNeedsLiquid,
   kvFreeGb,
-  kvPerReqGb,
   type Loadout,
   loadout,
   loadoutOf,
   longContextPenalty,
   loraSiblings,
   type ParallelPlan,
+  promptOccupancy,
   ptqTax,
   qualityIn,
   rackLoadEstimate,
@@ -56,7 +58,6 @@ import {
   resolveModel,
   serverBandwidthCeiling,
   serverComputeCeiling,
-  serverCtxWindowTokens,
   serverDeployable,
   serverFitsMemory,
   serverModelMemory,
@@ -69,7 +70,22 @@ import {
   towerOpexPerSec,
   towerRangeTiles,
 } from '../sim/effects'
+import {
+  demandOfGroups,
+  type DemandLine,
+  expectedCacheHit,
+  fleetLanesOf,
+  hazardLeakChance,
+  type LoadEnv,
+  loadEnvOf,
+  loadFits,
+  type LoadFit,
+  refusalChance,
+  worstLaneGuards,
+} from '../sim/loadForecast'
 import { isThrottling } from '../sim/power'
+import { groupsDurationSec } from '../sim/preview'
+import { surgeLaneOf } from '../sim/spawn'
 import { goodputPctOf } from '../sim/telemetry'
 import { HARDWARE_DEFS, HARDWARE_TIERS, WAVES, REQUEST_TYPES } from '../sim/content'
 import { hardwareUpgradeCost, nextHardware } from '../sim/actions'
@@ -333,8 +349,15 @@ export function latencyOf(
   })
   const prefillRate = serverPrefillSpeed(s, lo, inputTokens)
   const perUser = est.perUserTokS
-  const ttftSec =
-    prefillRate > 0 ? inputTokens / prefillRate + admissionDelaySec(s, lo, Number.isFinite(est.stepSec) ? est.stepSec : 0) : Infinity
+  // the prompt on a busy lane: exclusive, or chunked into the deployment's token budget (§4.3)
+  const p = rackPlan(s, lo)
+  const occ =
+    est.load && prefillRate > 0
+      ? promptOccupancy(s, lo, p, inputTokens, prefillRate, est.load, chunkBudgetTokens(s, lo, p))
+      : { wallSec: prefillRate > 0 ? inputTokens / prefillRate : Infinity }
+  const ttftSec = Number.isFinite(occ.wallSec)
+    ? occ.wallSec + admissionDelaySec(s, lo, Number.isFinite(est.stepSec) ? est.stepSec : 0)
+    : Infinity
   const tpotSec = perUser > 0 ? 1 / perUser : Infinity
   const decodeSec = outputTokens > 0 ? (outputTokens - 1) * tpotSec : 0
   return {
@@ -528,7 +551,7 @@ export function honestGoodputPct(c: OutcomeTally): number {
  * ------------------------------------------------------------------ */
 
 /** One archetype in the traffic the player is preparing for (the hardest instance of it). */
-export interface TrafficEntry {
+export interface TrafficEntry extends DemandLine {
   def: RequestTypeDef
   /** requests of this archetype the wave spawns (after the incident's volume modifier). */
   count: number
@@ -548,6 +571,10 @@ export interface UpcomingTraffic {
   /** archetypes, most numerous first. */
   entries: TrafficEntry[]
   total: number
+  /** board seconds the wave lasts (its spawn tail + lane transit). */
+  seconds: number
+  /** a single-entry surge: every request walks one lane. */
+  surge: boolean
 }
 
 /**
@@ -568,30 +595,20 @@ export function upcomingTraffic(s: GameState): UpcomingTraffic | null {
     groups = waveIndex < WAVES.length ? WAVES[waveIndex].groups : s.endless ? groups : null
   }
   if (!groups) return null
-  const byId = new Map<string, TrafficEntry>()
+  const context = new Map<string, number>()
   for (const g of groups) {
     const def = REQUEST_TYPES[g.typeId]
-    if (!def) continue
-    const workMul = g.workMul ?? 1
-    const contextMul = g.contextMul ?? 1
-    const count = Math.max(1, Math.round(g.count * s.modifiers.volume))
-    const inputTokens = Math.max(1, Math.round(def.inputTokens * contextMul * Math.max(1, Math.sqrt(workMul))))
-    const outputTokens = Math.max(def.outputTokens > 0 ? 1 : 0, Math.round(def.outputTokens * workMul))
-    const difficulty = (def.difficulty[def.primaryAxis] ?? 0) * (g.complexityMul ?? 1)
-    const context = Math.round(def.context * contextMul)
-    const e = byId.get(def.id)
-    if (!e) {
-      byId.set(def.id, { def, count, difficulty, context, inputTokens, outputTokens })
-    } else {
-      e.count += count
-      e.difficulty = Math.max(e.difficulty, difficulty)
-      e.context = Math.max(e.context, context)
-      e.inputTokens = Math.max(e.inputTokens, inputTokens)
-      e.outputTokens = Math.max(e.outputTokens, outputTokens)
-    }
+    if (def) context.set(def.id, Math.max(context.get(def.id) ?? 0, Math.round(def.context * (g.contextMul ?? 1))))
   }
-  const entries = [...byId.values()].sort((a, b) => b.count - a.count || a.def.id.localeCompare(b.def.id))
-  return { waveIndex, live, entries, total: entries.reduce((n, e) => n + e.count, 0) }
+  const entries: TrafficEntry[] = demandOfGroups(s, groups).map((d) => ({ ...d, context: context.get(d.def.id) ?? 0 }))
+  return {
+    waveIndex,
+    live,
+    entries,
+    total: entries.reduce((n, e) => n + e.count, 0),
+    seconds: Math.max(20, groupsDurationSec(s, groups)),
+    surge: surgeLaneOf(groups, s.laneWindow) !== undefined,
+  }
 }
 
 /** Hidden reasoning tokens a model emits per answer at full effort (0 = an instruct model). */
@@ -673,7 +690,7 @@ export function sloBoundsOf(def: RequestTypeDef): SloBounds {
 }
 
 export interface TypeFit {
-  /** meets every latency bound of its class on a busy rack. */
+  /** meets every latency bound of its class at the forecast load. */
   fast: boolean
   /** the first bound it would miss (null = on time). */
   slowBy: SloCause | null
@@ -686,25 +703,80 @@ export interface TypeFit {
   /** prompt + hidden reasoning + answer fit the context window and one model copy's KV (else unservable). */
   window: boolean
   lat: LatencyMetrics
+  /** the tightest latency bound's use at the forecast load (latency ÷ bound; ≤ 1 on time). */
+  use: number
+  /** the expected share of its requests answered within every bound (the estimate's spread and the slot wait). */
+  onTime: number
+  /** the share that finds every slot in reach busy at the wave's peak (and waits for one). */
+  queued: number
   /** the mode this rack's model answers it in (§1.4: a hybrid answers interactive traffic instantly). */
   mode: AnswerMode
   /** hidden reasoning tokens this rack's model thinks before answering it (0 in instant mode). */
   thinkTokens: number
   /** time to the first answer token (ms): TTFT plus the hidden thinking. */
   ttfatMs: number
-  /** end-to-end time (ms) including hidden thinking tokens. */
+  /** end-to-end time (ms) including hidden thinking tokens and the output guard checks. */
   e2elMs: number
 }
 
+/** The environment the upcoming traffic lands in (the fleet's lanes, its length, the lane guards, the caches). */
+export function trafficEnv(s: GameState, traffic: Pick<UpcomingTraffic, 'seconds' | 'surge'>): LoadEnv {
+  return loadEnvOf(s, traffic)
+}
+
 /**
- * Would this rack serve one request of an archetype cleanly? The same gates combat applies,
- * on a busy rack, in the mode its model answers the archetype in (combat's `answerMode`): the
- * latency bounds of its class (TTFT, time to first ANSWER token with the hidden reasoning of a
- * thinking-mode answer, TPOT over every generated token, E2E), the judged-axis quality margin
- * (that mode's vector − the format and alignment taxes − the long-context penalty at the
- * answer's mean sequence), and the hard capacity gates (the full sequence inside the window,
- * one stream's KV inside one model copy).
+ * The environment of a single-archetype readout (no traffic forecast): a busy rack —
+ * ESTIMATE_SPRITES_PER_LANE cohorts per lane — behind the guards on the board.
  */
+export function readoutEnv(s: GameState): LoadEnv {
+  return {
+    fleetLanes: fleetLanesOf(s),
+    waveSec: 60,
+    guards: worstLaneGuards(s),
+    cacheHit: expectedCacheHit(s),
+    minSprites: ESTIMATE_SPRITES_PER_LANE,
+  }
+}
+
+function toTypeFit(f: LoadFit): TypeFit {
+  const ms = (sec: number): number => sec * 1000
+  return {
+    fast: f.slowBy === null,
+    slowBy: f.slowBy,
+    smart: f.margin >= 0,
+    margin: f.margin,
+    effQ: f.effQ,
+    window: f.window,
+    lat: {
+      ttftMs: ms(f.ttftSec),
+      tpotMs: ms(f.tpotSec),
+      e2elMs: ms(f.e2elSec),
+      perUserDecodeTokS: f.perUserTokS,
+      aggDecodeTokS: f.perUserTokS * f.streams,
+      batch: Math.round(f.streams),
+    },
+    use: f.lat,
+    onTime: f.onTime,
+    queued: f.queued,
+    mode: f.mode,
+    thinkTokens: f.hidden,
+    ttfatMs: ms(f.ttfatSec),
+    e2elMs: ms(f.e2elSec),
+  }
+}
+
+/**
+ * Would this rack serve each archetype of the traffic cleanly? The shared load forecast at the
+ * load the whole MIX puts on the rack (sim/loadForecast.ts), in the mode its model answers each
+ * archetype in: TTFT (prompt + queue + admission + input guards), time to first ANSWER token,
+ * TPOT (the prompt work's interference included), E2E (+ output guards), the judged-axis margin
+ * after the long-context penalty, and the window / KV gates. Aligned with `entries`.
+ */
+export function trafficFits(s: GameState, lo: Loadout, entries: DemandLine[], env: LoadEnv): TypeFit[] {
+  return loadFits(s, lo, entries, env).map(toTypeFit)
+}
+
+/** One archetype alone on a busy rack (no traffic forecast; `env` defaults to `readoutEnv`). */
 export function rackFit(
   s: GameState,
   lo: Loadout,
@@ -712,45 +784,32 @@ export function rackFit(
   inputTokens: number,
   outputTokens: number,
   difficulty: number,
+  env: LoadEnv = readoutEnv(s),
 ): TypeFit {
-  const mode: AnswerMode = lo.model ? answerMode(lo.model, def) : 'instant'
-  const think = outputTokens > 0 ? hiddenTokensFor(lo.model, def) : 0
-  const generated = outputTokens + think
-  const lat = latencyOf(s, lo, inputTokens, generated, def.primaryAxis)
-  const thinkMs = think > 0 ? (Number.isFinite(lat.tpotMs) ? think * lat.tpotMs : Infinity) : 0
-  const ttfatMs = lat.ttftMs + thinkMs
-  const b = sloBoundsOf(def)
-  let slowBy: SloCause | null = null
-  if (lat.ttftMs > b.ttftMs) slowBy = 'ttft'
-  else if (ttfatMs > b.ttfatMs) slowBy = 'ttfat'
-  else if (generated > 1 && lat.tpotMs > b.tpotMs) slowBy = 'tpot'
-  else if (lat.e2elMs > b.e2elMs) slowBy = 'e2el'
-  const effQ = lo.model
-    ? serverQualityVs(s, lo, def.primaryAxis, mode) - longContextPenalty(s, lo, midDecodeContext(inputTokens, generated))
-    : 0
-  const margin = effQ - difficulty
-  const seq = inputTokens + generated
-  const win = serverCtxWindowTokens(s, lo)
-  const plan = rackPlan(s, lo)
-  const fits = (win <= 0 || seq <= win) && (!lo.model || !plan.fits || kvPerReqGb(s, lo.model, seq) <= plan.kvGbPerReplica)
-  return {
-    fast: slowBy === null,
-    slowBy,
-    smart: margin >= 0,
-    margin,
-    effQ,
-    window: fits,
-    lat,
-    mode,
-    thinkTokens: think,
-    ttfatMs,
-    e2elMs: lat.e2elMs,
-  }
+  return trafficFits(s, lo, [{ def, count: 1, inputTokens, outputTokens, difficulty }], env)[0]
 }
 
-/** `rackFit` for an archetype in the upcoming traffic (its hardest instance). */
-export function typeFit(s: GameState, lo: Loadout, e: TrafficEntry): TypeFit {
-  return rackFit(s, lo, e.def, e.inputTokens, e.outputTokens, e.difficulty)
+/** `rackFit` for an archetype in the upcoming traffic (its hardest instance), alone on a busy rack. */
+export function typeFit(s: GameState, lo: Loadout, e: TrafficEntry, env?: LoadEnv): TypeFit {
+  return trafficFits(s, lo, [e], env ?? readoutEnv(s))[0]
+}
+
+/**
+ * The expected share of one archetype's requests this rack would serve CLEANLY: in the window,
+ * a correct answer (attacks are judged on safety), on time at the forecast load (the forecast's
+ * on-time share: the estimate's spread around its bounds and the requests that wait for a slot),
+ * not wrongly refused (the model's and
+ * the lane guards' over-refusal), and no hazard delivered past the guards and the model's own
+ * alignment.
+ */
+export function cleanShare(s: GameState, m: ModelDef, e: DemandLine, f: TypeFit, env: LoadEnv): number {
+  if (!f.window || (!e.def.adversarial && !f.smart)) return 0
+  let leak = 0
+  for (const h of ALL_HAZARDS) {
+    const sev = e.hazards?.[h]
+    if (sev) leak = Math.max(leak, hazardLeakChance(s, m, env.guards, h, sev, e.novelShare ?? 0))
+  }
+  return f.onTime * (1 - leak) * (1 - refusalChance(s, m, e, env.guards))
 }
 
 /** The smallest rack tier on the upgrade ladder that holds this model at the current quant. */
@@ -786,10 +845,10 @@ export interface DeployCandidate {
   tpotMs: number
   /** count-weighted effective quality on the judged axes of the upcoming traffic. */
   judgedQ: number
-  /** archetypes it would serve fast ∧ smart ∧ in-window, of those in the upcoming traffic. */
+  /** archetypes it would serve fast ∧ smart ∧ in-window at the forecast load, of those in the upcoming traffic. */
   clears: number
   kinds: number
-  /** count-weighted share of upcoming requests it would serve cleanly (0..1). */
+  /** expected share of the upcoming requests it would serve cleanly under the wave's mixed load (0..1, cleanShare). */
   score: number
   safety: number
   overRefusal: number
@@ -806,13 +865,16 @@ export interface DeployCandidate {
 /**
  * Score every owned checkpoint (base + derived) on one rack against the upcoming
  * traffic: VRAM fit (and the tier that would hold it), per-user speed, the judged-
- * axis quality and how many archetypes it would serve cleanly, plus its alignment.
- * Pure; callers memoize it — it is ~50 models × the wave's archetypes.
+ * axis quality, how many archetypes it would serve cleanly under the wave's mixed load,
+ * and the ★ — the highest expected clean share (latency, correctness, window, refusals
+ * and safety together; cleanShare). Pure; callers memoize it — it is ~50 models × the
+ * wave's archetypes.
  */
 export function deployCandidates(s: GameState, tw: Tower, traffic: UpcomingTraffic | null): DeployCandidate[] {
   const out: DeployCandidate[] = []
   const entries = traffic?.entries ?? []
   const totalCount = entries.reduce((n, e) => n + e.count, 0)
+  const env = traffic && entries.length ? trafficEnv(s, traffic) : null
   const loaded = tw.modelId ? resolveModel(s, tw.modelId) : null
   for (const id of Object.keys(s.models)) {
     const m = resolveModel(s, id)
@@ -847,20 +909,19 @@ export function deployCandidates(s: GameState, tw: Tower, traffic: UpcomingTraff
       const ref = latencyOf(s, lo, REF_IN_TOKENS, REF_OUT_TOKENS)
       c.perUserTokS = ref.perUserDecodeTokS
       c.tpotMs = ref.tpotMs
-      if (entries.length) {
+      if (entries.length && env) {
         let qSum = 0
-        let okCount = 0
-        for (const e of entries) {
-          const f = typeFit(s, lo, e)
+        let clean = 0
+        const fits = trafficFits(s, lo, entries, env)
+        entries.forEach((e, i) => {
+          const f = fits[i]
           c.fit.push(f)
           qSum += f.effQ * e.count
-          if (f.fast && f.smart && f.window) {
-            c.clears++
-            okCount += e.count
-          }
-        }
+          if (f.fast && f.smart && f.window) c.clears++
+          clean += e.count * cleanShare(s, m, e, f, env)
+        })
         c.judgedQ = totalCount ? qSum / totalCount : 0
-        c.score = totalCount ? okCount / totalCount : 0
+        c.score = totalCount ? clean / totalCount : 0
       } else {
         c.judgedQ = serverQuality(s, lo)
       }
@@ -1087,11 +1148,9 @@ export function diagnoseRequest(s: GameState, r: Request): RequestDiagnosis {
   const judged = r.bestQuality > -900
   const margin = judged ? r.bestQuality : rackQ !== null ? rackQ - r.difficulty : null
 
-  let guardMs = 0
+  // the guard checks this request is charged (input → TTFT, output → E2EL), for the turns they read
   const seen = r.guardsSeen
-  if (seen?.size) {
-    for (const t of s.towers) if (seen.has(t.id) && t.def.guardrail) guardMs += guardLatencyMs(s, t.def.guardrail)
-  }
+  const guardMs = (r.guardInSec + r.guardOutSec) * 1000
   const guards = s.towers.filter((t) => t.def.kind === 'guardrail' && t.online && t.def.guardrail)
   const hazards: RequestDiagnosis['hazards'] = []
   for (const h of ALL_HAZARDS) {

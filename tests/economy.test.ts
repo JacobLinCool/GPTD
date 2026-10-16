@@ -17,14 +17,17 @@ import { continueEndless, startGame, tryBuild, upgradeHardware } from '../src/si
 import { explainRejection } from '../src/agent/diagnose'
 import { serializeState } from '../src/agent/snapshot'
 import {
+  BOSS_STEP_CAP,
   buildWave,
   CAMPAIGN_THEMES,
+  campaignBudgets,
   CONTRACT_BASE,
   contractPayout,
   groupMuls,
   hazardMulOf,
   MAX_TIER,
   novelShareOf,
+  STEP_CAP,
   tierBonus,
   waveBudget,
 } from '../src/sim/campaign'
@@ -537,6 +540,32 @@ describe('era hazard pressure: severity climbs with tier and novel attacks dodge
     expect(Math.abs(genNovel - genKnown)).toBeLessThan(0.06)
   })
 
+  it('a generative judge charges each request for the turn it reads; an encoder is one fixed forward', () => {
+    const charged = (
+      guard: string,
+      typeId: string,
+      contextMul: number,
+    ): { inSec: number; outSec: number } => {
+      const s = rich(44)
+      expect(tryBuild(s, guard, 6, 0)).toBe(true)
+      updatePower(s)
+      s.phase = 'wave'
+      const r: Request = spawnRequest(s, typeId, 1, 1, 1, 1, contextMul, 0)
+      screenInput(s, r, laneGuardStages(s)[0])
+      return { inSec: r.guardInSec, outSec: r.guardOutSec }
+    }
+    // Llama Guard: tens of ms for a short chat turn, more for a long one, and its output check reads the answer too
+    const short = charged('guard_llm', 'chat', 1)
+    const long = charged('guard_llm', 'chat', 4)
+    expect(short.inSec).toBeGreaterThan(0.01)
+    expect(short.inSec).toBeLessThan(0.1)
+    expect(long.inSec).toBeGreaterThan(short.inSec * 1.5)
+    expect(short.outSec).toBeGreaterThan(short.inSec)
+    // the encoder (Prompt Guard 2 86M: 92.4 ms per classification, segments scanned in parallel) stays fixed
+    expect(charged('guard_encoder', 'chat', 1).inSec).toBeCloseTo(0.092, 9)
+    expect(charged('guard_encoder', 'chat', 4).inSec).toBeCloseTo(0.092, 9)
+  })
+
   it('an authored wave can arm a lane its event weaponised, and the preview shows the real profile', () => {
     const rag = WAVES[65].groups.find((g) => g.typeId === 'rag')! // W66 The Zero-Click Exfiltration
     expect(rag.hazards?.injection).toBeGreaterThan(0)
@@ -620,6 +649,24 @@ describe('campaign: verified late waves, incident mapping, boss teeth', () => {
         expect(s.pendingIncident!.concentrate).toBeUndefined()
       }
     }
+  })
+
+  it('the load climbs in steps a fleet can follow: no wave more than STEP_CAP (a boss BOSS_STEP_CAP) over the one before', () => {
+    const totals = WAVES.map((w) => w.groups.reduce((n, g) => n + g.count, 0))
+    const budgets = campaignBudgets(CAMPAIGN_THEMES)
+    for (let i = 1; i < totals.length; i++) {
+      const cap = CAMPAIGN_THEMES[i].boss ? BOSS_STEP_CAP : STEP_CAP
+      expect(budgets[i]).toBeLessThanOrEqual(Math.ceil(budgets[i - 1] * cap))
+      // per-burst rounding adds at most one request a burst
+      expect(totals[i]).toBeLessThanOrEqual(Math.ceil(totals[i - 1] * cap) + WAVES[i].groups.length)
+    }
+    // every boss still outweighs the wave before it, and the extreme band ramps: each decade's boss
+    // is at least as heavy as the last, so the run ends from accumulated pressure, not one cliff
+    const bosses = CAMPAIGN_THEMES.map((th, i) => ({ th, i })).filter((x) => x.th.boss)
+    for (const { i } of bosses) expect(totals[i]).toBeGreaterThan(totals[i - 1])
+    const late = bosses.filter((x) => x.th.tier >= 10).map((x) => totals[x.i])
+    expect(late.length).toBeGreaterThanOrEqual(4)
+    for (let k = 1; k < late.length; k++) expect(late[k]).toBeGreaterThanOrEqual(late[k - 1])
   })
 
   it('winning clears the telegraphed incident; continuing into endless telegraphs a fresh one', () => {

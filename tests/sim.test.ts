@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import {
+  CHUNK_MAX_TOKENS,
+  CHUNK_MIN_STRETCH,
+  CHUNK_MIN_TOKENS,
+  CHUNK_STEP_TARGET_MS,
   COHORT_STREAMS,
   CREDIT_USD,
   ENGINE_MAX_STREAMS,
@@ -76,7 +80,11 @@ import {
   defLoadout,
   deployBlocker,
   guardHeat,
+  guardCheckMs,
   guardLatencyMs,
+  guardScreenTokens,
+  GUARD_TURN_TOKENS,
+  GUARD_VERDICT_TOKENS,
   guardPower,
   hasLiquidLoop,
   hwNeedsLiquid,
@@ -1359,6 +1367,85 @@ describe('prefill vs decode (two-phase serving, real tokens)', () => {
     expect(run(true).tokens).toBeGreaterThan(0.1)
   })
 
+  it('chunked prefill is a token-budget scheduler: a prompt within the budget prefills in one engine step, a long one is split', () => {
+    const s = createState(83)
+    richBuild(s)
+    infraOn(s, 'inf_chunked')
+    const lo = loadout(s, 'hw_perf', 'g_qwen3_5_9b_2')
+    const p = effectsModule.rackPlan(s, lo)
+    // the deployment's budget, profiled from the TBT target (Sarathi-Serve), inside vLLM's clamps
+    const budget = effectsModule.chunkBudgetTokens(s, lo, p)
+    expect(budget).toBeGreaterThanOrEqual(CHUNK_MIN_TOKENS)
+    expect(budget).toBeLessThanOrEqual(CHUNK_MAX_TOKENS)
+    expect(budget).toBeGreaterThan(512)
+    // a faster deployment (a small model on the same H100) affords a bigger budget than a 27B dense one
+    expect(effectsModule.chunkBudgetTokens(s, loadout(s, 'hw_perf', STARTER))).toBeGreaterThan(
+      effectsModule.chunkBudgetTokens(s, loadout(s, 'hw_perf', 'g_qwen3_5_27b_2')),
+    )
+    // a busy lane: two request cohorts decoding
+    const load = effectsModule.rackLoadEstimate(s, lo, 2, 1628, { inputTokens: 1500, outputTokens: 256 }).load!
+    const decodeStep = effectsModule.laneStep(s, lo, p, load).stepSec
+    // a short prompt rides ONE step beside the decodes — not a fixed slice of the lane stretched over many
+    const rate = effectsModule.prefillRateOn(s, lo, p, 512)
+    const short = effectsModule.promptOccupancy(s, lo, p, 512, rate, load, budget)
+    expect(short.steps).toBeLessThan(1)
+    expect(short.wallSec).toBeCloseTo(effectsModule.laneStep(s, lo, p, { ...load, chunkSec: 512 / rate }).stepSec, 9)
+    expect(short.wallSec).toBeLessThan(512 / rate / 0.35) // the old 35% time-slice
+    // its step stays inside the TBT target the budget was profiled for
+    const fullStep = effectsModule.laneStep(s, lo, p, { ...load, chunkSec: budget / effectsModule.prefillRateOn(s, lo, p, 0) }).stepSec
+    expect(fullStep).toBeLessThanOrEqual(Math.max(CHUNK_STEP_TARGET_MS / 1000, decodeStep * (1 + CHUNK_MIN_STRETCH)) * 1.01)
+    // a long prompt is split into ⌈tokens / budget⌉ chunk-carrying steps
+    const longTok = 8 * budget
+    const longRate = effectsModule.prefillRateOn(s, lo, p, longTok)
+    const long = effectsModule.promptOccupancy(s, lo, p, longTok, longRate, load, budget)
+    expect(long.steps).toBeCloseTo(8, 9)
+    expect(long.wallSec).toBeCloseTo(8 * long.stepSec, 9)
+    // the decodes pay the interference (a chunk-carrying step is longer than a decode step) but never
+    // stall for the whole prompt the way an exclusive prefill makes them
+    expect(long.stepSec).toBeGreaterThan(decodeStep)
+    expect(long.stepSec).toBeLessThan(longTok / longRate)
+    // and chunking costs a little prefill throughput: alone on its lane, a long prompt takes longer
+    // than one monolithic prefill — but not much longer
+    const idle = { streams: 1, kvGb: 0, bgPrefillSec: 0, overlapPrefill: true }
+    const alone = effectsModule.promptOccupancy(s, lo, p, longTok, longRate, idle, budget)
+    expect(alone.wallSec).toBeGreaterThan(longTok / longRate)
+    expect(alone.wallSec).toBeLessThan((longTok / longRate) * 1.3)
+    // without chunked prefill the prompt runs exclusively at the full rate
+    const plain = createState(83)
+    richBuild(plain)
+    expect(effectsModule.promptOccupancy(plain, lo, p, longTok, longRate, load, budget).wallSec).toBeCloseTo(longTok / longRate, 9)
+  })
+
+  it('in combat a short prompt reaches its first token in about one engine step under chunked prefill', () => {
+    const run = (chunked: boolean): number => {
+      const s = createState(84)
+      richBuild(s)
+      if (chunked) infraOn(s, 'inf_chunked')
+      expect(tryBuild(s, 'srv_edge', 3, 2)).toBe(true)
+      const t = lastTower(s)
+      upgradeHardware(s, t.id)
+      upgradeHardware(s, t.id) // → H100
+      deployModel(s, t.id, 'g_qwen3_5_9b_2')
+      liveWave(s)
+      // a few answers decoding on the rack, then a short chat prompt arrives beside them
+      for (let i = 0; i < 3; i++) spawnRequest(s, 'chat')
+      for (let i = 0; i < 200 && s.requests.some((r) => r.prefillDoneAt === undefined); i++) step(s)
+      const r = spawnRequest(s, 'chat')
+      for (let i = 0; i < 600 && r.prefillDoneAt === undefined; i++) step(s)
+      expect(r.prefillDoneAt).toBeDefined()
+      return r.ttftReal - r.queueSec // the prompt's own wall time on the rack (+ admission)
+    }
+    const lo = loadout(createState(84), 'hw_perf', 'g_qwen3_5_9b_2')
+    const s0 = createState(84)
+    richBuild(s0)
+    const rate = effectsModule.prefillRateOn(s0, lo, effectsModule.rackPlan(s0, lo), 512)
+    const chunked = run(true)
+    // one fused step: its chunk at CHUNKED_PREFILL_EFF beside the decodes — far below the old 35% slice
+    expect(chunked).toBeGreaterThan(512 / rate)
+    expect(chunked).toBeLessThan(512 / rate / 0.35)
+    expect(run(false)).toBeCloseTo(512 / rate, 3) // exclusive: the bare prefill (its decodes stall meanwhile)
+  })
+
   it('thermal throttling bites decode meaningfully, keeping only a slight edge over prefill', () => {
     // decodeThrottle(t) = 1 − (1−t)×0.85: decode keeps a SLIGHT memory-bound edge over
     // prefill (which takes the full hit), but a thermal cap now REALLY costs throughput —
@@ -2191,7 +2278,7 @@ describe('two-layer safety (§3)', () => {
     if (chat.prefillDoneAt !== undefined) expect(chat.ttftReal).toBeGreaterThanOrEqual(0.092 - 1e-9)
   })
 
-  it('layer 2 guard_llm runs the real §6 roofline: a longer inference than the 92 ms encoder, drawing real power', () => {
+  it('layer 2 guard_llm runs the real §6 roofline: a short verdict on a real 12B prefill that grows with the turn, drawing real power', () => {
     const llm = TOWER_DEFS['guard_llm'].guardrail!
     expect(llm.archetype).toBe('generative')
     expect(llm.runsOnRoofline).toBe(true)
@@ -2200,9 +2287,25 @@ describe('two-layer safety (§3)', () => {
     const s = createState(303)
     richBuild(s)
     const enc = TOWER_DEFS['guard_encoder'].guardrail!
+    // the verdict is a classification ('safe' / 'unsafe' + category codes): a few tokens
+    expect(GUARD_VERDICT_TOKENS).toBeGreaterThanOrEqual(1)
+    expect(GUARD_VERDICT_TOKENS).toBeLessThanOrEqual(6)
+    // tens of ms per check on an H100 for a typical prompt, BF16 and FP8 alike
+    const bf16 = createState(303)
+    const bf16Lat = guardLatencyMs(bf16, llm)
+    expect(bf16Lat).toBeGreaterThan(10)
+    expect(bf16Lat).toBeLessThan(100)
+    infraOn(s, 'inf_wq_fp8')
     const llmLat = guardLatencyMs(s, llm)
-    // a real (shorter) 12B inference is far slower than a single BERT forward (92 ms)
-    expect(llmLat).toBeGreaterThan(guardLatencyMs(s, enc))
+    expect(llmLat).toBeLessThan(bf16Lat) // FP8 Tensor Cores: a faster prefill, half the bytes per verdict token
+    expect(llmLat).toBeGreaterThan(10)
+    // its prefill reads the turn: a longer prompt costs more, unlike the encoder's one fixed forward
+    expect(guardCheckMs(s, llm, 2048)).toBeGreaterThan(2 * guardCheckMs(s, llm, 300))
+    expect(guardCheckMs(s, enc, 2048)).toBe(guardCheckMs(s, enc, 300))
+    // a check reads the user turn (input) and the turn + answer (output), each capped at the screened turn
+    expect(guardScreenTokens('input', 600, 400)).toBe(600)
+    expect(guardScreenTokens('output', 600, 400)).toBe(1000)
+    expect(guardScreenTokens('input', 96000, 1000)).toBe(GUARD_TURN_TOKENS)
     // and it draws real power/heat on its own rack (the encoder occupies ~0 compute)
     expect(guardPower(s, llm)).toBeGreaterThan(0)
     expect(guardHeat(s, llm)).toBeCloseTo(guardPower(s, llm), 6)

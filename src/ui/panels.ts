@@ -79,6 +79,8 @@ import {
   selfHandleRate,
   sloBoundsOf,
   sparsityOf,
+  trafficEnv,
+  trafficFits,
   typeFit,
   upcomingTraffic,
   upgradeAllPlan,
@@ -222,6 +224,16 @@ function typicalTraffic(): TrafficEntry[] {
     inputTokens: def.inputTokens,
     outputTokens: def.outputTokens,
   }))
+}
+
+/**
+ * The board as the load forecast sees it (every rack's tier / model / format, the guards and caches
+ * on the lanes, research and red-team levels): the fit rows and the ★ re-derive when it changes.
+ */
+function fleetKey(s: GameState): string {
+  let k = `${s.upgrades['eval_redteam'] ?? 0}|${s.guardrailThreshold}|`
+  for (const t2 of s.towers) k += `${t2.id}:${t2.def.id}:${t2.hwId ?? ''}:${t2.modelId ?? ''}:${t2.precision ?? ''}:${t2.online ? 1 : 0};`
+  return k
 }
 
 /** The rack's power / liquid / training status chip. */
@@ -934,11 +946,16 @@ export class InspectPanel {
 
   /** Per-archetype verdicts for the loaded model on this rack (memoized on rack + research + traffic). */
   private rackFits(s: GameState, tw: Tower, lo: Loadout): { entry: TrafficEntry; fit: TypeFit }[] {
-    const key = `${tw.id}|${tw.hwId}|${tw.modelId}|${tw.precision ?? ''}|${JSON.stringify(s.infra)}|${this.trafficKey}`
+    const key = `${tw.id}|${tw.hwId}|${tw.modelId}|${tw.precision ?? ''}|${JSON.stringify(s.infra)}|${this.trafficKey}|${fleetKey(s)}`
     if (key !== this.fitKey) {
       this.fitKey = key
-      const entries = this.traffic?.entries.length ? this.traffic.entries : typicalTraffic()
-      this.fits = entries.map((entry) => ({ entry, fit: typeFit(s, lo, entry) }))
+      // the upcoming wave's whole mix on this rack (the load the ★ is judged at); no forecast: each archetype alone
+      const tr = this.traffic
+      const entries = tr?.entries.length ? tr.entries : typicalTraffic()
+      const fits = tr?.entries.length
+        ? trafficFits(s, lo, entries, trafficEnv(s, tr))
+        : entries.map((entry) => typeFit(s, lo, entry))
+      this.fits = entries.map((entry, i) => ({ entry, fit: fits[i] }))
     }
     return this.fits
   }
@@ -1191,8 +1208,7 @@ export class InspectPanel {
 
   /** Recompute + sort the candidates when the rack, fleet, research, traffic or sort changes. */
   private refreshCandidates(s: GameState, tw: Tower): void {
-    let fleet = ''
-    for (const t2 of s.towers) if (t2.def.kind === 'server') fleet += `${t2.id}:${t2.hwId}:${t2.modelId}:${t2.precision ?? ''};`
+    const fleet = fleetKey(s)
     const key = [
       tw.id,
       s.phase, // a mid-wave Multi-LoRA hot swap is offered only while the wave runs

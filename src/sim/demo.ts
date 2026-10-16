@@ -17,25 +17,18 @@
  *   4. post-train specialists in the Studio (a safe-completion workhorse, an agentic and a
  *      reasoning specialist on a fast MoE body);
  *   5. deploy onto every rack tier the checkpoint that serves the forecast best — judged per
- *      archetype in the mode the model answers it in (a hybrid answers interactive traffic
- *      instantly), against the latency bounds of a busy rack, the window and KV gates, the
- *      quality line (long-context penalty included) and its alignment — splitting a tier's
+ *      archetype by the shared load forecast (loadForecast.ts, the estimate behind the deploy
+ *      picker's ★): the mode the model answers it in, the latency bounds at the load the wave's
+ *      mix puts on the rack, the window and KV gates, the quality line (long-context penalty
+ *      included) and its alignment — splitting a tier's
  *      racks between checkpoints when no single one covers the whole mix, so the routers
  *      have a fast rack and a capable rack to dispatch between.
  *
  * The campaign is an elimination gauntlet: the demo is expected to get deep, not to win.
  */
 
-import { GRID_COLS, GRID_ROWS, LAT_CLASS_SLO, SIM_DT, SIM_TIME_SCALE, TILE } from '../config'
-import type {
-  GameState,
-  ModelDef,
-  RequestTypeDef,
-  SafetyHazard,
-  SafetyProfile,
-  Tower,
-  WeightFormat,
-} from '../core/types'
+import { GRID_COLS, GRID_ROWS, SIM_DT, TILE } from '../config'
+import type { GameState, ModelDef, SafetyHazard, Tower, WeightFormat } from '../core/types'
 import {
   buildCost,
   continueEndless,
@@ -48,42 +41,16 @@ import {
   tryBuild,
   upgradeHardware,
 } from './actions'
+import { HARDWARE_DEFS, HARDWARE_TIERS, METHOD_RECIPES, RESEARCH_DEFS, TOWER_DEFS, WAVES } from './content'
 import {
-  HARDWARE_DEFS,
-  HARDWARE_TIERS,
-  METHOD_RECIPES,
-  REQUEST_TYPES,
-  RESEARCH_DEFS,
-  TOWER_DEFS,
-  WAVES,
-} from './content'
-import {
-  admissionDelaySec,
-  answerMode,
-  cacheChance,
-  cohortFit,
-  cohortKvGb,
-  cohortPrefillSec,
   formatAvailable,
-  guardLatencyMs,
-  hiddenTokensFor,
   isBlackwell,
-  kvPerReqGb,
-  laneStep,
   type Loadout,
   loadout,
-  loadoutOf,
-  longContextPenalty,
-  prefillTokS,
-  prefixHitChance,
-  rackPlan,
-  serverCtxWindowTokens,
   serverDeployable,
-  serverQualityVs,
   servingFormat,
-  specTokensFor,
-  spritesPerLane,
 } from './effects'
+import { comingLoad, type DemandLine, type LoadEnv, loadEnvOf, loadFits } from './loadForecast'
 import { computeDerivedFields, resolveModel } from './models'
 import { CORE_TILE, isBuildable, isPathTile, LANE_PATHS, tileCenter } from './pathing'
 import { coolingPools, towerHeatKw, towerLiquidCooled, towerPowerKw, updatePower } from './power'
@@ -207,237 +174,55 @@ const tierIdx = (hwId: string | undefined): number => HARDWARE_TIERS.indexOf(hwI
  *  Forecast — what the next wave brings (the next-wave preview).       *
  * ------------------------------------------------------------------ */
 
-/** One archetype of the coming wave, resolved the way spawnRequest will spawn it. */
-interface Demand {
-  def: RequestTypeDef
-  count: number
-  inputTokens: number
-  outputTokens: number
-  difficulty: number
-  hazards: SafetyProfile
-  novelShare: number
-}
+type Demand = DemandLine
 
 /**
- * The coming wave's demand: the authored wave from the next-wave preview; past the campaign
- * the surge is rolled only when it starts, so the last wave served stands in for it.
+ * The coming wave's demand (the shared load forecast: the next-wave preview's mix; past the
+ * campaign the last wave served stands in), its length and the single-entry surge lane.
  */
-function forecast(s: GameState): { demand: Demand[]; surgeLane: number | null; seconds: number } {
+function forecast(s: GameState): {
+  demand: Demand[]
+  surgeLane: number | null
+  seconds: number
+  surge: boolean
+} {
+  const load = comingLoad(s)
   const p = previewNextWave(s)
-  if (p && p.entries.length) {
-    const demand = p.entries.map((e) => ({
-      def: REQUEST_TYPES[e.typeId],
-      count: e.count,
-      inputTokens: e.inputTokens,
-      outputTokens: e.outputTokens,
-      difficulty: e.difficulty,
-      hazards: e.hazardSeverity,
-      novelShare: e.novelShare,
-    }))
-    return { demand, surgeLane: p.surgeLane, seconds: Math.max(20, p.estDurationSec) }
+  return {
+    demand: load?.demand ?? [],
+    surgeLane: p?.surgeLane ?? null,
+    seconds: load?.seconds ?? 60,
+    surge: load?.surge ?? false,
   }
-  const groups = s.currentWave?.groups ?? WAVES[WAVES.length - 1].groups
-  const byId = new Map<string, Demand>()
-  for (const g of groups) {
-    const def = REQUEST_TYPES[g.typeId]
-    if (!def) continue
-    const work = g.workMul ?? 1
-    const d: Demand = {
-      def,
-      count: g.count,
-      inputTokens: Math.round(def.inputTokens * (g.contextMul ?? 1) * Math.max(1, Math.sqrt(work))),
-      outputTokens: Math.round(def.outputTokens * work),
-      difficulty: (def.difficulty[def.primaryAxis] ?? 0) * (g.complexityMul ?? 1),
-      hazards: def.hazards ?? {},
-      novelShare: g.novelShare ?? 0,
-    }
-    const prev = byId.get(def.id)
-    if (prev) prev.count += d.count
-    else byId.set(def.id, d)
-  }
-  return { demand: [...byId.values()], surgeLane: p?.surgeLane ?? null, seconds: 60 }
 }
 
 /* ------------------------------------------------------------------ *
  *  Fit — would a rack serve one demand cleanly?                        *
  * ------------------------------------------------------------------ */
 
-/** The share of each latency bound under which a rack counts as reliably on time. */
-const SLO_HEADROOM = 0.85
 /** Quality margin kept over a line (a request's long-context penalty grows as it decodes). */
 const QUALITY_MARGIN = 1.5
-/** Peak-to-mean factor on a rack's expected concurrency (bursts overlap; requests visit several racks). */
-const PEAK_LOAD = 2
-/** Chunked prefill's share of a lane while decodes run (combat.ts CHUNKED_PREFILL_SHARE). */
-const CHUNKED_SHARE = 0.35
-/** The share of the fleet's lanes a single-entry surge's traffic reaches. */
-const SURGE_SHARE = 0.5
 /** Extra racks (a share of the count target) built along a telegraphed surge's lane. */
 const SURGE_REINFORCE = 0.25
 
 interface Fit {
   smart: boolean
-  /** the tightest latency bound's use: estimated latency ÷ bound (≤ 1 on time; the worst bound). */
-  lat: number
+  /** the expected share answered within every bound (loadForecast's on-time share). */
+  onTime: number
   window: boolean
 }
 
-/** One demand as a given checkpoint on a given rack serves it: mode, tokens, prefill rate. */
-interface Served {
-  d: Demand
-  hidden: number
-  generated: number
-  /** the mean sequence while it decodes. */
-  ctx: number
-  prefill: number
-}
-
 /**
- * The decode step one lane of this rack runs under the coming wave's MIX — `perLane` request
- * sprites drawn from the forecast in proportion to how long each occupies a rack (its decode
- * length), every sprite a cohort of streams sharing the copy's KV, its other prompts ingested
- * in the background — the same lane step combat runs. Interactive answers share their lane with
- * the RAG and summarization cohorts, so this is the step their TPOT and hidden reasoning see.
+ * Would this rack serve each demand cleanly in the coming wave? The shared load forecast
+ * (loadForecast.ts — the estimate the deploy picker's ★ shows a player) at the load the wave
+ * will put on the rack, with a small quality margin kept over each line.
  */
-function mixedStepSec(s: GameState, lo: Loadout, served: Served[], perLane: number): number {
-  const p = rackPlan(s, lo)
-  const m = lo.model
-  if (!m || !p.fits) return Infinity
-  const weights = served.map((x) => x.d.count * Math.max(1, x.generated))
-  const total = weights.reduce((n, v) => n + v, 0) || 1
-  const budget = p.kvGbPerReplica / Math.max(1, perLane)
-  let streams = 0
-  let kvGb = 0
-  let bg = 0
-  served.forEach((x, i) => {
-    const sprites = (perLane * weights[i]) / total
-    if (sprites <= 0) return
-    const k = Math.max(1, cohortFit(s, m, x.ctx, budget))
-    streams += sprites * k
-    kvGb += sprites * cohortKvGb(s, m, x.ctx, k)
-    if (x.generated > 0) bg += sprites * cohortPrefillSec(s, lo, p, k, x.d.inputTokens, 0, x.generated)
-  })
-  const step = laneStep(s, lo, p, {
-    streams: Math.max(1, streams),
-    kvGb,
-    bgPrefillSec: bg,
-    overlapPrefill: s.infra.scheduling.chunked,
-  })
-  return step.stepSec
-}
-
-/** The prefix-cache hit chance a request can count on (the best cache, when the fleet has caches). */
-function expectedCacheHit(s: GameState): number {
-  const caches = s.towers.filter((t) => t.def.kind === 'cache')
-  if (!caches.length) return 0
-  const best = Math.max(...caches.map((t) => cacheChance(s, t.def)))
-  // caches sit by the core: a request meets one late in its walk, so count on half the chance
-  return prefixHitChance(s, best, false) * 0.5
-}
-
-/**
- * Would this rack serve each demand cleanly in the coming wave? The deploy picker's check, from
- * the serving math combat runs: the mode the model answers the archetype in and the hidden
- * reasoning it spends first; the latency at the load the wave will put on the rack (its
- * expected concurrency from the forecast's volume and the fleet's lanes, × PEAK_LOAD) under the
- * wave's mix; TTFT = prefill + admission wait + the lanes' input guards; time to first answer;
- * TPOT; E2E with the output guards; the judged-axis margin after the long-context penalty; and
- * the window / KV gates.
- */
-function fitsOf(
-  s: GameState,
-  lo: Loadout,
-  demand: Demand[],
-  guard: { inSec: number; outSec: number },
-  fleetLanes: number,
-  waveSec: number,
-  surge = false,
-): Fit[] {
-  // a single-entry surge pours every request into the racks along one lane: roughly half the fleet
-  if (surge) fleetLanes = Math.max(1, fleetLanes * SURGE_SHARE)
-  const m = lo.model
-  const p = rackPlan(s, lo)
-  if (!m || !p.fits) return demand.map(() => ({ smart: false, lat: Infinity, window: false }))
-  const served: Served[] = demand.map((d) => {
-    const hidden = d.outputTokens > 0 ? hiddenTokensFor(m, d.def) : 0
-    const generated = d.outputTokens + hidden
-    return {
-      d,
-      hidden,
-      generated,
-      ctx: d.inputTokens + generated / 2,
-      prefill: prefillTokS(s, lo, d.inputTokens),
-    }
-  })
-  // expected sprites per decode lane: the wave's sprite-seconds over its real duration and the fleet's lanes
-  const light = mixedStepSec(s, lo, served, 1)
-  let busy = 0
-  for (const x of served) busy += x.d.count * (x.d.inputTokens / Math.max(1, x.prefill) + x.generated * light)
-  const perLane = Math.min(
-    spritesPerLane(s),
-    Math.max(1, Math.ceil((busy * PEAK_LOAD) / Math.max(1, waveSec * SIM_TIME_SCALE * fleetLanes))),
-  )
-  const stepSec = mixedStepSec(s, lo, served, perLane)
-  const cacheHit = expectedCacheHit(s)
-  // the prompt lane: one prompt at a time per lane, time-sliced under chunked prefill while
-  // decodes run — a prompt waits behind the others (M/D/1 queueing at the lanes' prefill load)
-  const share = s.infra.scheduling.chunked ? CHUNKED_SHARE : 1
-  const promptSec = (x: Served): number =>
-    x.prefill > 0
-      ? (x.d.inputTokens * (1 - (x.d.def.cacheable ? x.d.def.prefixShare * cacheHit : 0))) / x.prefill
-      : Infinity
-  let prefillBusy = 0
-  let prefillN = 0
-  for (const x of served) {
-    prefillBusy += x.d.count * promptSec(x)
-    prefillN += x.d.count
-  }
-  const rho = Math.min(0.95, (prefillBusy * PEAK_LOAD) / Math.max(1, waveSec * SIM_TIME_SCALE * fleetLanes))
-  const meanService = prefillN > 0 ? prefillBusy / prefillN / share : 0
-  const queue = (rho / (2 * (1 - rho))) * meanService
-  const win = serverCtxWindowTokens(s, lo)
-  return served.map((x) => {
-    const def = x.d.def
-    const seq = x.d.inputTokens + x.generated
-    const window = (win <= 0 || seq <= win) && kvPerReqGb(s, m, seq) <= p.kvGbPerReplica
-    const mode = answerMode(m, def)
-    const effQ = serverQualityVs(s, lo, def.primaryAxis, mode) - longContextPenalty(s, lo, x.ctx)
-    const smart = def.adversarial ? true : effQ >= x.d.difficulty + QUALITY_MARGIN
-    const tpot = stepSec / specTokensFor(s, def.primaryAxis)
-    // a prompt's shared prefix is served from the cache on a hit; a miss prefills it whole
-    const ttft = promptSec(x) / share + queue + admissionDelaySec(s, lo, stepSec) + guard.inSec
-    const ttfat = ttft + x.hidden * tpot
-    const e2el = ttft + x.generated * tpot + guard.outSec
-    const cls = LAT_CLASS_SLO[def.latClass]
-    const lat = Math.max(
-      (ttft * 1000) / (def.ttftSloMs ?? cls.ttftMs),
-      (ttfat * 1000) / (def.ttfatSloMs ?? Infinity),
-      x.generated > 1 ? (tpot * 1000) / cls.tpotMs : 0,
-      (e2el * 1000) / (def.e2elSloMs ?? Infinity),
-    )
-    return { smart, lat, window }
-  })
-}
-
-/** The worst lane's input / output guard latency right now (seconds), as screenInput charges it. */
-function guardLatency(s: GameState): { inSec: number; outSec: number } {
-  const fams = new Map<string, { inSec: number; outSec: number }>()
-  for (const t of s.towers) {
-    const g = t.def.guardrail
-    if (t.def.kind !== 'guardrail' || !g) continue
-    const sec = guardLatencyMs(s, g) / 1000
-    const f = fams.get(g.archetype) ?? { inSec: 0, outSec: 0 }
-    if (g.side !== 'output') f.inSec = Math.max(f.inSec, sec)
-    if (g.side !== 'input') f.outSec = Math.max(f.outSec, sec)
-    fams.set(g.archetype, f)
-  }
-  let inSec = 0
-  let outSec = 0
-  for (const f of fams.values()) {
-    inSec += f.inSec
-    outSec += f.outSec
-  }
-  return { inSec, outSec }
+function fitsOf(s: GameState, lo: Loadout, demand: Demand[], env: LoadEnv): Fit[] {
+  return loadFits(s, lo, demand, env).map((f, i) => ({
+    smart: demand[i].def.adversarial ? true : f.margin >= QUALITY_MARGIN,
+    onTime: f.onTime,
+    window: f.window,
+  }))
 }
 
 /* ------------------------------------------------------------------ *
@@ -480,18 +265,16 @@ function demandValue(s: GameState, m: ModelDef, d: Demand, f: Fit): number {
   const sp = d.def.slaPenalty * meterWeight(s.meters.sla)
   const clean = 0.4 + 0.1 * importance(d)
   const late = -(0.25 * tp + 0.5 * sp)
-  // the share of answers expected on time: all of them under the headroom, none past 1.3× the bound
-  const onTime = f.lat <= SLO_HEADROOM ? 1 : f.lat >= 1.3 ? 0 : (1.3 - f.lat) / (1.3 - SLO_HEADROOM)
-  let v = !f.window ? -0.3 * (tp + sp) : !f.smart ? -0.5 * tp : onTime * clean + (1 - onTime) * late
+  let v = !f.window ? -0.3 * (tp + sp) : !f.smart ? -0.5 * tp : f.onTime * clean + (1 - f.onTime) * late
   let breach = 0
   for (const h of ALL_HAZARDS) {
-    const sev = d.hazards[h]
+    const sev = d.hazards?.[h]
     if (!sev) continue
-    const leak = (1 - guardCatch(s, h, d.novelShare)) * (1 - pSelfHandle(m, h, sev))
+    const leak = (1 - guardCatch(s, h, d.novelShare ?? 0)) * (1 - pSelfHandle(m, h, sev))
     breach = Math.max(breach, leak)
   }
   v -= breach * tp
-  if (!d.def.adversarial && !Object.keys(d.hazards).length)
+  if (!d.def.adversarial && !Object.keys(d.hazards ?? {}).length)
     v -= m.alignment.overRefusal * d.def.refusalExposure * (0.25 * tp + 0.2 * sp)
   return v
 }
@@ -515,15 +298,7 @@ function lossyFormats(s: GameState, hwId: string): WeightFormat[] {
 }
 
 /** Every owned checkpoint (and weight format) deployable on this hardware tier, with its per-demand value. */
-function candidatesFor(
-  s: GameState,
-  hwId: string,
-  demand: Demand[],
-  guard: { inSec: number; outSec: number },
-  fleetLanes: number,
-  waveSec: number,
-  surge: boolean,
-): Candidate[] {
+function candidatesFor(s: GameState, hwId: string, demand: Demand[], env: LoadEnv): Candidate[] {
   const out: Candidate[] = []
   const formats: (WeightFormat | undefined)[] = [undefined, ...lossyFormats(s, hwId)]
   for (const id of Object.keys(s.models)) {
@@ -531,7 +306,7 @@ function candidatesFor(
       const lo = loadout(s, hwId, id, precision)
       if (!lo.model || !serverDeployable(s, lo)) continue
       if (precision && servingFormat(s, lo) !== precision) continue
-      const fits = fitsOf(s, lo, demand, guard, fleetLanes, waveSec, surge)
+      const fits = fitsOf(s, lo, demand, env)
       out.push({ id, precision, values: demand.map((d, i) => demandValue(s, lo.model!, d, fits[i])) })
     }
   }
@@ -593,8 +368,7 @@ function assignTier(s: GameState, racks: Tower[], cands: Candidate[], demand: De
 
 /** Deploy the forecast's best checkpoints across the fleet, tier by tier. */
 function deployFleet(s: GameState, demand: Demand[], waveSec: number, surge: boolean): void {
-  const guard = guardLatency(s)
-  const fleetLanes = servers(s).reduce((n, t) => n + Math.max(1, rackPlan(s, loadoutOf(s, t)).lanes), 0)
+  const env = loadEnvOf(s, { seconds: waveSec, surge })
   const byTier = new Map<string, Tower[]>()
   for (const t of servers(s)) {
     if (!t.hwId) continue
@@ -604,7 +378,7 @@ function deployFleet(s: GameState, demand: Demand[], waveSec: number, surge: boo
   }
   for (const [hwId, racks] of byTier) {
     racks.sort((a, b) => distToCore(a) - distToCore(b) || a.id - b.id)
-    assignTier(s, racks, candidatesFor(s, hwId, demand, guard, fleetLanes, waveSec, surge), demand)
+    assignTier(s, racks, candidatesFor(s, hwId, demand, env), demand)
   }
 }
 
@@ -782,14 +556,14 @@ function ensureSupport(s: GameState, id: string, want: number, minSpend = 0): vo
 }
 
 /** Does the coming wave carry a hazard of this kind? */
-const carries = (demand: Demand[], h: SafetyHazard): boolean => demand.some((d) => (d.hazards[h] ?? 0) > 0)
+const carries = (demand: Demand[], h: SafetyHazard): boolean => demand.some((d) => (d.hazards?.[h] ?? 0) > 0)
 
 /** What selling the encoder guards would refund (60% of their price). */
 const encoderRefund = (s: GameState): number =>
   s.towers.filter((t) => t.def.id === 'guard_encoder').reduce((n, t) => n + Math.round(t.def.cost * 0.6), 0)
 
 /** The coming wave's novel-attack share (the adaptive variants a classifier guard mostly misses). */
-const novelShare = (demand: Demand[]): number => demand.reduce((m, d) => Math.max(m, d.novelShare), 0)
+const novelShare = (demand: Demand[]): number => demand.reduce((m, d) => Math.max(m, d.novelShare ?? 0), 0)
 
 /**
  * The guardrail stage on every lane. A Prompt Guard encoder screens jailbreaks (and, once
@@ -969,7 +743,7 @@ function planStudio(s: GameState): void {
 /** Prepare the build phase before wave `waveNo` (1-based). */
 export function demoPlan(s: GameState, waveNo: number): void {
   updatePower(s)
-  const { demand, seconds, surgeLane } = forecast(s)
+  const { demand, seconds, surgeLane, surge } = forecast(s)
   // the Training Lab opens research and the Studio; buy it once a first fleet stands (it needs no lane)
   if (waveNo >= 2 && !countKind(s, 'lab') && spendable(s) >= buildCost(s, TOWER_DEFS.lab))
     place(s, 'lab', infraSlot(s))
@@ -992,7 +766,7 @@ export function demoPlan(s: GameState, waveNo: number): void {
   ensureCapacity(s, 0)
   planResearch(s)
   planStudio(s)
-  deployFleet(s, demand, seconds, surgeLane !== null)
+  deployFleet(s, demand, seconds, surge)
   updatePower(s)
 }
 

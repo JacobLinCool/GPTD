@@ -1,6 +1,11 @@
 import {
   ALLREDUCE_US,
   ALLTOALL_US,
+  CHUNK_MAX_TOKENS,
+  CHUNK_MIN_STRETCH,
+  CHUNK_MIN_TOKENS,
+  CHUNK_STEP_TARGET_MS,
+  CHUNKED_PREFILL_EFF,
   COHORT_STREAMS,
   ENGINE_MAX_STREAMS,
   CREDIT_USD,
@@ -684,8 +689,13 @@ export interface LaneLoad {
   kvGb: number
   /** background prefill compute per step (seconds): the cohorts' other prompts being ingested. */
   bgPrefillSec: number
-  /** chunked prefill / a decode-pool rack: prefill compute overlaps the memory-bound step instead of adding to it. */
+  /**
+   * chunked prefill: prompt compute is fused into the decode step (it rides the step's weight and
+   * KV reads) at CHUNKED_PREFILL_EFF of the monolithic rate, instead of being added to it.
+   */
   overlapPrefill: boolean
+  /** a prompt chunk this step carries (seconds of prefill compute at the monolithic rate; chunked prefill only). */
+  chunkSec?: number
   /** streams on the whole rack (expert parallelism pools the experts across copies). */
   rackStreams?: number
   /** mean tokens a speculative step yields for these streams (by axis acceptance; 1 = no speculation). */
@@ -701,6 +711,12 @@ export interface LaneStep {
   specOn: boolean
   /** the step's compute (the batch's GEMMs, verified drafts included) outlasts its HBM reads. */
   computeBound: boolean
+  /** the step's HBM time (weights + KV reads, throttle applied). */
+  memSec: number
+  /** the step's decode compute (the batch's GEMMs, verified drafts included; throttle applied). */
+  compSec: number
+  /** the per-step fixed time (all-reduces, all-to-alls, pipeline hops, scheduler). */
+  fixedSec: number
 }
 
 /**
@@ -778,7 +794,8 @@ function stepFixedSec(s: GameState, m: ModelDef, p: ParallelPlan): number {
 export function laneStep(s: GameState, lo: Loadout, p: ParallelPlan, load: LaneLoad): LaneStep {
   const m = lo.model
   const hw = lo.hw
-  if (!m || !hw || !p.fits) return { stepSec: Infinity, specOn: false, computeBound: false }
+  if (!m || !hw || !p.fits)
+    return { stepSec: Infinity, specOn: false, computeBound: false, memSec: Infinity, compSec: 0, fixedSec: 0 }
   const bytes = residentBytes(m, p.format)
   const eff = tpEff(p.tpDeg) * engineEff(s)
   const bw = hw.hbmTbsPerGpu * 1e12 * p.tpDeg * eff * MBU_DECODE
@@ -790,7 +807,9 @@ export function laneStep(s: GameState, lo: Loadout, p: ParallelPlan, load: LaneL
   const dThr = decodeThrottle(thr)
   const tMem = ((wGb + kvRead) * 1e9) / bw / dThr
   const tComp = (b * 2 * m.paramsActiveB * 1e9) / flops / thr
-  const bg = load.bgPrefillSec / thr
+  // chunked prefill fuses the prompt work into the step at a small efficiency cost (config.ts)
+  const bg =
+    (load.overlapPrefill ? (load.bgPrefillSec + (load.chunkSec ?? 0)) / CHUNKED_PREFILL_EFF : load.bgPrefillSec) / thr
   const fixed = stepFixedSec(s, m, p)
   const combine = (mem: number, comp: number): number =>
     load.overlapPrefill ? Math.max(mem, comp + bg) : Math.max(mem, comp) + bg
@@ -803,9 +822,77 @@ export function laneStep(s: GameState, lo: Loadout, p: ParallelPlan, load: LaneL
     const draft = (SPEC_DRAFT_TOKENS * SPEC_DRAFT_VRAM_FRAC * m.paramsActiveB * bytes * 1e9) / bw / dThr
     const verify = tComp * (SPEC_DRAFT_TOKENS + 1)
     const spec = combine(tMem + draft, verify) + fixed
-    if (g / spec > 1 / plain) return { stepSec: spec, specOn: true, computeBound: verify >= tMem + draft }
+    if (g / spec > 1 / plain)
+      return {
+        stepSec: spec,
+        specOn: true,
+        computeBound: verify >= tMem + draft,
+        memSec: tMem + draft,
+        compSec: verify,
+        fixedSec: fixed,
+      }
   }
-  return { stepSec: plain, specOn: false, computeBound: tComp >= tMem }
+  return { stepSec: plain, specOn: false, computeBound: tComp >= tMem, memSec: tMem, compSec: tComp, fixedSec: fixed }
+}
+
+/**
+ * §4.3 the chunked-prefill TOKEN BUDGET of this deployment (prompt tokens one engine step carries
+ * per lane beside its decodes), profiled the way Sarathi-Serve sizes it from the TBT target: at a
+ * busy reference load (ESTIMATE-like: two request cohorts per lane at a 1.6K-token context), the
+ * prompt compute that fits between the step's decode compute and max(CHUNK_STEP_TARGET_MS, the
+ * decode step × (1 + CHUNK_MIN_STRETCH)) — which includes every token that hides under the
+ * memory-bound weight + KV reads (the roofline knee) — converted to tokens at the short-prompt
+ * prefill rate. A prompt within the budget prefills in ONE step; a longer one is split across
+ * steps (and a long prompt's chunks cost more: their attention reads the earlier chunks).
+ */
+export function chunkBudgetTokens(s: GameState, lo: Loadout, p: ParallelPlan = rackPlan(s, lo)): number {
+  if (!p.fits || !lo.model || !lo.hw) return 0
+  const ref = rackLoadEstimate(s, lo, Math.max(1, p.lanes) * 2, 1628, { inputTokens: 1500, outputTokens: 256 })
+  if (!ref.load || !Number.isFinite(ref.stepSec)) return CHUNK_MIN_TOKENS
+  const load: LaneLoad = { ...ref.load, overlapPrefill: true, throttle: 1 }
+  const step = laneStep(s, lo, p, load)
+  const target = Math.max(CHUNK_STEP_TARGET_MS / 1000, step.stepSec * (1 + CHUNK_MIN_STRETCH))
+  const bg = load.bgPrefillSec / CHUNKED_PREFILL_EFF
+  const sec = Math.max(0, target - step.fixedSec - step.compSec - bg)
+  const tokens = sec * prefillRateOn(s, lo, p, 0) * CHUNKED_PREFILL_EFF
+  return Math.round(Math.min(CHUNK_MAX_TOKENS, Math.max(CHUNK_MIN_TOKENS, tokens)))
+}
+
+/**
+ * How one prompt of `tokens` (still to ingest, at the full-clock monolithic `rate` in tok/s)
+ * occupies a lane whose decode load is `load`. Without chunked prefill it runs exclusively at the
+ * full rate (the lane's decodes stall for it, OSDI'24). With chunked prefill its tokens fill the
+ * steps' token budget first-come first-served beside the decodes: it spans tokens ÷ budget steps
+ * of a full-budget chunk (a short prompt shares one step with others), and its first token comes
+ * at the end of the step carrying its last chunk — one step at least.
+ */
+export interface PromptOccupancy {
+  /** wall seconds from its first chunk to its first token on an otherwise idle prompt lane. */
+  wallSec: number
+  /** budget-sized steps its tokens fill (fractional; 0 when it runs exclusively). */
+  steps: number
+  /** wall seconds of one step carrying a full-budget chunk of it (0 when exclusive). */
+  stepSec: number
+}
+
+export function promptOccupancy(
+  s: GameState,
+  lo: Loadout,
+  p: ParallelPlan,
+  tokens: number,
+  rate: number,
+  load: LaneLoad,
+  budget: number,
+): PromptOccupancy {
+  if (!(rate > 0) || tokens <= 0) return { wallSec: tokens > 0 ? Infinity : 0, steps: 0, stepSec: 0 }
+  const thr = Math.max(1e-3, load.throttle ?? 1)
+  if (!s.infra.scheduling.chunked || budget <= 0) return { wallSec: tokens / (rate * thr), steps: 0, stepSec: 0 }
+  const step = (chunkTokens: number): number =>
+    laneStep(s, lo, p, { ...load, overlapPrefill: true, chunkSec: chunkTokens / rate }).stepSec
+  const full = step(budget)
+  const steps = tokens / budget
+  const own = tokens >= budget ? full : step(tokens)
+  return { wallSec: Math.max(steps * full, own), steps, stepSec: full }
 }
 
 /* ------------------------------------------------------------------ *
@@ -845,6 +932,8 @@ export interface RackLoadEstimate {
   computeBound: boolean
   /** the cohort is short of COHORT_STREAMS streams because KV ran out. */
   kvLimited: boolean
+  /** the per-lane decode load the step was computed for (absent when nothing fits). */
+  load?: LaneLoad
 }
 
 /**
@@ -972,7 +1061,7 @@ export function rackLoadEstimate(
   const rackStreams = (streams / cohorts) * Math.min(n, grp.count * cohorts)
   const lanes = Math.max(1, grp.lanes)
   const g = specTokensFor(s, opt.axis ?? 'chat')
-  const step = laneStep(s, lo, p, {
+  const load: LaneLoad = {
     streams: streams / lanes,
     kvGb: kvGb / lanes,
     bgPrefillSec: bg / lanes,
@@ -980,7 +1069,8 @@ export function rackLoadEstimate(
     rackStreams,
     specTokens: g,
     throttle: opt.throttle,
-  })
+  }
+  const step = laneStep(s, lo, p, load)
   const perUser = (step.specOn ? g : 1) / step.stepSec
   return {
     sprites: n,
@@ -991,6 +1081,7 @@ export function rackLoadEstimate(
     specOn: step.specOn,
     computeBound: step.computeBound,
     kvLimited: streams < mine * COHORT_STREAMS,
+    load,
   }
 }
 
@@ -1253,25 +1344,52 @@ export function guardLoadout(spec: NonNullable<TowerDef['guardrail']>): Loadout 
   return { hw, model }
 }
 
-/** A guardrail judgement: ingest the prompt (~300 tokens), emit a tiny safe/unsafe verdict (~24 tokens). */
-const GUARD_IN_TOKENS = 300
-const GUARD_OUT_TOKENS = 24
+/**
+ * A generative guardrail's verdict is a short classification, not an answer: Llama Guard emits
+ * `safe`, or `unsafe` plus the violated category codes (S1…S14), then end-of-turn — one to about
+ * six tokens (Llama Guard 4 model card). The first verdict token comes out of the prefill; the
+ * rest decode.
+ */
+export const GUARD_VERDICT_TOKENS = 3
+/**
+ * The conversation turn a guard classifies (§3.2): on input the user's prompt, on output that
+ * prompt plus the answer — each capped at the screened turn's length (input rails classify the
+ * latest user turn, not the context the platform itself assembled: retrieved passages, repository
+ * files and earlier turns are screened when they first enter).
+ */
+export const GUARD_TURN_TOKENS = 2048
+/** The prompt length the guard readouts (catalog, inspect panel) quote a check's latency at. */
+export const GUARD_REF_TOKENS = 512
+
+/** The tokens one guard check reads: the screened user turn on input, plus the screened answer on output. */
+export function guardScreenTokens(side: 'input' | 'output', tokensIn: number, tokensOut: number): number {
+  const turn = Math.min(Math.max(1, tokensIn), GUARD_TURN_TOKENS)
+  return side === 'input' ? turn : turn + Math.min(Math.max(0, tokensOut), GUARD_TURN_TOKENS)
+}
 
 /**
- * §3.3 [fix M8] the guardrail's check latency in REAL ms. encoder/moderation use the
- * FIXED `checkLatencyMs`; the generative family (guard_llm) computes a REAL (shorter)
- * 12B inference on its own rack via the §6 roofline: the verdict prompt's prefill + the
- * verdict tokens decoded while one cohort of checks shares the rack.
+ * §3.3 [fix M8] one guardrail check in REAL ms for a turn of `tokens`. encoder / moderation take
+ * their FIXED `checkLatencyMs` (a BERT forward over ≤512-token segments run in parallel; a hosted
+ * API call); the generative family (guard_llm) runs a real 12B inference on its own rack via the
+ * §6 roofline: the turn's prefill (so a longer turn costs more) plus the verdict's remaining
+ * tokens decoded while one cohort of checks shares the rack — tens of ms on an H100 for a
+ * typical prompt.
  */
-export function guardLatencyMs(s: GameState, spec: NonNullable<TowerDef['guardrail']>): number {
+export function guardCheckMs(s: GameState, spec: NonNullable<TowerDef['guardrail']>, tokens: number): number {
   if (!spec.runsOnRoofline) return spec.checkLatencyMs ?? 0
   const lo = guardLoadout(spec)
   if (!lo) return spec.checkLatencyMs ?? 0
-  const prefillRate = serverPrefillSpeed(s, lo, GUARD_IN_TOKENS)
-  const perUser = rackLoadEstimate(s, lo, 1, GUARD_IN_TOKENS + GUARD_OUT_TOKENS).perUserTokS
-  const prefillSec = prefillRate > 0 ? GUARD_IN_TOKENS / prefillRate : 0
-  const decodeSec = perUser > 0 ? (GUARD_OUT_TOKENS - 1) / perUser : 0
+  const n = Math.max(1, Math.round(tokens))
+  const prefillRate = serverPrefillSpeed(s, lo, n)
+  const perUser = rackLoadEstimate(s, lo, 1, n + GUARD_VERDICT_TOKENS).perUserTokS
+  const prefillSec = prefillRate > 0 ? n / prefillRate : 0
+  const decodeSec = perUser > 0 ? (GUARD_VERDICT_TOKENS - 1) / perUser : 0
   return (prefillSec + decodeSec) * 1000
+}
+
+/** A guardrail's check latency at the reference prompt (GUARD_REF_TOKENS) — what the readouts quote. */
+export function guardLatencyMs(s: GameState, spec: NonNullable<TowerDef['guardrail']>): number {
+  return guardCheckMs(s, spec, GUARD_REF_TOKENS)
 }
 
 /** §6.5 real electrical draw (kW) of a generative guardrail's own rack; 0 for encoder/moderation. */

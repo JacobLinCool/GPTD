@@ -169,6 +169,29 @@ export const DISAGG_POOL_GAIN = 1.1
 /** KV offload (LMCache): PCIe bandwidth a prefix reload from CPU/SSD runs at (GB/s). */
 export const PCIE_RELOAD_GBPS = 25
 
+/**
+ * §4.3 chunked prefill (Sarathi-Serve, OSDI'24; vLLM / SGLang `max_num_batched_tokens`): every
+ * engine step carries the running decodes plus up to a TOKEN BUDGET of prompt chunks. The budget
+ * is profiled per deployment from the time-between-tokens target, the way Sarathi-Serve sizes it
+ * from the TBT SLO: the prompt tokens whose compute fills a busy decode step up to
+ * CHUNK_STEP_TARGET_MS (3/4 of the interactive 40 ms TPOT bound), or stretches it by at least
+ * CHUNK_MIN_STRETCH where a big model's decode step is already longer; prompt tokens that fit
+ * under the step's memory-bound weight + KV reads ride along for free (the roofline knee). The
+ * budget is clamped to CHUNK_MIN_TOKENS..CHUNK_MAX_TOKENS (8192 is the large-GPU default of
+ * vLLM's V1 scheduler and SGLang's chunked_prefill_size).
+ */
+export const CHUNK_STEP_TARGET_MS = 30
+export const CHUNK_MIN_STRETCH = 0.25
+export const CHUNK_MIN_TOKENS = 256
+export const CHUNK_MAX_TOKENS = 8192
+/**
+ * Prefill efficiency kept by chunking: every chunk re-reads the KV of the prompt's earlier chunks
+ * and runs smaller GEMMs than one monolithic prefill (Sarathi-Serve measures the overhead as
+ * small at chunk sizes of a few hundred tokens and up) — the throughput price of stall-free
+ * scheduling.
+ */
+export const CHUNKED_PREFILL_EFF = 0.9
+
 /** §4.4 speculative decoding: draft tokens verified per step (EAGLE runs 3–5). */
 export const SPEC_DRAFT_TOKENS = 4
 /** Draft-head VRAM as a share of the target's weights (≈ one extra decoder layer), with a floor in GB. */

@@ -271,7 +271,7 @@ export const en: Record<string, string> = {
   'research.inf_multistep.name': 'Multi-Step Scheduling',
   'research.inf_multistep.desc': 'Schedule once, run 8 decode steps (vLLM v0.6): the per-step CPU overhead is amortized (more throughput), but a new request waits for the next scheduler call (a little more TTFT).',
   'research.inf_chunked.name': 'Chunked Prefill',
-  'research.inf_chunked.desc': 'Stall-free scheduling (Sarathi): prompts prefill in chunks hidden under the memory-bound decode steps, so running answers keep streaming. Conflicts with P/D Disaggregation.',
+  'research.inf_chunked.desc': 'Stall-free scheduling (Sarathi-Serve): every engine step carries a token budget of prompt chunks beside the running answers. A short prompt prefills in one step, a long one is split, and answers keep streaming, a little slower while prompts ride along. Conflicts with P/D Disaggregation.',
   'research.inf_disagg.name': 'P/D Disaggregation',
   'research.inf_disagg.desc': 'Dedicated prefill and decode rack pools (DistServe): decode pools never stall on prompts and each pool tunes for its phase (≈+10%), but the KV crosses the network and a decode pool only takes its own model’s KV. Conflicts with Chunked Prefill.',
   'research.inf_paged.name': 'PagedAttention',

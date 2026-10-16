@@ -100,6 +100,26 @@ export function fleetBurnPerSec(s: GameState): number {
   return burn
 }
 
+/**
+ * Board seconds until the last request of these bursts could reach the core: each burst's spawn
+ * tail (its delay + (count − 1) × interval, the incident's volume folded into the count) plus the
+ * transit of its longest lane — the wave's length, as the bill and the load forecasts read it.
+ */
+export function groupsDurationSec(s: GameState, groups: WaveDef['groups']): number {
+  const windowLanes = s.laneWindow.length ? [...s.laneWindow] : ALL_LANES
+  let duration = 0
+  for (const g of groups) {
+    const rt = REQUEST_TYPES[g.typeId]
+    if (!rt) continue
+    const count = Math.max(1, Math.round(g.count * s.modifiers.volume))
+    const lanes = g.lane !== undefined ? [((g.lane % LANE_COUNT) + LANE_COUNT) % LANE_COUNT] : windowLanes
+    const speed = rt.speed * (g.speedMul ?? 1) * TILE * LANE_SPEED
+    const longest = Math.max(...lanes.map((l) => pathLength(l)))
+    duration = Math.max(duration, g.delay + Math.max(0, count - 1) * g.interval + (speed > 0 ? longest / speed : 0))
+  }
+  return duration
+}
+
 /** The wave START would launch from the current state, or null when no wave follows. */
 export function previewNextWave(s: GameState): WavePreview | null {
   if (s.phase === 'won' || s.phase === 'lost') return null
@@ -137,7 +157,7 @@ export function previewNextWave(s: GameState): WavePreview | null {
   const pinned = new Set<number>()
   let unpinned = false
   let total = 0
-  let duration = 0
+  const duration = groupsDurationSec(s, def.groups)
   for (const g of def.groups) {
     const rt = REQUEST_TYPES[g.typeId]
     if (!rt) continue
@@ -149,10 +169,6 @@ export function previewNextWave(s: GameState): WavePreview | null {
     if (g.lane !== undefined) pinned.add(lanes[0])
     else unpinned = true
     total += count
-    // the last sprite of this burst spawns at delay + (count−1)·interval, then walks its lane
-    const speed = rt.speed * (g.speedMul ?? 1) * TILE * LANE_SPEED
-    const longest = Math.max(...lanes.map((l) => pathLength(l)))
-    duration = Math.max(duration, g.delay + Math.max(0, count - 1) * g.interval + (speed > 0 ? longest / speed : 0))
 
     // the same hazard profile spawnRequest arms: the wave's override (or the def's), × era pressure
     const hazardSeverity = escalatedHazards(g.hazards ?? rt.hazards ?? {}, g.hazardMul ?? 1)

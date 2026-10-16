@@ -114,6 +114,16 @@ export const VOLUME_FACTOR: Record<WaveVolume, number> = {
 export const BOSS_BUDGET_MUL = 1.25
 
 /**
+ * The steepest step a wave's request count may take over the wave before it (a boss: a little
+ * steeper). The authored volume bands set the rhythm — breathers after a peak, floods in the busy
+ * quarters — but a run is meant to end from ACCUMULATED pressure (the era's volume, tokens, quality
+ * line, hazards and incidents climbing together), never from one wave that suddenly doubles the
+ * load a fleet just proved it could carry.
+ */
+export const STEP_CAP = 1.6
+export const BOSS_STEP_CAP = 1.8
+
+/**
  * Total sprite budget for a wave: grows with tier and volume. Elimination is
  * primarily THROUGHPUT-bound — the board is finite, so a flood eventually
  * outruns even a maxed fleet. Tier 1 steady ≈ 15 sprites; tier 12 extreme ≈ 189
@@ -297,11 +307,13 @@ export function burstSpacing(tier: number): number {
  *  Builder — pure theme → WaveDef expansion.                          *
  * ------------------------------------------------------------------ */
 
-/** Expand one authored theme into a concrete WaveDef (deterministic, no RNG). */
-export function buildWave(theme: WaveTheme): WaveDef {
+/** Expand one authored theme into a concrete WaveDef (deterministic, no RNG); `budget` defaults to its band's. */
+export function buildWave(
+  theme: WaveTheme,
+  budget = waveBudget(theme.tier, theme.volume, theme.boss ?? false),
+): WaveDef {
   const { tier, volume } = theme
   const boss = theme.boss ?? false
-  const budget = waveBudget(tier, volume, boss)
   const vf = VOLUME_FACTOR[volume]
   const hazardMul = Math.round(hazardMulOf(tier) * 1000) / 1000
   const novelShare = Math.round(novelShareOf(tier) * 100) / 100
@@ -357,9 +369,25 @@ function hashLane(s: string): number {
   return h % LANE_COUNT
 }
 
+/**
+ * The campaign's request budgets: each wave's band budget (waveBudget), capped at STEP_CAP
+ * (BOSS_STEP_CAP for a boss) × the wave before it, so the load climbs in steps a growing fleet
+ * can follow.
+ */
+export function campaignBudgets(themes: WaveTheme[]): number[] {
+  const out: number[] = []
+  for (const th of themes) {
+    const raw = waveBudget(th.tier, th.volume, th.boss ?? false)
+    const prev = out[out.length - 1]
+    out.push(prev === undefined ? raw : Math.min(raw, Math.ceil(prev * (th.boss ? BOSS_STEP_CAP : STEP_CAP))))
+  }
+  return out
+}
+
 /** Build the full campaign from the authored theme table. */
 export function buildCampaign(themes: WaveTheme[]): WaveDef[] {
-  return themes.map(buildWave)
+  const budgets = campaignBudgets(themes)
+  return themes.map((th, i) => buildWave(th, budgets[i]))
 }
 
 /**

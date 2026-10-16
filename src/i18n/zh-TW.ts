@@ -340,7 +340,7 @@ export const zhTW: Record<string, string> = {
   "research.inf_multistep.name": "Multi-Step Scheduling",
   "research.inf_multistep.desc": "排一次、連跑 8 步 decode（vLLM v0.6）：攤平每步的 CPU 排程開銷（吞吐更高），但新請求要等下一次排程才能加入（TTFT 略增）。",
   "research.inf_chunked.name": "Chunked Prefill",
-  "research.inf_chunked.desc": "無停滯排程（Sarathi）：prompt 分塊 prefill，藏在受記憶體頻寬限制的 decode 步驟底下，進行中的回答持續串流。與 P/D 分離互斥。",
+  "research.inf_chunked.desc": "無停滯排程（Sarathi-Serve）：每個引擎步驟在進行中的回答旁，帶上一份 token 預算的 prompt 分塊。短 prompt 一步就完成 prefill，長 prompt 拆成多步，回答持續串流，只在 prompt 同行時稍微變慢。與 P/D 分離互斥。",
   "research.inf_disagg.name": "P/D Disaggregation",
   "research.inf_disagg.desc": "專用的 prefill 與 decode 機架池（DistServe）：decode 池不再被 prompt 卡住，各池針對自己的階段調校（約 +10%）；但 KV 要走網路傳輸，且 decode 池只接自己模型產生的 KV。與 Chunked Prefill 互斥。",
   "research.inf_paged.name": "PagedAttention",
