@@ -6,74 +6,237 @@
  * The module is PURE (no PixiJS / DOM) and is unit-tested against the §6 worked
  * examples. It must NEVER mutate GameState; it only reads it (AGENTS.md §2).
  *
- * Latency is reported as `effLatencyMs` (§0.4) — the concurrency-amortized
- * EQUIVALENT latency the sim judges SLOs against (per-user decode = aggregate
- * throughput / batch), NOT the bare b=1 latency. That is why a high-concurrency,
- * low-OSL chat request can fall back inside its SLO while a long-OSL reasoning
- * request stays tight — exactly the function Goodput is.
+ * The rack-card ESTIMATE assumes a BUSY rack — ESTIMATE_SPRITES_PER_LANE request cohorts on
+ * every decode lane (§5.7): per-user decode speed falls as the batch (and its KV) grows, while
+ * the rack's aggregate climbs toward its compute roof. The per-archetype verdicts and the deploy
+ * picker's ★ judge the upcoming wave's MIXED load with the shared load forecast
+ * (sim/loadForecast.ts — the estimate the demo autoplay plays by): the lane step the whole mix
+ * imposes, the prompt queue and its TPOT interference, the guard checks on the lanes.
  */
-import { FRAMEWORK_GB, LAT_CLASS_SLO } from '../config'
-import type { CapabilityAxis, GameState, Request, RequestTypeDef, Tower } from '../core/types'
+import { FRAMEWORK_GB, LAT_CLASS_SLO, TILE } from '../config'
+import type {
+  AnswerMode,
+  CapabilityAxis,
+  GameState,
+  GuardrailSpec,
+  ModelDef,
+  Outcome,
+  Request,
+  RequestTypeDef,
+  SafetyHazard,
+  ServerHardwareDef,
+  SloCause,
+  ThinkingSupport,
+  Tower,
+  WeightFormat,
+} from '../core/types'
 import {
+  admissionDelaySec,
+  answerMode,
+  availableFormats,
+  chunkBudgetTokens,
   computeRoofTokS,
   decodeTokSb1,
+  deployBlocker,
+  dollarsPerMtokenAt,
+  frameworkGbPerGpu,
+  guardLatencyMs,
+  hiddenTokensFor,
+  hasLiquidLoop,
+  hwNeedsLiquid,
   kvFreeGb,
-  kvPerReqGb,
   type Loadout,
+  loadout,
   loadoutOf,
-  rackOperatingCostPerSec,
-  serverAggDecodeTokS,
-  serverComputeCeiling,
+  longContextPenalty,
+  loraSiblings,
+  type ParallelPlan,
+  promptOccupancy,
+  ptqTax,
+  qualityIn,
+  rackLoadEstimate,
+  rackPlan,
+  resolveModel,
   serverBandwidthCeiling,
+  serverComputeCeiling,
+  serverDeployable,
   serverFitsMemory,
   serverModelMemory,
-  serverPerUserDecodeTokS,
   serverPower,
   serverPrefillSpeed,
-  serverTargets,
+  serverQuality,
+  serverQualityVs,
+  spritesPerLane,
+  servingFormat,
+  towerOpexPerSec,
+  towerRangeTiles,
 } from '../sim/effects'
+import {
+  demandOfGroups,
+  type DemandLine,
+  expectedCacheHit,
+  fleetLanesOf,
+  hazardLeakChance,
+  type LoadEnv,
+  loadEnvOf,
+  loadFits,
+  type LoadFit,
+  refusalChance,
+  worstLaneGuards,
+} from '../sim/loadForecast'
+import { isThrottling } from '../sim/power'
+import { groupsDurationSec } from '../sim/preview'
+import { surgeLaneOf } from '../sim/spawn'
+import { goodputPctOf } from '../sim/telemetry'
+import { HARDWARE_DEFS, HARDWARE_TIERS, WAVES, REQUEST_TYPES } from '../sim/content'
+import { hardwareUpgradeCost, nextHardware } from '../sim/actions'
+import {
+  ALL_HAZARDS,
+  categoryUnlocked,
+  effRecall,
+  overRefuse,
+  overrefMul,
+  pSelfHandle,
+  redteamRecallBonus,
+} from '../sim/safety'
 import { CREDIT_USD } from '../config'
 
 /** The five capability axes, in display order. `agentic` is the discriminative one (§6.4). */
 export const AXES: CapabilityAxis[] = ['chat', 'coding', 'reasoning', 'general', 'agentic']
 
-/** Which roof binds the rack at the deploy precision (§5.7). */
+/** Which roof binds the rack at a busy batch (§5.7). */
 export type BindingRoof = 'compute' | 'bandwidth'
+
+/** The representative request the rack cards quote (the ESTIMATE card: 1.5K in / 256 out). */
+export const REF_IN_TOKENS = 1500
+export const REF_OUT_TOKENS = 256
+
+/**
+ * The busy load the estimates assume: request cohorts per decode lane (each COHORT_STREAMS
+ * real streams — 2 ≈ 56 concurrent users per model copy), capped by the engine's batch.
+ */
+export const ESTIMATE_SPRITES_PER_LANE = 2
+
+/** Request sprites a busy rack holds: ESTIMATE_SPRITES_PER_LANE on every lane (one before Continuous Batching). */
+function busySprites(s: GameState, lo: Loadout): number {
+  const p = rackPlan(s, lo)
+  return Math.max(1, p.lanes * Math.min(spritesPerLane(s), ESTIMATE_SPRITES_PER_LANE))
+}
+
+/**
+ * The mean sequence a decoding stream holds over its answer: its prompt plus half of what it
+ * generates (streams in a batch sit at every point of their answers) — the KV the step re-reads.
+ */
+function midDecodeContext(inputTokens: number, outputTokens: number): number {
+  return Math.max(1, Math.round(inputTokens + Math.max(0, outputTokens) / 2))
+}
 
 /* ------------------------------------------------------------------ *
  *  Per-rack roofline / throughput metrics                            *
  * ------------------------------------------------------------------ */
 
 export interface RooflineMetrics {
-  /** raw b=1 decode tok/s (bandwidth-bound, §5.7) — the §6 worked-example basis. */
+  /** single-stream decode ceiling (tok/s): one user alone on a lane, bandwidth-bound (§5.7). */
   decodeTokSb1: number
-  /** raw compute roof tok/s (the ceiling decode hits as batch grows, §5.7). */
+  /** the rack's aggregate compute roof (tok/s) — what decode approaches as the batch grows. */
   computeRoofTokS: number
-  /** prefill tok/s for a representative prompt (compute-bound GEMM, super-linear). */
+  /** prefill tok/s of a representative prompt on one lane (compute-bound GEMM, super-linear). */
   prefillTokS: number
-  /** UI compute ceiling (compute roof × engine/throughput muls). */
+  /** UI compute ceiling (the aggregate compute roof). */
   computeCeiling: number
-  /** UI bandwidth ceiling (b=1 decode × FlashAttn + spec-decode muls). */
+  /** UI bandwidth ceiling (the single-stream ceiling, speculative decoding included). */
   bandwidthCeiling: number
-  /** which roof binds at the deploy precision: compute (low) vs bandwidth (high b=1). */
+  /** which roof binds a busy batch: compute (a big batch of a small model) vs HBM bandwidth. */
   binding: BindingRoof
-  /** fits VRAM (weights + framework ≤ HBM). */
+  /** fits VRAM in an allowed GPU group (weights + draft + framework). */
   fits: boolean
+  /** how the model spreads over the rack's GPUs (§4.7). */
+  plan: ParallelPlan
 }
 
-export function rooflineOf(s: GameState, lo: Loadout, sampleInputTokens = 1500): RooflineMetrics {
-  const fits = serverFitsMemory(s, lo)
-  const cc = serverComputeCeiling(s, lo)
-  const bc = serverBandwidthCeiling(s, lo)
+export function rooflineOf(s: GameState, lo: Loadout, sampleInputTokens = REF_IN_TOKENS): RooflineMetrics {
+  const plan = rackPlan(s, lo)
+  const full = rackLoadEstimate(s, lo, busySprites(s, lo), midDecodeContext(REF_IN_TOKENS, REF_OUT_TOKENS))
   return {
     decodeTokSb1: decodeTokSb1(s, lo),
     computeRoofTokS: computeRoofTokS(s, lo),
     prefillTokS: serverPrefillSpeed(s, lo, sampleInputTokens),
-    computeCeiling: cc,
-    bandwidthCeiling: bc,
-    // the rack is compute-bound when its compute roof is the lower ceiling.
-    binding: cc <= bc ? 'compute' : 'bandwidth',
-    fits,
+    computeCeiling: serverComputeCeiling(s, lo),
+    bandwidthCeiling: serverBandwidthCeiling(s, lo),
+    binding: full.computeBound ? 'compute' : 'bandwidth',
+    fits: plan.fits,
+    plan,
+  }
+}
+
+/** One weight-format setting a rack can take (undefined = auto) and what it does to the loaded model. */
+export interface FormatChoice {
+  /** the rack setting (undefined = auto). */
+  setting: WeightFormat | undefined
+  /** the format the rack would actually serve in. */
+  format: WeightFormat
+  /** the loaded model fits the rack in it. */
+  fits: boolean
+  /** flat quality points it costs the loaded model (0 = lossless). */
+  tax: number
+}
+
+/**
+ * The weight-format settings a rack can switch between (between waves): auto, then every
+ * researched format its hardware runs (and the model's own release format). Mirrors
+ * actions.setRackPrecision — a choice the model does not fit in is listed but refused there.
+ */
+export function rackFormatChoices(s: GameState, tw: Tower): FormatChoice[] {
+  if (tw.def.kind !== 'server' || !tw.hwId) return []
+  const hw = HARDWARE_DEFS[tw.hwId] ?? null
+  const model = tw.modelId ? resolveModel(s, tw.modelId) : null
+  // a checkpoint released below 16 bits never inflates to BF16: that setting would only
+  // repeat its own release format, so it is not offered
+  const formats = availableFormats(s, hw, model).filter((f) => !(f === 'bf16' && model && model.nativeWeightBytes < 1.5))
+  const settings: (WeightFormat | undefined)[] = [undefined, ...formats]
+  return settings.map((setting) => {
+    const lo = loadout(s, tw.hwId, tw.modelId, setting)
+    return {
+      setting,
+      format: model ? servingFormat(s, lo) : (setting ?? 'bf16'),
+      fits: !model || serverFitsMemory(s, lo),
+      tax: model ? ptqTax(s, lo) : 0,
+    }
+  })
+}
+
+/** The next setting a rack's format button cycles to (skipping ones the model would not fit in); null = none. */
+export function nextFormatChoice(s: GameState, tw: Tower): FormatChoice | null {
+  const choices = rackFormatChoices(s, tw)
+  if (choices.length < 2) return null
+  const cur = Math.max(0, choices.findIndex((c) => c.setting === tw.precision))
+  for (let k = 1; k < choices.length; k++) {
+    const c = choices[(cur + k) % choices.length]
+    if (c.fits) return c
+  }
+  return null
+}
+
+/** How a model spreads over a rack (Expert readout): GPUs per copy, tensor-parallel degree, stages, copies, format. */
+export interface ParallelSummary {
+  g: number
+  tpDeg: number
+  stages: number
+  replicas: number
+  format: WeightFormat
+  /** why it does not deploy here (null = it does). */
+  blocker: 'vram' | 'tp' | 'pp' | null
+}
+
+export function parallelSummary(s: GameState, lo: Loadout): ParallelSummary {
+  const p = rackPlan(s, lo)
+  return {
+    g: p.g,
+    tpDeg: p.tpDeg,
+    stages: p.stages,
+    replicas: p.replicas,
+    format: lo.model ? servingFormat(s, lo) : 'bf16',
+    blocker: deployBlocker(s, lo),
   }
 }
 
@@ -84,23 +247,26 @@ export function rooflineOf(s: GameState, lo: Loadout, sampleInputTokens = 1500):
 export interface VramBreakdown {
   /** total HBM (GB) on the rack. */
   totalGb: number
-  /** resident weight memory (GB) = paramsTotalB × bytesPerParam. */
+  /** resident weight memory (GB) of every model copy on the rack (+ speculative draft heads). */
   weightsGb: number
-  /** framework / activation overhead (GB) before KV. */
+  /** framework / activation overhead (GB) of the GPUs the copies run on. */
   frameworkGb: number
-  /** usable KV budget (GB) = (HBM − weights − framework) × allocator quality. */
+  /** usable KV budget (GB) of every copy = (group HBM − weights − framework) × allocator quality. */
   kvFreeGb: number
-  /** unused headroom (GB) the allocator does not reclaim. */
+  /** unused headroom (GB): allocator waste plus GPUs no whole copy fits on. */
   headroomGb: number
 }
 
 export function vramOf(s: GameState, lo: Loadout): VramBreakdown {
   const totalGb = lo.hw?.hbmGb ?? 0
-  const weightsGb = serverModelMemory(s, lo)
+  const p = rackPlan(s, lo)
+  const copies = p.fits ? p.replicas : 0
+  const weightsGb = copies > 0 ? copies * (p.weightGb + p.draftGb) : serverModelMemory(s, lo)
+  const frameworkGb = (copies > 0 ? copies * p.g : 1) * frameworkGbPerGpu(s)
   const kvUsable = kvFreeGb(s, lo)
-  // headroom = whatever HBM the KV allocator does not turn into usable KV.
-  const headroomGb = Math.max(0, totalGb - weightsGb - FRAMEWORK_GB - kvUsable)
-  return { totalGb, weightsGb, frameworkGb: FRAMEWORK_GB, kvFreeGb: kvUsable, headroomGb }
+  // headroom = whatever HBM the KV allocator does not turn into usable KV (and idle GPUs).
+  const headroomGb = Math.max(0, totalGb - weightsGb - frameworkGb - kvUsable)
+  return { totalGb, weightsGb, frameworkGb, kvFreeGb: kvUsable, headroomGb }
 }
 
 /* ------------------------------------------------------------------ *
@@ -127,60 +293,72 @@ export function sparsityOf(lo: Loadout): Sparsity {
 }
 
 /* ------------------------------------------------------------------ *
- *  Effective batch — mirrors combat.ts admission (serverTargets ∩ KV) *
+ *  Effective batch — mirrors combat.ts admission (slots ∩ KV)        *
  * ------------------------------------------------------------------ */
 
 /**
- * The effective decode batch a rack would run at a representative sequence length,
- * matching combat.ts: the scheduler offers `serverTargets` slots, the KV budget
- * caps it further (each in-flight request reserves kvPerReqGb at its contextLen).
- * Pass `contextLen` (default a mid-length 8K seq) to size the KV reservation.
+ * The real concurrent streams a rack holds when busy (ESTIMATE_SPRITES_PER_LANE cohorts per lane) at a representative sequence
+ * length, matching combat.ts: every scheduler slot takes a request cohort (COHORT_STREAMS
+ * streams), the KV of the copy it lands on caps the cohort further, and a stream whose KV
+ * alone exceeds a copy is never admitted (0).
  */
-export function effectiveBatch(s: GameState, lo: Loadout, contextLen = 8000): number {
-  if (!lo.hw || !lo.model || !serverFitsMemory(s, lo)) return 0
-  const slots = serverTargets(s, lo)
-  if (slots <= 1) return slots
-  const budget = kvFreeGb(s, lo)
-  const per = kvPerReqGb(s, lo.model, contextLen)
-  if (per <= 0) return slots
-  // the first admit is always allowed (combat.ts), so KV caps at floor(budget/per) but ≥1.
-  const kvCap = Math.max(1, Math.floor(budget / per))
-  return Math.max(1, Math.min(slots, kvCap))
+export function effectiveBatch(
+  s: GameState,
+  lo: Loadout,
+  contextLen = midDecodeContext(REF_IN_TOKENS, REF_OUT_TOKENS),
+): number {
+  if (!serverFitsMemory(s, lo)) return 0
+  return Math.round(rackLoadEstimate(s, lo, busySprites(s, lo), contextLen).streams)
 }
 
 /* ------------------------------------------------------------------ *
- *  effLatencyMs (§0.4) — concurrency-amortized equivalent latency     *
+ *  Latency on a busy rack (§0.4 / §5.7)                               *
  * ------------------------------------------------------------------ */
 
 export interface LatencyMetrics {
-  /** time-to-first-token (ms): prefill of the input prompt at the rack's prefill rate. */
+  /** time-to-first-token (ms): the prompt's prefill on one lane + the admission wait (pipeline bubble, multi-step). */
   ttftMs: number
-  /** time-per-output-token (ms): 1 / per-user decode rate at the effective batch. */
+  /** time-per-output-token (ms): 1 / per-user decode rate on a busy rack. */
   tpotMs: number
   /** end-to-end latency (ms): ttft + (outputTokens − 1) × tpot. */
   e2elMs: number
-  /** per-user decode rate (tok/s) at the effective batch (§5.7). */
+  /** per-user decode rate (tok/s) on a busy rack (§5.7). */
   perUserDecodeTokS: number
-  /** aggregate decode rate (tok/s) across the whole batch (§5.7). */
+  /** aggregate decode rate (tok/s) of the whole rack at that batch (§5.7). */
   aggDecodeTokS: number
-  /** the effective batch this latency assumes. */
+  /** the real concurrent streams this latency assumes. */
   batch: number
 }
 
 /**
- * The §0.4 concurrency-amortized latency of serving one request of (input,output)
- * tokens on this rack, at the effective batch. This is the EXACT quantity the sim
- * judges SLOs against (combat.ts: `tpotReal = 1/perUserDecode`, `e2elReal` accrues
- * at that rate). TTFT excludes lane transit / queue contention (those are runtime
- * state) — it is the rack's own prefill time for the prompt.
+ * The latency of serving one request of (input, output) tokens on this rack on a busy rack
+ * of such requests — the same lane step combat runs (weights + every stream's KV re-read,
+ * the cohorts' background prompts, speculative decoding while it pays) and the same TTFT
+ * terms (prefill + admission wait). `axis` sets the speculative acceptance (default chat).
  */
-export function latencyOf(s: GameState, lo: Loadout, inputTokens: number, outputTokens: number): LatencyMetrics {
-  const contextLen = inputTokens + Math.max(0, outputTokens)
-  const batch = Math.max(1, effectiveBatch(s, lo, contextLen))
+export function latencyOf(
+  s: GameState,
+  lo: Loadout,
+  inputTokens: number,
+  outputTokens: number,
+  axis: CapabilityAxis = 'chat',
+): LatencyMetrics {
+  const est = rackLoadEstimate(s, lo, busySprites(s, lo), midDecodeContext(inputTokens, outputTokens), {
+    inputTokens,
+    outputTokens,
+    axis,
+  })
   const prefillRate = serverPrefillSpeed(s, lo, inputTokens)
-  const perUser = serverPerUserDecodeTokS(s, lo, batch)
-  const agg = serverAggDecodeTokS(s, lo, batch)
-  const ttftSec = prefillRate > 0 ? inputTokens / prefillRate : Infinity
+  const perUser = est.perUserTokS
+  // the prompt on a busy lane: exclusive, or chunked into the deployment's token budget (§4.3)
+  const p = rackPlan(s, lo)
+  const occ =
+    est.load && prefillRate > 0
+      ? promptOccupancy(s, lo, p, inputTokens, prefillRate, est.load, chunkBudgetTokens(s, lo, p))
+      : { wallSec: prefillRate > 0 ? inputTokens / prefillRate : Infinity }
+  const ttftSec = Number.isFinite(occ.wallSec)
+    ? occ.wallSec + admissionDelaySec(s, lo, Number.isFinite(est.stepSec) ? est.stepSec : 0)
+    : Infinity
   const tpotSec = perUser > 0 ? 1 / perUser : Infinity
   const decodeSec = outputTokens > 0 ? (outputTokens - 1) * tpotSec : 0
   return {
@@ -188,14 +366,14 @@ export function latencyOf(s: GameState, lo: Loadout, inputTokens: number, output
     tpotMs: tpotSec * 1000,
     e2elMs: (ttftSec + decodeSec) * 1000,
     perUserDecodeTokS: perUser,
-    aggDecodeTokS: agg,
-    batch,
+    aggDecodeTokS: est.aggTokS,
+    batch: Math.round(est.streams),
   }
 }
 
-/** Whether a rack would meet a request type's SLO at the effective batch (§6.4). */
+/** Whether a rack would meet a request type's SLO on a busy rack (§6.4). */
 export function meetsSlo(s: GameState, lo: Loadout, def: RequestTypeDef): boolean {
-  const lat = latencyOf(s, lo, def.inputTokens, def.outputTokens)
+  const lat = latencyOf(s, lo, def.inputTokens, def.outputTokens, def.primaryAxis)
   const cls = LAT_CLASS_SLO[def.latClass]
   const ttftBound = def.ttftSloMs ?? cls.ttftMs
   if (lat.ttftMs > ttftBound) return false
@@ -205,36 +383,77 @@ export function meetsSlo(s: GameState, lo: Loadout, def: RequestTypeDef): boolea
 }
 
 /* ------------------------------------------------------------------ *
- *  $/Mtoken (§5.8) — ($/GPU-hr × 3600) / (aggTokS × 1e6)             *
+ *  $/Mtoken (§5.8) — ($/hour × 1e6) / (aggTokS × 3600)               *
  * ------------------------------------------------------------------ */
 
 /**
  * Unit serving cost in real USD per MILLION tokens (§5.8). The identity is the
- * GPU-hour bill amortized over the tokens that hour produces:
+ * hourly bill amortized over the tokens that hour produces:
  *   tokens/hour = aggTokS × 3600
- *   $/Mtoken    = ($/GPU-hr / (aggTokS × 3600)) × 1e6
- *               = ($/GPU-hr × 1e6) / (aggTokS × 3600)
- * Worked example (§5.8): $3/GPU-hr at 500 tok/s, 100% util → 3/(500×3600)×1e6
- *   = $1.667/Mtoken. `aggTokS` is the AGGREGATE decode throughput (all batch
- * slots), since the wall-clock bill is shared across every token the rack emits.
+ *   $/Mtoken    = ($/hour × 1e6) / (aggTokS × 3600)
+ * Worked example (§5.8): $3/hour at 500 tok/s, 100% util → 3/(500×3600)×1e6
+ *   = $1.667/Mtoken. `aggTokS` is the AGGREGATE decode throughput (every stream
+ * the rack serves), since the wall-clock bill is shared across every token it emits.
  */
-export function dollarsPerMtoken(gpuHrUsd: number, aggTokS: number): number {
+export function dollarsPerMtoken(usdPerHour: number, aggTokS: number): number {
   if (aggTokS <= 0) return Infinity
-  return (gpuHrUsd * 1e6) / (aggTokS * 3600)
+  return (usdPerHour * 1e6) / (aggTokS * 3600)
 }
 
 /**
- * The rack's serving cost in $/Mtoken at its effective batch — the real number the
- * S3/S5 dashboards show. Uses the rack's $/GPU-hr and aggregate decode throughput.
+ * The request the rack cards price when no traffic is coming (1.5K in / 256 out, near-real-time): a
+ * thinking checkpoint reasons first on it, spending half its hidden-token budget (the share most
+ * archetypes trigger), a hybrid in thinking mode too.
  */
-export function rackDollarsPerMtoken(s: GameState, lo: Loadout, contextLen = 8000): number {
-  if (!lo.hw) return Infinity
-  const batch = Math.max(1, effectiveBatch(s, lo, contextLen))
-  const agg = serverAggDecodeTokS(s, lo, batch)
-  return dollarsPerMtoken(lo.hw.gpuHrUsd, agg)
+const REF_REQUEST: Pick<RequestTypeDef, 'latClass' | 'outputTokens' | 'thinkMul'> = {
+  latClass: 'NR',
+  outputTokens: REF_OUT_TOKENS,
+  thinkMul: 0.5,
 }
 
-/** The §5.8 worked example uses the H100 $/GPU-hr (per-GPU, not aggregate) basis. */
+/**
+ * Generated tokens per BILLED token: (answer + hidden reasoning) / answer, over the upcoming
+ * traffic's generating archetypes in the mode this model answers each in (a hybrid answers
+ * interactive traffic without thinking), or the reference request when no traffic is coming.
+ * Hidden reasoning decodes like any token but is never billed (the archetype's price is the
+ * answer's market value), so a thinker's cost per billed token is this much higher.
+ */
+export function generatedPerBilledToken(
+  m: ModelDef | null | undefined,
+  traffic?: Pick<UpcomingTraffic, 'entries'> | null,
+): number {
+  let answer = 0
+  let generated = 0
+  for (const e of traffic?.entries ?? []) {
+    if (e.outputTokens <= 0 || e.def.adversarial) continue
+    answer += e.count * e.outputTokens
+    generated += e.count * (e.outputTokens + hiddenTokensFor(m, e.def))
+  }
+  if (answer > 0) return generated / answer
+  return (REF_OUT_TOKENS + hiddenTokensFor(m, REF_REQUEST)) / REF_OUT_TOKENS
+}
+
+/**
+ * The rack's serving cost in $ per million BILLED output tokens on a busy rack of the representative
+ * request — the real number the dashboards show AND the rate its cash flow obeys: a board rack bills
+ * RACKS_PER_TILE real racks' GPU-hours + energy, and earns on TRAFFIC_SCALE × the answer tokens its
+ * sprites deliver (the cohort identity, config.ts). Per generated token that is the hourly bill over
+ * the aggregate decode rate; a thinking model also generates hidden reasoning it is not paid for, at
+ * the share the upcoming traffic makes it think (`generatedPerBilledToken`).
+ */
+export function rackDollarsPerMtoken(
+  s: GameState,
+  lo: Loadout,
+  contextLen = midDecodeContext(REF_IN_TOKENS, REF_OUT_TOKENS),
+  traffic: Pick<UpcomingTraffic, 'entries'> | null = upcomingTraffic(s),
+): number {
+  if (!lo.hw) return Infinity
+  const est = rackLoadEstimate(s, lo, busySprites(s, lo), contextLen, {
+    inputTokens: REF_IN_TOKENS,
+    outputTokens: REF_OUT_TOKENS,
+  })
+  return dollarsPerMtokenAt(s, lo, est.aggTokS, 1) * generatedPerBilledToken(lo.model, traffic)
+}
 
 /* ------------------------------------------------------------------ *
  *  Power vs cooling headroom (§5.5) + fleet aggregates               *
@@ -263,7 +482,8 @@ export function powerHeadroom(s: GameState): PowerHeadroom {
 export function coolingHeadroom(s: GameState): PowerHeadroom {
   const usedKw = s.cooling.used
   const capKw = s.cooling.cap
-  return { usedKw, capKw, frac: capKw > 0 ? usedKw / capKw : 0, overCap: usedKw > capKw }
+  // over when EITHER pool is: Liquid Loop kW cannot cool an air rack (power.ts)
+  return { usedKw, capKw, frac: capKw > 0 ? usedKw / capKw : 0, overCap: isThrottling(s) }
 }
 
 /* ------------------------------------------------------------------ *
@@ -271,7 +491,7 @@ export function coolingHeadroom(s: GameState): PowerHeadroom {
  * ------------------------------------------------------------------ */
 
 export interface FleetMetrics {
-  /** Goodput: % of answered requests within SLO this wave (the headline, §1.3). */
+  /** Goodput: % of this wave's terminal requests served cleanly (the headline, §1.3). */
   goodputPct: number
   /** requests answered per second over the rolling window. */
   rps: number
@@ -285,7 +505,7 @@ export interface FleetMetrics {
   kvUtilPct: number
   /** fleet utilization = servedTokS / theoreticalMax (rolling, §6.6). */
   fleetUtilPct: number
-  /** real operating burn in credits per board-second (Σ online racks' $/GPU-hr). */
+  /** real operating burn in credits per board-second right now (GPU-hours + energy, as updateEconomy bills it). */
   burnPerSec: number
 }
 
@@ -300,7 +520,8 @@ function inServiceElapsedSec(r: Request): number {
 
 export function fleetMetrics(s: GameState): FleetMetrics {
   const ws = s.waveStats
-  const goodputPct = ws && ws.answered ? (100 * ws.goodput) / ws.answered : 100
+  // the ONE Goodput formula the wave report and the agent bridge also use (sim/telemetry)
+  const goodputPct = ws ? goodputPctOf(ws) : 100
   // rolling RPS over the telemetry window (matches sim/telemetry answersPerSec).
   const WINDOW = 5
   const rps = ws ? ws.recentServes.length / WINDOW : 0
@@ -308,19 +529,24 @@ export function fleetMetrics(s: GameState): FleetMetrics {
   ages.sort((a, b) => a - b)
   const p95WaitSec = ages.length ? ages[Math.min(ages.length - 1, Math.ceil(ages.length * 0.95) - 1)] : 0
 
-  const servers = onlineServers(s)
   let dpmSum = 0
   let dpmN = 0
-  let burn = 0
-  for (const tw of servers) {
+  const traffic = upcomingTraffic(s)
+  for (const tw of onlineServers(s)) {
     const lo = loadoutOf(s, tw)
     if (!lo.hw || !lo.model || !serverFitsMemory(s, lo)) continue
-    const dpm = rackDollarsPerMtoken(s, lo)
+    const dpm = rackDollarsPerMtoken(s, lo, undefined, traffic)
     if (Number.isFinite(dpm)) {
       dpmSum += dpm
       dpmN++
     }
-    burn += rackOperatingCostPerSec(lo.hw)
+  }
+  // the bill exactly as updateEconomy charges it this tick (training racks and the
+  // generative guardrail's own rack included; the power price scales the energy line)
+  let burn = 0
+  for (const tw of s.towers) {
+    const op = towerOpexPerSec(s, tw)
+    burn += op.gpu + op.energy
   }
   return {
     goodputPct,
@@ -330,7 +556,712 @@ export function fleetMetrics(s: GameState): FleetMetrics {
     dollarsPerMtoken: dpmN ? dpmSum / dpmN : 0,
     kvUtilPct: s.infra.kv.utilization * 100,
     fleetUtilPct: s.utilization * 100,
-    burnPerSec: burn * s.modifiers.powerPrice,
+    burnPerSec: burn,
+  }
+}
+
+/* ------------------------------------------------------------------ *
+ *  Outcome tallies + the honest Goodput (§2.5 / §1.3)                *
+ * ------------------------------------------------------------------ */
+
+/** Anything carrying the seven outcome counters (WaveStats, WaveReport, GameStats, WaveTypeStat). */
+export type OutcomeTally = { [K in Outcome]: number }
+
+/** Every terminal outcome: served, late, wrong, unsafe, refused, unservable and dropped. */
+export function terminalTotal(c: OutcomeTally): number {
+  return c.served + c.sloMiss + c.bad + c.unsafe + c.overRefused + c.unservable + c.leaked
+}
+
+/**
+ * Goodput = clean serves ÷ EVERY terminal outcome — the DistServe / SLO-goodput
+ * reading: a refused, breached, rejected or dropped request is not good output.
+ * `served` already excludes late answers (those resolve as `sloMiss`). The live
+ * gauge, the wave report and the end screen all read this one formula; 100 when
+ * nothing has finished yet.
+ */
+export function honestGoodputPct(c: OutcomeTally): number {
+  const total = terminalTotal(c)
+  return total > 0 ? (100 * c.served) / total : 100
+}
+
+/* ------------------------------------------------------------------ *
+ *  Upcoming traffic + per-archetype fit (deploy picker, rack card)   *
+ * ------------------------------------------------------------------ */
+
+/** One archetype in the traffic the player is preparing for (the hardest instance of it). */
+export interface TrafficEntry extends DemandLine {
+  def: RequestTypeDef
+  /** requests of this archetype the wave spawns (after the incident's volume modifier). */
+  count: number
+  /** resolved quality line on the judged axis = difficulty[primaryAxis] × complexityMul. */
+  difficulty: number
+  /** era-scaled context demand (the long-context quality penalty input). */
+  context: number
+  inputTokens: number
+  outputTokens: number
+}
+
+export interface UpcomingTraffic {
+  /** 0-based index of the wave this traffic belongs to. */
+  waveIndex: number
+  /** true while that wave is being served (the current wave), false for the next one. */
+  live: boolean
+  /** archetypes, most numerous first. */
+  entries: TrafficEntry[]
+  total: number
+  /** board seconds the wave lasts (its spawn tail + lane transit). */
+  seconds: number
+  /** a single-entry surge: every request walks one lane. */
+  surge: boolean
+}
+
+/**
+ * The traffic the player is preparing for: the wave being served (wave phase) or
+ * the NEXT authored wave (build phase). Mirrors spawnRequest's per-group scaling
+ * (complexityMul → difficulty, contextMul → prompt + context, √workMul → prompt,
+ * workMul → output) and the telegraphed incident's volume modifier. Endless waves
+ * are generated at START, so between endless waves the last one stands in.
+ */
+export function upcomingTraffic(s: GameState): UpcomingTraffic | null {
+  let waveIndex = s.waveIndex
+  let live = false
+  let groups = s.currentWave?.groups ?? null
+  if (s.phase === 'wave' && groups) {
+    live = true
+  } else {
+    waveIndex = s.waveIndex + 1
+    groups = waveIndex < WAVES.length ? WAVES[waveIndex].groups : s.endless ? groups : null
+  }
+  if (!groups) return null
+  const context = new Map<string, number>()
+  for (const g of groups) {
+    const def = REQUEST_TYPES[g.typeId]
+    if (def) context.set(def.id, Math.max(context.get(def.id) ?? 0, Math.round(def.context * (g.contextMul ?? 1))))
+  }
+  const entries: TrafficEntry[] = demandOfGroups(s, groups).map((d) => ({ ...d, context: context.get(d.def.id) ?? 0 }))
+  return {
+    waveIndex,
+    live,
+    entries,
+    total: entries.reduce((n, e) => n + e.count, 0),
+    seconds: Math.max(20, groupsDurationSec(s, groups)),
+    surge: surgeLaneOf(groups, s.laneWindow) !== undefined,
+  }
+}
+
+/** Hidden reasoning tokens a model emits per answer at full effort (0 = an instruct model). */
+export function modelThinkTokens(m: ModelDef | null | undefined): number {
+  return m?.thinkTokens ?? 0
+}
+
+/** The archetypes that generate an answer a model is judged on (attacks are judged on safety, embeddings emit no text). */
+const JUDGED_TYPES = Object.values(REQUEST_TYPES).filter((d) => !d.adversarial && d.outputTokens > 0)
+
+/**
+ * §1.4 how a model splits the traffic between its modes: the judged archetypes it answers
+ * instantly and the ones it thinks about first (a hybrid: interactive vs the rest).
+ */
+export function modeSplit(m: ModelDef): { instant: RequestTypeDef[]; thinking: RequestTypeDef[] } {
+  const instant: RequestTypeDef[] = []
+  const thinking: RequestTypeDef[] = []
+  for (const d of JUDGED_TYPES) (answerMode(m, d) === 'instant' ? instant : thinking).push(d)
+  return { instant, thinking }
+}
+
+/**
+ * The mode a model is judged in on each capability axis — the mode it answers the archetypes
+ * judged on that axis in (instant only when every one of them is answered instantly).
+ */
+export function axisModes(m: ModelDef): Record<CapabilityAxis, AnswerMode> {
+  const out = {} as Record<CapabilityAxis, AnswerMode>
+  for (const a of AXES) {
+    const defs = JUDGED_TYPES.filter((d) => d.primaryAxis === a)
+    out[a] = defs.length > 0 && defs.every((d) => answerMode(m, d) === 'instant') ? 'instant' : 'thinking'
+  }
+  return out
+}
+
+/** A rack's effective quality per axis as its traffic is judged: each axis in the mode its model answers that axis's archetypes in. */
+export function judgedAxisQuality(s: GameState, lo: Loadout): Record<CapabilityAxis, number> {
+  const out = {} as Record<CapabilityAxis, number>
+  const modes = lo.model ? axisModes(lo.model) : null
+  for (const a of AXES) out[a] = modes ? serverQualityVs(s, lo, a, modes[a]) : 0
+  return out
+}
+
+/**
+ * The OTHER mode's effective quality per axis for a hybrid (the vector the axis is NOT judged
+ * with: thinking for the instant axes, instant for the rest) — the second vector the Expert
+ * bars mark. null for a single-mode model.
+ */
+export function otherModeAxisQuality(s: GameState, lo: Loadout): Record<CapabilityAxis, number> | null {
+  const m = lo.model
+  if (!m || m.thinking !== 'hybrid' || !m.qualityByInstant) return null
+  const modes = axisModes(m)
+  const out = {} as Record<CapabilityAxis, number>
+  for (const a of AXES) out[a] = serverQualityVs(s, lo, a, modes[a] === 'instant' ? 'thinking' : 'instant')
+  return out
+}
+
+/** A model's raw capability in one mode (display: both vectors of a hybrid). */
+export function modeVector(m: ModelDef, mode: AnswerMode): Record<CapabilityAxis, number> {
+  return qualityIn(m, mode)
+}
+
+/** Every latency bound a request class is judged against (ms; Infinity = no bound). */
+export interface SloBounds {
+  ttftMs: number
+  tpotMs: number
+  e2elMs: number
+  /** time to first ANSWER token (thinking models on interactive traffic). */
+  ttfatMs: number
+}
+
+export function sloBoundsOf(def: RequestTypeDef): SloBounds {
+  const cls = LAT_CLASS_SLO[def.latClass]
+  return {
+    ttftMs: def.ttftSloMs ?? cls.ttftMs,
+    tpotMs: cls.tpotMs,
+    e2elMs: def.e2elSloMs ?? Infinity,
+    ttfatMs: def.ttfatSloMs ?? Infinity,
+  }
+}
+
+export interface TypeFit {
+  /** meets every latency bound of its class at the forecast load. */
+  fast: boolean
+  /** the first bound it would miss (null = on time). */
+  slowBy: SloCause | null
+  /** answers correctly: effective quality on the judged axis clears the difficulty. */
+  smart: boolean
+  /** effQ − difficulty (≥ 0 = a correct answer). */
+  margin: number
+  /** effective quality on the judged axis after the long-context and quantization penalties. */
+  effQ: number
+  /** prompt + hidden reasoning + answer fit the context window and one model copy's KV (else unservable). */
+  window: boolean
+  lat: LatencyMetrics
+  /** the tightest latency bound's use at the forecast load (latency ÷ bound; ≤ 1 on time). */
+  use: number
+  /** the expected share of its requests answered within every bound (the estimate's spread and the slot wait). */
+  onTime: number
+  /** the share that finds every slot in reach busy at the wave's peak (and waits for one). */
+  queued: number
+  /** the mode this rack's model answers it in (§1.4: a hybrid answers interactive traffic instantly). */
+  mode: AnswerMode
+  /** hidden reasoning tokens this rack's model thinks before answering it (0 in instant mode). */
+  thinkTokens: number
+  /** time to the first answer token (ms): TTFT plus the hidden thinking. */
+  ttfatMs: number
+  /** end-to-end time (ms) including hidden thinking tokens and the output guard checks. */
+  e2elMs: number
+}
+
+/** The environment the upcoming traffic lands in (the fleet's lanes, its length, the lane guards, the caches). */
+export function trafficEnv(s: GameState, traffic: Pick<UpcomingTraffic, 'seconds' | 'surge'>): LoadEnv {
+  return loadEnvOf(s, traffic)
+}
+
+/**
+ * The environment of a single-archetype readout (no traffic forecast): a busy rack —
+ * ESTIMATE_SPRITES_PER_LANE cohorts per lane — behind the guards on the board.
+ */
+export function readoutEnv(s: GameState): LoadEnv {
+  return {
+    fleetLanes: fleetLanesOf(s),
+    waveSec: 60,
+    guards: worstLaneGuards(s),
+    cacheHit: expectedCacheHit(s),
+    minSprites: ESTIMATE_SPRITES_PER_LANE,
+  }
+}
+
+function toTypeFit(f: LoadFit): TypeFit {
+  const ms = (sec: number): number => sec * 1000
+  return {
+    fast: f.slowBy === null,
+    slowBy: f.slowBy,
+    smart: f.margin >= 0,
+    margin: f.margin,
+    effQ: f.effQ,
+    window: f.window,
+    lat: {
+      ttftMs: ms(f.ttftSec),
+      tpotMs: ms(f.tpotSec),
+      e2elMs: ms(f.e2elSec),
+      perUserDecodeTokS: f.perUserTokS,
+      aggDecodeTokS: f.perUserTokS * f.streams,
+      batch: Math.round(f.streams),
+    },
+    use: f.lat,
+    onTime: f.onTime,
+    queued: f.queued,
+    mode: f.mode,
+    thinkTokens: f.hidden,
+    ttfatMs: ms(f.ttfatSec),
+    e2elMs: ms(f.e2elSec),
+  }
+}
+
+/**
+ * Would this rack serve each archetype of the traffic cleanly? The shared load forecast at the
+ * load the whole MIX puts on the rack (sim/loadForecast.ts), in the mode its model answers each
+ * archetype in: TTFT (prompt + queue + admission + input guards), time to first ANSWER token,
+ * TPOT (the prompt work's interference included), E2E (+ output guards), the judged-axis margin
+ * after the long-context penalty, and the window / KV gates. Aligned with `entries`.
+ */
+export function trafficFits(s: GameState, lo: Loadout, entries: DemandLine[], env: LoadEnv): TypeFit[] {
+  return loadFits(s, lo, entries, env).map(toTypeFit)
+}
+
+/** One archetype alone on a busy rack (no traffic forecast; `env` defaults to `readoutEnv`). */
+export function rackFit(
+  s: GameState,
+  lo: Loadout,
+  def: RequestTypeDef,
+  inputTokens: number,
+  outputTokens: number,
+  difficulty: number,
+  env: LoadEnv = readoutEnv(s),
+): TypeFit {
+  return trafficFits(s, lo, [{ def, count: 1, inputTokens, outputTokens, difficulty }], env)[0]
+}
+
+/** `rackFit` for an archetype in the upcoming traffic (its hardest instance), alone on a busy rack. */
+export function typeFit(s: GameState, lo: Loadout, e: TrafficEntry, env?: LoadEnv): TypeFit {
+  return trafficFits(s, lo, [e], env ?? readoutEnv(s))[0]
+}
+
+/**
+ * The expected share of one archetype's requests this rack would serve CLEANLY: in the window,
+ * a correct answer (attacks are judged on safety), on time at the forecast load (the forecast's
+ * on-time share: the estimate's spread around its bounds and the requests that wait for a slot),
+ * not wrongly refused (the model's and
+ * the lane guards' over-refusal), and no hazard delivered past the guards and the model's own
+ * alignment.
+ */
+export function cleanShare(s: GameState, m: ModelDef, e: DemandLine, f: TypeFit, env: LoadEnv): number {
+  if (!f.window || (!e.def.adversarial && !f.smart)) return 0
+  let leak = 0
+  for (const h of ALL_HAZARDS) {
+    const sev = e.hazards?.[h]
+    if (sev) leak = Math.max(leak, hazardLeakChance(s, m, env.guards, h, sev, e.novelShare ?? 0))
+  }
+  return f.onTime * (1 - leak) * (1 - refusalChance(s, m, e, env.guards))
+}
+
+/** The smallest rack tier on the upgrade ladder that holds this model at the current quant. */
+export function smallestRackFor(s: GameState, m: ModelDef): ServerHardwareDef | null {
+  for (const id of HARDWARE_TIERS) {
+    const hw = HARDWARE_DEFS[id]
+    if (hw && serverFitsMemory(s, { hw, model: m })) return hw
+  }
+  return null
+}
+
+/** One row of the deploy picker: how this checkpoint would do on THIS rack against the upcoming traffic. */
+export interface DeployCandidate {
+  model: ModelDef
+  /** deployable on this rack now (VRAM fit) — or already loaded. */
+  fits: boolean
+  current: boolean
+  /** weights + framework overhead this model needs at the current quant (GB). */
+  needGb: number
+  /** the smallest rack tier that would hold it (null = nothing on the ladder). */
+  needHw: ServerHardwareDef | null
+  /**
+   * why it does not deploy on THIS rack: 'vram' (no GPU group holds it), or the parallelism
+   * research it needs to span this rack's GPUs ('tp' Tensor / 'pp' Pipeline). null = it fits.
+   */
+  blocker: 'vram' | 'tp' | 'pp' | null
+  /** GPUs one copy would span on this rack (the group the parallelism research must unlock); 0 when it fits. */
+  spanGpus: number
+  /** mid-wave, a Multi-LoRA adapter swap on the loaded base: deployable now without a weight reload. */
+  hotSwap: boolean
+  /**
+   * per-user decode tok/s and TPOT as the upcoming wave would see them on this rack — under the
+   * same forecast load the ★ is scored at, for the archetype whose TPOT bound is tightest at that
+   * load (no traffic forecast: a busy rack of the representative 1.5K-in / 256-out request).
+   */
+  perUserTokS: number
+  tpotMs: number
+  /** the TPOT bound (ms) that archetype is judged against (Infinity = no bound, or no traffic forecast). */
+  tpotBoundMs: number
+  /** count-weighted effective quality on the judged axes of the upcoming traffic. */
+  judgedQ: number
+  /** archetypes it would serve fast ∧ smart ∧ in-window at the forecast load, of those in the upcoming traffic. */
+  clears: number
+  kinds: number
+  /** expected share of the upcoming requests it would serve cleanly under the wave's mixed load (0..1, cleanShare). */
+  score: number
+  safety: number
+  overRefusal: number
+  /** hidden reasoning tokens per thinking-mode answer (0 = it never thinks). */
+  thinkTokens: number
+  /** §1.4 its thinking support (a hybrid answers interactive traffic without thinking). */
+  thinking: ThinkingSupport
+  /** ★ the best fit for the upcoming traffic on this rack. */
+  recommended: boolean
+  /** per-archetype verdicts (same order as the traffic entries); empty when it does not fit. */
+  fit: TypeFit[]
+}
+
+/**
+ * Score every owned checkpoint (base + derived) on one rack against the upcoming
+ * traffic: VRAM fit (and the tier that would hold it), per-user speed, the judged-
+ * axis quality, how many archetypes it would serve cleanly under the wave's mixed load,
+ * and the ★ — the highest expected clean share (latency, correctness, window, refusals
+ * and safety together; cleanShare). Pure; callers memoize it — it is ~50 models × the
+ * wave's archetypes.
+ */
+export function deployCandidates(s: GameState, tw: Tower, traffic: UpcomingTraffic | null): DeployCandidate[] {
+  const out: DeployCandidate[] = []
+  const entries = traffic?.entries ?? []
+  const totalCount = entries.reduce((n, e) => n + e.count, 0)
+  const env = traffic && entries.length ? trafficEnv(s, traffic) : null
+  const loaded = tw.modelId ? resolveModel(s, tw.modelId) : null
+  for (const id of Object.keys(s.models)) {
+    const m = resolveModel(s, id)
+    if (!m) continue
+    const lo = loadout(s, tw.hwId, id, tw.precision)
+    const current = tw.modelId === id
+    const fits = current || serverDeployable(s, lo)
+    const think = modelThinkTokens(m)
+    const c: DeployCandidate = {
+      model: m,
+      fits,
+      current,
+      hotSwap: s.phase === 'wave' && fits && !current && loraSiblings(s, loaded, m),
+      needGb: serverModelMemory(s, { hw: null, model: m }) + FRAMEWORK_GB,
+      needHw: fits ? null : smallestRackFor(s, m),
+      blocker: fits ? null : deployBlocker(s, lo),
+      spanGpus: fits ? 0 : rackPlan(s, lo).g,
+      perUserTokS: 0,
+      tpotMs: Infinity,
+      tpotBoundMs: Infinity,
+      judgedQ: 0,
+      clears: 0,
+      kinds: entries.length,
+      score: 0,
+      safety: m.alignment.safety,
+      overRefusal: m.alignment.overRefusal,
+      thinkTokens: think,
+      thinking: m.thinking,
+      recommended: false,
+      fit: [],
+    }
+    if (fits && serverFitsMemory(s, lo)) {
+      const ref = latencyOf(s, lo, REF_IN_TOKENS, REF_OUT_TOKENS)
+      c.perUserTokS = ref.perUserDecodeTokS
+      c.tpotMs = ref.tpotMs
+      if (entries.length && env) {
+        let qSum = 0
+        let clean = 0
+        const fits = trafficFits(s, lo, entries, env)
+        let worstUse = -1
+        entries.forEach((e, i) => {
+          const f = fits[i]
+          c.fit.push(f)
+          qSum += f.effQ * e.count
+          if (f.fast && f.smart && f.window) c.clears++
+          clean += e.count * cleanShare(s, m, e, f, env)
+          // the speed chip: this rack's per-user speed for the archetype nearest its TPOT bound
+          // at the forecast load (the most numerous generating one when none has a bound)
+          if (e.outputTokens <= 1 || !(f.lat.perUserDecodeTokS > 0)) return
+          const bound = sloBoundsOf(e.def).tpotMs
+          const use = Number.isFinite(bound) ? f.lat.tpotMs / bound : 0
+          if (use > worstUse) {
+            worstUse = use
+            c.perUserTokS = f.lat.perUserDecodeTokS
+            c.tpotMs = f.lat.tpotMs
+            c.tpotBoundMs = bound
+          }
+        })
+        c.judgedQ = totalCount ? qSum / totalCount : 0
+        c.score = totalCount ? clean / totalCount : 0
+      } else {
+        c.judgedQ = serverQuality(s, lo)
+      }
+    }
+    out.push(c)
+  }
+  let best: DeployCandidate | null = null
+  for (const c of out) {
+    if (!c.fits || c.score <= 0) continue
+    if (
+      !best ||
+      c.score > best.score ||
+      (c.score === best.score && (c.judgedQ > best.judgedQ || (c.judgedQ === best.judgedQ && c.perUserTokS > best.perUserTokS)))
+    )
+      best = c
+  }
+  if (best) best.recommended = true
+  return out
+}
+
+/** What one RACK → upgrade buys: memory, bandwidth (as the decode speed-up of the loaded model), power, $/hr. */
+export interface HwUpgradeDelta {
+  from: ServerHardwareDef
+  to: ServerHardwareDef
+  cost: number
+  /** per-user decode speed-up with the current model (to ÷ from) at each rack's effective batch. */
+  decodeMul: number
+  kwFrom: number
+  kwTo: number
+  /** a liquid-cooled tier with no Liquid Cooling Loop on the board yet. */
+  needsLiquid: boolean
+}
+
+export function hwUpgradeDelta(s: GameState, tw: Tower): HwUpgradeDelta | null {
+  const to = nextHardware(tw)
+  const from = tw.hwId ? HARDWARE_DEFS[tw.hwId] : null
+  if (!to || !from) return null
+  const model = tw.modelId ? resolveModel(s, tw.modelId) : null
+  const a: Loadout = { hw: from, model, precision: tw.precision }
+  const b: Loadout = { hw: to, model, precision: tw.precision }
+  const pa = latencyOf(s, a, REF_IN_TOKENS, REF_OUT_TOKENS).perUserDecodeTokS
+  const pb = latencyOf(s, b, REF_IN_TOKENS, REF_OUT_TOKENS).perUserDecodeTokS
+  return {
+    from,
+    to,
+    cost: hardwareUpgradeCost(s, tw),
+    decodeMul: pa > 0 && pb > 0 ? pb / pa : to.hbmTbs / from.hbmTbs,
+    kwFrom: serverPower(s, a),
+    kwTo: serverPower(s, b),
+    needsLiquid: hwNeedsLiquid(to) && !hasLiquidLoop(s),
+  }
+}
+
+/** Placed servers in id order — every bulk action walks this order so it stays deterministic. */
+function serversById(s: GameState): Tower[] {
+  return s.towers.filter((t) => t.def.kind === 'server').sort((a, b) => a.id - b.id)
+}
+
+/** Racks of `tw`'s hardware tier (itself included) that could take `modelId` now and do not already run it. */
+export function sameTierTargets(s: GameState, tw: Tower, modelId: string): Tower[] {
+  return serversById(s).filter(
+    (t) => t.hwId === tw.hwId && t.modelId !== modelId && serverDeployable(s, loadout(s, t.hwId, modelId, t.precision)),
+  )
+}
+
+/** Every rack on the board where `modelId` fits and is not already deployed (the one-click rollout). */
+export function rolloutTargets(s: GameState, modelId: string): Tower[] {
+  return serversById(s).filter(
+    (t) => t.modelId !== modelId && serverDeployable(s, loadout(s, t.hwId, modelId, t.precision)),
+  )
+}
+
+/** UPGRADE ALL: every rack of `tw`'s tier, the per-rack price, and how many the cash covers in id order. */
+export interface UpgradeAllPlan {
+  ids: number[]
+  each: number
+  total: number
+  affordable: number
+  to: ServerHardwareDef
+  needsLiquid: boolean
+}
+
+export function upgradeAllPlan(s: GameState, tw: Tower): UpgradeAllPlan | null {
+  const to = nextHardware(tw)
+  if (!to) return null
+  const ids = serversById(s)
+    .filter((t) => t.hwId === tw.hwId)
+    .map((t) => t.id)
+  if (ids.length < 2) return null
+  const each = hardwareUpgradeCost(s, tw)
+  const affordable = each > 0 ? Math.min(ids.length, Math.floor(Math.max(0, s.meters.cash) / each)) : ids.length
+  return { ids, each, total: each * ids.length, affordable, to, needsLiquid: hwNeedsLiquid(to) && !hasLiquidLoop(s) }
+}
+
+/* ------------------------------------------------------------------ *
+ *  Safety readouts (model layer 1 + guardrail layer 2)               *
+ * ------------------------------------------------------------------ */
+
+/** Chance the model's own alignment clears an archetype's hazards at serve time (1 for benign traffic). */
+export function selfHandleRate(m: ModelDef, def: RequestTypeDef): number {
+  let p = 1
+  for (const h of ALL_HAZARDS) {
+    const sev = def.hazards?.[h]
+    if (sev !== undefined) p *= pSelfHandle(m, h, sev)
+  }
+  return p
+}
+
+export interface GuardStats {
+  latencyMs: number
+  /** chance it clears one covered hazard at the current threshold (+ red-team calibration). */
+  recall: number
+  /** chance it wrongly blocks a benign request. */
+  overRefusal: number
+  /** each hazard it lists, and whether detection for it is unlocked yet. */
+  hazards: { hazard: SafetyHazard; unlocked: boolean }[]
+}
+
+export function guardStats(s: GameState, spec: GuardrailSpec): GuardStats {
+  return {
+    latencyMs: guardLatencyMs(s, spec),
+    recall: effRecall(spec.baseRecall, s.guardrailThreshold, redteamRecallBonus(s)),
+    overRefusal: overRefuse(spec.archetype, s.guardrailThreshold, overrefMul(s)),
+    hazards: spec.catches.map((hazard) => ({ hazard, unlocked: categoryUnlocked(s, hazard) })),
+  }
+}
+
+/* ------------------------------------------------------------------ *
+ *  Live request diagnosis (S4 RequestInspector)                       *
+ * ------------------------------------------------------------------ */
+
+/** Why an open hazard is (or is not) going to be cleared. */
+export type HazardVerdict = 'cleared' | 'locked' | 'noGuard' | 'catchable'
+
+export interface RequestDiagnosis {
+  stage: 'queued' | 'prefill' | 'decode' | 'done'
+  /** 0..1 progress through prompt ingestion / answer generation. */
+  prefillFrac: number
+  decodeFrac: number
+  /** real ms to first token: the latched value once prefill is done, else the wait so far. */
+  ttftMs: number
+  ttftFinal: boolean
+  /** per-token time (ms) on the rack generating it (null before decode starts). */
+  tpotMs: number | null
+  e2elMs: number
+  bounds: SloBounds
+  /** the resolved quality line on the judged axis. */
+  difficulty: number
+  /** quality lost to the context gap + INT4 long-context tax on the answering rack. */
+  ctxPenalty: number
+  /** the answering rack's effective quality on the judged axis (null = no rack yet). */
+  rackQ: number | null
+  /** best margin a rack has scored it with (null = not scored yet). */
+  margin: number | null
+  guardsPassed: number
+  guardMs: number
+  thinkTokens: number
+  /** the mode it is answered in: latched at its first token, else the mode its current rack would use (null = no rack). */
+  mode: AnswerMode | null
+  /** true once the mode is latched (the first token exists). */
+  modeFinal: boolean
+  rack: Tower | null
+  hazards: { hazard: SafetyHazard; severity: number; verdict: HazardVerdict }[]
+  /** the outcome it is heading for if nothing changes. */
+  forecast: Outcome
+  /** false when a guardrail on its path may still change an `unsafe` forecast. */
+  certain: boolean
+}
+
+/** The rack answering this request: the sim's latch, else a rack working it last tick, else the nearest in range. */
+function answeringRack(s: GameState, r: Request): Tower | null {
+  if (r.answeredBy != null) {
+    const t = s.towers.find((x) => x.id === r.answeredBy)
+    if (t) return t
+  }
+  let near: Tower | null = null
+  let nearD = Infinity
+  for (const t of s.towers) {
+    if (t.def.kind !== 'server') continue
+    if (t.prefillId === r.id || t.decodeIds?.includes(r.id)) return t
+    if (!t.online || t.training) continue
+    const dx = t.x - r.x
+    const dy = t.y - r.y
+    const d2 = dx * dx + dy * dy
+    const reach = towerRangeTiles(t) * TILE
+    if (d2 <= reach * reach && d2 < nearD) {
+      near = t
+      nearD = d2
+    }
+  }
+  return near
+}
+
+export function diagnoseRequest(s: GameState, r: Request): RequestDiagnosis {
+  const bounds = sloBoundsOf(r.def)
+  const rack = answeringRack(s, r)
+  const lo = rack ? loadoutOf(s, rack) : null
+  const fits = !!lo && serverFitsMemory(s, lo)
+  const prefillDone = r.prefillDoneAt !== undefined
+  const stage: RequestDiagnosis['stage'] =
+    r.work <= 0 && r.prefill <= 0 ? 'done' : prefillDone ? 'decode' : r.queueSec > 0 || rack ? 'prefill' : 'queued'
+
+  let tpotMs: number | null = null
+  if (rack && lo && fits && prefillDone && r.maxWork > 0) {
+    // the per-user rate the rack's streams decoded at last tick; else the cohort estimate
+    const live = rack.tokS ?? 0
+    const perUser =
+      live > 0
+        ? live
+        : rackLoadEstimate(s, lo, Math.max(1, rack.batch ?? 1), r.contextLen, {
+            axis: r.def.primaryAxis,
+            throttle: rack.throttle,
+          }).perUserTokS
+    tpotMs = perUser > 0 ? 1000 / perUser : Infinity
+  }
+  let rackQ: number | null = null
+  let ctxPenalty = 0
+  // the mode the request is answered in (combat judges each rack in its own model's mode)
+  const rackMode = lo?.model ? answerMode(lo.model, r.def) : null
+  if (lo && fits && rackMode) {
+    ctxPenalty = longContextPenalty(s, lo, r.contextLen)
+    rackQ = serverQualityVs(s, lo, r.def.primaryAxis, rackMode) - ctxPenalty
+  }
+  const judged = r.bestQuality > -900
+  const margin = judged ? r.bestQuality : rackQ !== null ? rackQ - r.difficulty : null
+
+  // the guard checks this request is charged (input → TTFT, output → E2EL), for the turns they read
+  const seen = r.guardsSeen
+  const guardMs = (r.guardInSec + r.guardOutSec) * 1000
+  const guards = s.towers.filter((t) => t.def.kind === 'guardrail' && t.online && t.def.guardrail)
+  const hazards: RequestDiagnosis['hazards'] = []
+  for (const h of ALL_HAZARDS) {
+    const severity = r.hazards[h]
+    if (severity === undefined) continue
+    let verdict: HazardVerdict = 'cleared'
+    if (r.hazardsOpen[h] !== undefined) {
+      if (!categoryUnlocked(s, h)) verdict = 'locked'
+      else if (!guards.some((g) => g.def.guardrail!.catches.includes(h))) verdict = 'noGuard'
+      else verdict = 'catchable'
+    }
+    hazards.push({ hazard: h, severity, verdict })
+  }
+
+  const ttftMs = (prefillDone ? r.ttftReal : r.queueSec) * 1000
+  const open = hazards.filter((h) => h.verdict !== 'cleared')
+  let forecast: Outcome = 'served'
+  let certain = true
+  if (r.overRefused) forecast = 'overRefused'
+  else if (r.windowBlocked && !r.fitSeen && !prefillDone) forecast = 'unservable'
+  else if (open.length && !r.safetyCleared) {
+    forecast = 'unsafe'
+    certain = !open.some((h) => h.verdict === 'catchable')
+  } else if (margin !== null && margin < 0) forecast = 'bad'
+  else if (
+    r.sloViolated ||
+    ttftMs > bounds.ttftMs ||
+    (tpotMs !== null && tpotMs > bounds.tpotMs) ||
+    r.e2elReal * 1000 > bounds.e2elMs
+  )
+    forecast = 'sloMiss'
+
+  return {
+    stage,
+    prefillFrac: r.tokensIn > 0 ? 1 - Math.max(0, r.prefill) / r.tokensIn : 1,
+    decodeFrac: r.maxWork > 0 ? 1 - Math.max(0, r.work) / r.maxWork : 1,
+    ttftMs,
+    ttftFinal: prefillDone,
+    tpotMs,
+    e2elMs: r.e2elReal * 1000,
+    bounds,
+    difficulty: r.difficulty,
+    ctxPenalty,
+    rackQ,
+    margin,
+    guardsPassed: seen?.size ?? 0,
+    guardMs,
+    thinkTokens: r.thinkTokens ?? 0,
+    mode: r.thinkingMode ?? rackMode,
+    modeFinal: r.thinkingMode !== undefined,
+    rack,
+    hazards,
+    forecast,
+    certain,
   }
 }
 

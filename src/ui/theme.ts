@@ -1,5 +1,7 @@
-import { Container, Graphics, Text, type TextStyleOptions } from 'pixi.js'
+import { Container, Graphics, Text, type FederatedPointerEvent, type TextStyleOptions } from 'pixi.js'
 import { COLORS } from '../config'
+import { addTooltip, tooltip, type TooltipSpec } from './tooltip'
+import { uiSound } from './uiSound'
 
 export const FONT = 'ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace'
 
@@ -42,6 +44,16 @@ export interface ButtonOpts {
   onTap: () => void
   radius?: number
   accent?: number
+  /** secondary action on a right-click (e.g. step the speed DOWN). */
+  onRightTap?: () => void
+  /** a tap on the DISABLED button (the caller can explain why, e.g. a denied toast). */
+  onDenied?: () => void
+  /** hover tooltip for the enabled button (null = none). */
+  tooltip?: () => TooltipSpec | null
+  /** why the button is disabled right now — shown in its tooltip while disabled. */
+  disabledReason?: () => string | null
+  /** skip the generic click cue (the action plays its own sound). */
+  silent?: boolean
 }
 
 /** A reusable interactive button with bg, optional icon child, and two text lines. */
@@ -53,13 +65,28 @@ export class UIButton extends Container {
   private _h: number
   private _accent: number
   private _radius: number
+  private opts: ButtonOpts
   enabled = true
   active = false
   hovered = false
+  /** keyboard focus — drawn with the SAME cue as hover (one indicator, never doubled). */
+  focused = false
   iconHost = new Container()
+  // two-step "tap again to confirm" arm (Restart / Quit / START-anyway)
+  private armedUntil = 0
+  private armTimer: ReturnType<typeof setTimeout> | null = null
+  private restTitle: string | null = null
+  // optional hotkey badge (top-right corner)
+  private badgeBg: Graphics | null = null
+  private badgeText: Text | null = null
+  /** the last layout() call, replayed when arm/disarm swaps the title. */
+  private lastLayout: [number, number, boolean] | null = null
+  /** the inputs each text line was last fitted for (skip re-measuring an unchanged line). */
+  private fitKeys = new Map<Text, string>()
 
   constructor(opts: ButtonOpts) {
     super()
+    this.opts = opts
     this._w = opts.w
     this._h = opts.h
     this._accent = opts.accent ?? COLORS.sla
@@ -67,21 +94,57 @@ export class UIButton extends Container {
     this.addChild(this.bg, this.iconHost, this.titleText, this.subText)
     this.eventMode = 'static'
     this.cursor = 'pointer'
-    this.on('pointerover', () => {
+    this.on('pointerover', (e: FederatedPointerEvent) => {
       this.hovered = true
       this.redraw()
+      if (this.enabled && e.pointerType !== 'touch') uiSound('hover')
     })
     this.on('pointerout', () => {
       this.hovered = false
       this.redraw()
     })
-    this.on('pointertap', () => {
-      if (this.enabled) opts.onTap()
+    this.on('pointertap', (e: FederatedPointerEvent) => {
+      // a touch long-press that opened the tooltip is a peek, not a press
+      if (tooltip().consumeLongPress()) return
+      if (e.button === 2) {
+        if (this.enabled && opts.onRightTap) {
+          if (!opts.silent) uiSound('click')
+          opts.onRightTap()
+        }
+        return
+      }
+      this.activate()
     })
+    if (opts.tooltip || opts.disabledReason) addTooltip(this, () => this.tipSpec())
     this.redraw()
   }
 
+  /** Press the button programmatically (keyboard Enter / hotkeys): runs onTap or the denied path. */
+  activate(): void {
+    if (this.enabled) {
+      if (!this.opts.silent) uiSound('click')
+      this.opts.onTap()
+    } else {
+      uiSound('denied')
+      this.opts.onDenied?.()
+    }
+  }
+
+  /** The combined tooltip: the enabled description, plus the disabled reason when greyed out. */
+  private tipSpec(): TooltipSpec | null {
+    const base = this.opts.tooltip?.() ?? null
+    const why = !this.enabled ? (this.opts.disabledReason?.() ?? null) : null
+    if (!why) return base
+    if (!base) return { title: why }
+    return { ...base, value: why }
+  }
+
   setTitle(t: string): this {
+    if (this.isArmed) {
+      // keep the confirm prompt up; remember what the caller wants afterwards
+      this.restTitle = t
+      return this
+    }
     this.titleText.text = t
     return this
   }
@@ -108,11 +171,88 @@ export class UIButton extends Container {
     }
     return this
   }
+  setFocused(f: boolean): this {
+    if (this.focused !== f) {
+      this.focused = f
+      this.redraw()
+    }
+    return this
+  }
+
+  /** True while a two-step confirm is pending (the next tap commits). */
+  get isArmed(): boolean {
+    return this.armedUntil > 0 && performance.now() < this.armedUntil
+  }
+
+  /**
+   * Arm a two-step confirm: swap the title for `prompt` and draw the warn edge
+   * for `ms`; it reverts on its own. The caller checks `isArmed` on the next tap.
+   */
+  arm(prompt: string, ms = 2500): this {
+    if (!this.isArmed) this.restTitle = this.titleText.text
+    this.titleText.text = prompt
+    this.armedUntil = performance.now() + ms
+    if (this.armTimer) clearTimeout(this.armTimer)
+    this.armTimer = setTimeout(() => this.disarm(), ms)
+    uiSound('arm')
+    this.relayout()
+    this.redraw()
+    return this
+  }
+
+  /** Drop a pending confirm and restore the resting title. */
+  disarm(): this {
+    if (this.armTimer) clearTimeout(this.armTimer)
+    this.armTimer = null
+    if (this.armedUntil === 0) return this
+    this.armedUntil = 0
+    if (this.restTitle !== null) this.titleText.text = this.restTitle
+    this.restTitle = null
+    this.relayout()
+    this.redraw()
+    return this
+  }
+
+  private relayout(): void {
+    if (this.lastLayout) this.layout(...this.lastLayout)
+  }
+
+  /** A small key-cap badge in the top-right corner (null hides it). */
+  setHotkey(key: string | null): this {
+    if (!key) {
+      if (this.badgeBg) this.badgeBg.visible = false
+      if (this.badgeText) this.badgeText.visible = false
+      return this
+    }
+    if (!this.badgeBg || !this.badgeText) {
+      this.badgeBg = new Graphics()
+      this.badgeText = label('', 9, COLORS.textDim, 'bold')
+      this.addChild(this.badgeBg, this.badgeText)
+    }
+    if (this.badgeText.text !== key || !this.badgeText.visible) {
+      this.badgeText.text = key
+      const w = Math.max(12, Math.ceil(this.badgeText.width) + 6)
+      const h = 12
+      const x = this._w - w - 3
+      const y = 3
+      this.badgeBg.clear()
+      this.badgeBg.roundRect(x, y, w, h, 3).fill({ color: 0x0a0e14, alpha: 0.85 })
+      this.badgeBg.roundRect(x + 0.5, y + 0.5, w - 1, h - 1, 3).stroke({ width: 1, color: COLORS.panelEdge })
+      this.badgeText.x = x + (w - this.badgeText.width) / 2
+      this.badgeText.y = y + (h - this.badgeText.height) / 2
+    }
+    this.badgeBg.visible = true
+    this.badgeText.visible = true
+    this.badgeBg.alpha = this.badgeText.alpha = this.enabled ? 1 : 0.5
+    return this
+  }
 
   /** Card layout: title pinned top-left, description wrapped beneath it. */
   layoutCard(pad = 12, subSize = 11): void {
+    this.fitKeys.delete(this.subText) // sized here, not by fitText
     this.subText.style.fontSize = subSize
     this.subText.style.wordWrap = true
+    this.subText.style.breakWords = true
     this.subText.style.wordWrapWidth = this._w - pad * 2
     this.subText.style.lineHeight = subSize + 4
     this.titleText.x = pad
@@ -125,6 +265,7 @@ export class UIButton extends Container {
 
   /** Layout text lines; call after setting title/sub. iconW reserves left space. */
   layout(iconW = 0, pad = 9, center = false): void {
+    this.lastLayout = [iconW, pad, center]
     const textW = Math.max(24, this._w - pad * 2 - iconW)
     this.fitText(this.titleText, textW, 13, 9)
     this.fitText(this.subText, textW, 11, 8)
@@ -154,7 +295,14 @@ export class UIButton extends Container {
     this.subText.y = subY
   }
 
+  /**
+   * Shrink a line to fit `maxW`. Cached by its inputs: the per-frame layout() of a
+   * visible button re-measures (and re-rasterizes) only when the text or box changes.
+   */
   private fitText(t: Text, maxW: number, baseSize: number, minSize: number): void {
+    const key = `${t.text}|${maxW}|${baseSize}|${minSize}`
+    if (this.fitKeys.get(t) === key) return
+    this.fitKeys.set(t, key)
     t.style.fontSize = baseSize
     if (!t.text || t.width <= maxW) return
     const next = Math.max(minSize, Math.floor((baseSize * maxW) / t.width))
@@ -164,15 +312,110 @@ export class UIButton extends Container {
   redraw(): void {
     const g = this.bg
     g.clear()
-    const base = this.active ? 0x1a2c44 : this.hovered && this.enabled ? 0x182640 : COLORS.panel
+    const armed = this.isArmed
+    // hover and keyboard focus share ONE cue (lifted fill + accent hairline); the
+    // active / armed state is the only 2px edge — never two indicators at once.
+    const lifted = (this.hovered || this.focused) && this.enabled
+    const base = this.active ? 0x1a2c44 : lifted ? 0x182640 : COLORS.panel
     g.roundRect(0, 0, this._w, this._h, this._radius).fill({ color: base, alpha: this.enabled ? 0.96 : 0.55 })
+    const edge = armed ? COLORS.warn : this.active || lifted ? this._accent : COLORS.panelEdge
     g.roundRect(0.5, 0.5, this._w - 1, this._h - 1, this._radius).stroke({
-      width: this.active ? 2 : 1,
-      color: this.active ? this._accent : COLORS.panelEdge,
-      alpha: this.enabled ? 1 : 0.5,
+      width: this.active || armed ? 2 : 1,
+      color: edge,
+      alpha: this.enabled ? (lifted && !this.active && !armed ? 0.75 : 1) : 0.5,
     })
+    this.titleText.style.fill = armed ? COLORS.warn : COLORS.text
     this.titleText.alpha = this.enabled ? 1 : 0.5
     this.subText.alpha = this.enabled ? 1 : 0.4
     this.iconHost.alpha = this.enabled ? 1 : 0.5
+    if (this.badgeBg && this.badgeText) this.badgeBg.alpha = this.badgeText.alpha = this.enabled ? 1 : 0.5
   }
+}
+
+/**
+ * Keyboard focus over an ordered list of buttons (a column, row, or grid):
+ * arrows move the focus, Enter activates. The focus cue is the button's own
+ * hover look, so mouse and keyboard never show two indicators. `cols` > 0 walks
+ * a uniform grid by index; `cols` = 0 is SPATIAL: an arrow moves to the nearest
+ * button in that direction on screen (for grouped / uneven layouts).
+ */
+export class FocusList {
+  private index = -1
+
+  constructor(
+    private buttons: () => UIButton[],
+    private cols = 1,
+  ) {}
+
+  /** The focused button (null = none). */
+  get current(): UIButton | null {
+    return this.visible()[this.index] ?? null
+  }
+
+  /** Move focus; dx/dy in grid steps. The first move lands on the first visible button. */
+  move(dx: number, dy: number): void {
+    const list = this.visible()
+    if (!list.length) return
+    let i = this.index
+    if (i < 0 || i >= list.length) i = 0
+    else if (this.cols > 0) i = Math.max(0, Math.min(list.length - 1, i + dx + dy * this.cols))
+    else i = nearestInDirection(list, i, dx, dy)
+    this.focusIndex(list, i)
+  }
+
+  /** Focus a specific button (e.g. after a list scrolled under the focus). */
+  focus(b: UIButton): void {
+    const list = this.visible()
+    const i = list.indexOf(b)
+    if (i >= 0) this.focusIndex(list, i)
+  }
+
+  /** Activate the focused button; returns false when nothing is focused. */
+  activate(): boolean {
+    const b = this.current
+    if (!b) return false
+    b.activate()
+    return true
+  }
+
+  clear(): void {
+    for (const b of this.buttons()) b.setFocused(false)
+    this.index = -1
+  }
+
+  private focusIndex(list: UIButton[], i: number): void {
+    for (const b of this.buttons()) b.setFocused(false)
+    this.index = i
+    list[i].setFocused(true)
+  }
+
+  private visible(): UIButton[] {
+    return this.buttons().filter((b) => b.visible && b.parent?.visible !== false)
+  }
+}
+
+/** The button nearest to `list[from]` in the (dx, dy) direction (stays put when there is none). */
+function nearestInDirection(list: UIButton[], from: number, dx: number, dy: number): number {
+  const center = (b: UIButton): { x: number; y: number } => {
+    const p = b.getGlobalPosition()
+    return { x: p.x + b.width / 2, y: p.y + b.height / 2 }
+  }
+  const c = center(list[from])
+  let best = from
+  let bestScore = Infinity
+  list.forEach((b, j) => {
+    if (j === from) return
+    const p = center(b)
+    const ax = p.x - c.x
+    const ay = p.y - c.y
+    const along = dx !== 0 ? ax * dx : ay * dy
+    if (along <= 2) return
+    const across = dx !== 0 ? Math.abs(ay) : Math.abs(ax)
+    const score = along + across * 2.5
+    if (score < bestScore) {
+      bestScore = score
+      best = j
+    }
+  })
+  return best
 }

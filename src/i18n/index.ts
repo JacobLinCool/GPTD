@@ -63,7 +63,8 @@ export function t(key: string, params?: Record<string, string | number>, fallbac
 }
 
 // ---- content display helpers (English source lives in content.ts) ----
-import type { IncidentDef, ModelDef, RequestTypeDef, TowerDef, UpgradeDef, WaveDef } from '../core/types'
+import type { IncidentDef, ModelDef, RequestTypeDef, ServerHardwareDef, TowerDef, UpgradeDef, WaveDef } from '../core/types'
+import { WAVES } from '../sim/content'
 
 /**
  * A checkpoint's display name. Base roster models look up `model.<id>.name`
@@ -79,11 +80,16 @@ export const modelName = (m: ModelDef | null | undefined): string =>
 export const reqName = (d: RequestTypeDef) => t(`req.${d.id}.name`, undefined, d.name)
 export const reqDesc = (d: RequestTypeDef) => t(`req.${d.id}.desc`, undefined, d.desc)
 export const towerName = (d: TowerDef) => t(`tower.${d.id}.name`, undefined, d.name)
+/** A hardware tier's display name (the rack's CURRENT tier: inspect title, hover card, blueprint). */
+export const hwName = (hw: ServerHardwareDef) => t(`hw.${hw.id}.name`, undefined, hw.name)
 export const towerTagline = (d: TowerDef) => t(`tower.${d.id}.tagline`, undefined, d.tagline)
 export const towerDesc = (d: TowerDef) => t(`tower.${d.id}.desc`, undefined, d.desc)
 export const incName = (i: IncidentDef) => t(`inc.${i.id}.name`, undefined, i.name)
 export const incDesc = (i: IncidentDef) => t(`inc.${i.id}.desc`, undefined, i.desc)
 export const upName = (u: UpgradeDef) => t(`up.${u.id}.name`, undefined, u.name)
 export const upDesc = (u: UpgradeDef) => t(`up.${u.id}.desc`, undefined, u.desc)
-export const waveName = (w: WaveDef, i: number) => t(`wave.${i}.name`, undefined, w.name)
-export const waveBrief = (w: WaveDef, i: number) => t(`wave.${i}.brief`, undefined, w.brief)
+/** An endless surge (index past the authored campaign) is named by its surge number in every locale. */
+export const waveName = (w: WaveDef, i: number) =>
+  i >= WAVES.length ? t('next.endlessTitle', { n: i - WAVES.length + 1 }) : t(`wave.${i}.name`, undefined, w.name)
+export const waveBrief = (w: WaveDef, i: number) =>
+  i >= WAVES.length ? t('next.endlessBrief') : t(`wave.${i}.brief`, undefined, w.brief)

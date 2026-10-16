@@ -6,10 +6,26 @@ import type {
   ResearchDef,
   ResearchSlot,
   ResearchTrack,
+  Tower,
 } from '../core/types'
-import { HARDWARE_DEFS, INFRA_NODES, METHOD_RECIPES, RESEARCH_DEFS, RESEARCH_MAX_SHARE } from './content'
-import { hasLab, lvl } from './effects'
-import { deriveModel, postTrainComputeCost, postTrainDataCost, resolveModel } from './models'
+import {
+  HARDWARE_DEFS,
+  INFRA_NODES,
+  METHOD_RECIPES,
+  RESEARCH_DEFS,
+  RESEARCH_MAX_SHARE,
+  RESEARCH_TARGET_SECONDS,
+} from './content'
+import { hasLab, isBlackwell, lvl } from './effects'
+import {
+  deriveModel,
+  EFFORT_NOTCHES,
+  mergeCompatible,
+  postTrainComputeCost,
+  postTrainDataCost,
+  resolveModel,
+  runBaseDepth,
+} from './models'
 
 /** Tech/eval nodes sharing a techId stack levels; a node's level is its position. */
 export function researchLevelOf(def: ResearchDef): number {
@@ -49,9 +65,33 @@ export function researchPrereqsMet(s: GameState, def: ResearchDef): boolean {
   })
 }
 
-/** Can the project be started right now (ignoring the Data bill)? */
+/** A researched node this one is mutually exclusive with (§4.3 chunked ⟂ disagg, §4.9 SGLang ⟂ TensorRT-LLM), if any. */
+export function researchConflict(s: GameState, def: ResearchDef): string | null {
+  for (const id of INFRA_NODES[def.id]?.conflicts ?? []) {
+    const other = RESEARCH_DEFS[id]
+    if (other && researchOwned(s, other)) return id
+  }
+  return null
+}
+
+/** A Blackwell-only technique (NVFP4) needs a Blackwell rack on the board to be worth anything. */
+export function researchNeedsBlackwell(s: GameState, def: ResearchDef): boolean {
+  if (!INFRA_NODES[def.id]?.requiresBlackwell) return false
+  return !s.towers.some((t) => t.def.kind === 'server' && isBlackwell(t.hwId ? HARDWARE_DEFS[t.hwId] : null))
+}
+
+/**
+ * Can the project be started right now (ignoring the Data bill)? Prerequisites met, not a
+ * conflicting alternative of something already researched, and — for a Blackwell-only
+ * technique — a Blackwell rack to run it on. One rule for the UI, the agent bridge and the demo.
+ */
 export function researchUnlocked(s: GameState, def: ResearchDef): boolean {
-  return !researchOwned(s, def) && researchPrereqsMet(s, def)
+  return (
+    !researchOwned(s, def) &&
+    researchPrereqsMet(s, def) &&
+    researchConflict(s, def) === null &&
+    !researchNeedsBlackwell(s, def)
+  )
 }
 
 /**
@@ -70,7 +110,7 @@ export function startResearch(s: GameState, id: string): boolean {
   if (s.data < def.dataCost) return false
   s.data -= def.dataCost
   s.research[track] = { id, kind: track, progress: 0, compute: def.compute }
-  s.events.push({ type: 'train' })
+  s.events.push({ type: 'research-start', id, track })
   return true
 }
 
@@ -111,14 +151,21 @@ export function canPostTrain(
     const id = baseIds[i]
     if (!resolveModel(s, id) || !s.models[id]) return false // base not resolvable / not owned
   }
+  // §2.6 a merge averages two DISTINCT checkpoints of one base with one body
+  if (method === 'merge' && !mergeCompatible(s, baseIds[0], baseIds[1])) return false
   return true
+}
+
+/** Is `effort` one of the Studio's effort notches (the only efforts a run may be started at)? */
+export function validEffort(effort: unknown): effort is number {
+  return typeof effort === 'number' && (EFFORT_NOTCHES as readonly number[]).includes(effort)
 }
 
 /**
  * §1 Start a post-training run on the posttrain track (§4.5 / C7). Validates via
- * `canPostTrain`, pays the Data cost up front, then creates a posttrain slot with
- * `compute = computeCost` and the `meta` payload. On completion (updateResearch →
- * completeResearch) `deriveModel(s, meta)` snapshots the derived checkpoint.
+ * `canPostTrain` and the effort notch, pays the Data cost up front, then creates a
+ * posttrain slot with `compute = computeCost` and the `meta` payload. On completion
+ * (updateResearch → completeResearch) `deriveModel(s, meta)` snapshots the derived checkpoint.
  */
 export function startPostTrain(
   s: GameState,
@@ -128,10 +175,15 @@ export function startPostTrain(
   effort: number,
 ): boolean {
   if (!canPostTrain(s, baseIds, method, target)) return false
+  // the effort is one of the Studio notches: a negative, zero, fractional or non-numeric effort
+  // (an agent's raw argument) would mint Data, a free copy or a NaN checkpoint
+  if (!validEffort(effort)) return false
   const recipe = METHOD_RECIPES[method]
   const base = resolveModel(s, baseIds[0])
   if (!base) return false
-  const baseDepth = base.lineage?.depth ?? 0
+  // a merge is as deep as its deeper parent, whichever one is listed first
+  const other = method === 'merge' ? resolveModel(s, baseIds[1]) : null
+  const baseDepth = runBaseDepth(base, other)
   const dataCost = postTrainDataCost(recipe, effort, baseDepth, base.paramsTotalB)
   if (s.data < dataCost) return false
   const computeCost = postTrainComputeCost(recipe, base.paramsActiveB, effort, baseDepth, base.paramsTotalB)
@@ -150,7 +202,7 @@ export function startPostTrain(
       startWave: s.waveIndex,
     },
   }
-  s.events.push({ type: 'train' })
+  s.events.push({ type: 'research-start', id: s.research.posttrain.id, track: 'posttrain' })
   return true
 }
 
@@ -159,26 +211,121 @@ function rackFlops(hwId: string | undefined): number {
   return hwId ? (HARDWARE_DEFS[hwId]?.bf16Tflops ?? 0) : 0
 }
 
-/** The fleet's aggregate training throughput (sum of server racks' bf16 TFLOPS). */
+/** The fleet's aggregate training throughput (sum of server racks' bf16 TFLOPS), dark racks included. */
 function fleetFlops(s: GameState): number {
   return s.towers.reduce((n, t) => n + (t.def.kind === 'server' ? rackFlops(t.hwId) : 0), 0)
 }
 
-/**
- * The shared requisition pool across all active tracks: capped at
- * RESEARCH_MAX_SHARE of the fleet so serving never fully stops (§4.5 / C7).
- */
-export function requisitionTarget(s: GameState): number {
-  if (!anyResearchActive(s)) return 0
-  return fleetFlops(s) * RESEARCH_MAX_SHARE
+/** The server racks that are lit right now (not browned out, not liquid-gated): the ones that can serve or train. */
+function onlineServers(s: GameState): Tower[] {
+  return s.towers.filter((t) => t.def.kind === 'server' && t.online)
+}
+
+/** The bf16 TFLOPS of the lit racks: the serving compute research borrows from. */
+function onlineFlops(s: GameState): number {
+  return onlineServers(s).reduce((n, t) => n + rackFlops(t.hwId), 0)
 }
 
 /**
- * Advance every active track by one wave tick. The three tracks SHARE one
- * requisition pool (§4.5 / C7): requisition the strongest ONLINE racks up to
- * the pool (browned-out racks can neither serve nor train and don't eat the
- * budget), then split the requisitioned rate EQUALLY across the active tracks —
- * so running two tracks halves each one's speed (compute is genuinely shared).
+ * The ceiling of the shared requisition pool across all active tracks: RESEARCH_MAX_SHARE
+ * of the ONLINE fleet's FLOPS, so serving never fully stops (§4.5 / C7). A browned-out or
+ * liquid-gated rack serves nothing, so it never counts toward what research may borrow.
+ */
+function poolCap(s: GameState): number {
+  return onlineFlops(s) * RESEARCH_MAX_SHARE
+}
+
+/**
+ * WHICH racks research lends (§4.5 / C7): whole racks, strongest first, that FIT under the
+ * RESEARCH_MAX_SHARE pool of the online fleet — a rack that would push the lent FLOPS past
+ * the cap is skipped (the granularity rounds DOWN, never over the cap). If nothing fits (e.g.
+ * two equal racks), the weakest online rack is lent so research can still move — but never
+ * the last one: a single-rack datacenter keeps serving and its research waits. Browned-out
+ * racks can neither serve nor train and are never picked.
+ */
+export function requisitionPick(s: GameState): Tower[] {
+  const online = onlineServers(s).sort((a, b) => rackFlops(b.hwId) - rackFlops(a.hwId) || a.id - b.id)
+  const pool = poolCap(s)
+  const pick: Tower[] = []
+  let taken = 0
+  for (const t of online) {
+    const f = rackFlops(t.hwId)
+    if (taken + f <= pool) {
+      pick.push(t)
+      taken += f
+    }
+  }
+  if (!pick.length && online.length >= 2) pick.push(online[online.length - 1])
+  return pick
+}
+
+/** What lending racks to research would look like right now (pure; the R&D / Studio preview). */
+export interface RequisitionPreview {
+  /** the racks that would train (strongest that fit the cap). */
+  rackIds: number[]
+  /** bf16 TFLOPS those racks contribute (at their current thermal throttle). */
+  lentTflops: number
+  /** the fleet's total bf16 TFLOPS (dark racks included) and the lit racks' share of it. */
+  fleetTflops: number
+  onlineTflops: number
+  /** the RESEARCH_MAX_SHARE cap on lending, of the ONLINE fleet. */
+  capTflops: number
+  /** share (0..1) of the online fleet's serving compute that is lent while training. */
+  servingLoss: number
+  /** concurrent research tracks that would share the lent compute (incl. the new project). */
+  tracks: number
+  /** this project's training rate (TFLOPS, after the per-track split). */
+  ratePerSec: number
+  /** board seconds of wave time the project needs, and that as waves of ~RESEARCH_TARGET_SECONDS. */
+  seconds: number
+  waves: number
+  /** true when the fleet cannot lend anything (fewer than two online racks). */
+  blocked: boolean
+}
+
+/**
+ * Preview the requisition for a project of `compute` TF·s (pure — no state change): which
+ * racks would be lent, the serving compute lost while they train, and how long it would
+ * take. `includeNew` adds the project as one more track (a run not yet started); pass
+ * false to preview a project that is already running. Research only advances during waves,
+ * so `waves` divides the board seconds by `waveSeconds` (the caller may pass the next
+ * wave's projected length; RESEARCH_TARGET_SECONDS otherwise).
+ */
+export function requisitionPreview(
+  s: GameState,
+  compute: number,
+  includeNew = true,
+  waveSeconds: number = RESEARCH_TARGET_SECONDS,
+): RequisitionPreview {
+  const pick = requisitionPick(s)
+  const fleet = fleetFlops(s)
+  const online = onlineFlops(s)
+  const lent = pick.reduce((n, t) => n + rackFlops(t.hwId) * (t.throttle > 0 ? t.throttle : 1), 0)
+  const running = (['infra', 'posttrain', 'eval'] as const).filter((tr) => s.research[tr] != null).length
+  const tracks = Math.max(1, running + (includeNew ? 1 : 0))
+  const ratePerSec = lent / tracks
+  const seconds = ratePerSec > 0 ? Math.max(0, compute) / ratePerSec : Infinity
+  return {
+    rackIds: pick.map((t) => t.id),
+    lentTflops: lent,
+    fleetTflops: fleet,
+    onlineTflops: online,
+    capTflops: poolCap(s),
+    servingLoss: online > 0 ? pick.reduce((n, t) => n + rackFlops(t.hwId), 0) / online : 0,
+    tracks,
+    ratePerSec,
+    seconds,
+    waves: Number.isFinite(seconds) ? seconds / Math.max(1, waveSeconds) : Infinity,
+    blocked: pick.length === 0,
+  }
+}
+
+/**
+ * Advance every active track by one wave tick. The three tracks SHARE one requisition
+ * pool (§4.5 / C7): lend the strongest online racks that fit under the cap
+ * (requisitionPick), then split exactly the lent rate EQUALLY across the active tracks —
+ * so running two tracks halves each one's speed (compute is genuinely shared), and
+ * nothing lent is ever wasted.
  */
 export function updateResearch(s: GameState, dt: number): void {
   const tracks: ResearchTrack[] = ['infra', 'posttrain', 'eval']
@@ -188,29 +335,14 @@ export function updateResearch(s: GameState, dt: number): void {
     return
   }
 
-  const pool = requisitionTarget(s)
-  const servers = s.towers
-    .filter((t) => t.def.kind === 'server')
-    .sort((a, b) => rackFlops(b.hwId) - rackFlops(a.hwId) || a.id - b.id)
-  let taken = 0
+  const pick = new Set(requisitionPick(s))
   let rate = 0
-  for (const t of servers) {
-    // a browned-out rack can neither serve nor train — it must not eat the
-    // requisition budget (else dark racks block live ones from training)
-    if (!t.online) {
-      t.training = false
-      continue
-    }
-    if (taken < pool) {
-      t.training = true
-      taken += rackFlops(t.hwId)
-      rate += rackFlops(t.hwId) * t.throttle
-    } else {
-      t.training = false
-    }
+  for (const t of s.towers) {
+    if (t.def.kind !== 'server') continue
+    t.training = pick.has(t)
+    if (t.training) rate += rackFlops(t.hwId) * t.throttle
   }
-  // the requisitioned rate never exceeds the shared pool, split equally per track
-  const perTrackRate = Math.min(rate, pool) / active.length
+  const perTrackRate = rate / active.length
   for (const tr of active) {
     const slot = s.research[tr]
     if (!slot) continue
@@ -234,18 +366,16 @@ export function applyInfraEffects(s: GameState, effects: InfraNodeDef['effects']
       case 'multiStep': inf.scheduling.multiStep += v; break
       case 'chunked': inf.scheduling.chunked = true; break
       case 'disagg': inf.disagg = true; break
-      // throughput lift (multi-step / engine / data-parallel)
-      case 'throughput': inf.throughput += v; break
       // kv-memory
       case 'kvUtilization': inf.kv.utilization = Math.max(inf.kv.utilization, v); break
       case 'prefixHitCeil': inf.kv.prefixHitCeil = Math.max(inf.kv.prefixHitCeil, v); break
       case 'kvQuantBytes': inf.kv.quantBytes = Math.min(inf.kv.quantBytes, v); break
       case 'offloadGb': inf.kv.offloadGb += v; break
       case 'flash': inf.kv.flash += v; break
-      // weight-quant (PTQ)
-      case 'weightQuantBytes':
-        inf.weightQuantBytes = Math.min(inf.weightQuantBytes, v) as 2 | 1 | 0.5
-        break
+      // weight formats (PTQ): each rack then picks its own precision among the researched ones
+      case 'quantFp8': inf.quant.fp8 = true; break
+      case 'quantInt4': inf.quant.int4 = true; break
+      case 'quantNvfp4': inf.quant.nvfp4 = true; break
       // decoding
       case 'specEnabled': inf.spec.enabled = true; break
       case 'specLevel': inf.spec.level = Math.max(inf.spec.level, v); break
@@ -270,7 +400,10 @@ function completeResearch(s: GameState, track: ResearchTrack): void {
     // §1 a Post-Training Studio run: snapshot the derived model (writes
     // s.derivedModels[id] + s.models[id]) and emit research-done with its id.
     const derived = deriveModel(s, slot.meta)
-    if (derived) s.events.push({ type: 'research-done', id: derived.id })
+    if (derived) {
+      s.events.push({ type: 'posttrain-done', modelId: derived.id })
+      s.events.push({ type: 'research-done', id: derived.id })
+    }
   } else {
     const def = slot ? RESEARCH_DEFS[slot.id] : null
     if (def) {

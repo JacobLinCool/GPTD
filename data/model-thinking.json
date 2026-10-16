@@ -1,0 +1,915 @@
+{
+  "_comment": "Per-checkpoint thinking support, keyed by the Hugging Face repo (like data/model-arch.json). mode: 'hybrid' = the serving stack can switch thinking off per request (the `toggle`), so the engine answers interactive traffic in instant mode; 'always' = every answer reasons first (`toggle` is then its effort knob, 'none' when it has none); 'never' = an instruct deployment that answers at once. `default` is the template's mode when the request sets nothing. Evidence: `quote` appears verbatim in `source` (the chat template, the card or the encoding script of the repo); `noThinking` = the template has no thinking block at all. `template` records a hybrid template whose roster entry is served thinking-off. Fetch + verify: `node scripts/thinking-sync.mjs fetch && node scripts/thinking-sync.mjs verify`; `node scripts/arch-sync.mjs build` emits the mode into src/sim/roster.arch.generated.ts.",
+  "models": {
+    "ai21labs/AI21-Jamba-Reasoning-3B": {
+      "mode": "always",
+      "toggle": "none",
+      "source": "tokenizer_config.json",
+      "quote": "{{- '<think>\\n' }}",
+      "note": "a reasoning model"
+    },
+    "ai9stars/G9v3-39A5B": {
+      "mode": "hybrid",
+      "toggle": "enable_thinking=False",
+      "default": "adaptive",
+      "source": "chat_template.jinja",
+      "quote": "{%- if enable_thinking is false %}"
+    },
+    "baidu/ERNIE-4.5-300B-A47B-PT": {
+      "mode": "never",
+      "toggle": "—",
+      "source": "chat_template.jinja",
+      "noThinking": true
+    },
+    "deepseek-ai/DeepSeek-R1-0528": {
+      "mode": "always",
+      "toggle": "none",
+      "source": "README.md",
+      "quote": "improved its depth of reasoning",
+      "note": "a reasoning model"
+    },
+    "deepseek-ai/DeepSeek-R1-0528-Qwen3-8B": {
+      "mode": "always",
+      "toggle": "none",
+      "source": "README.md",
+      "quote": "improved its depth of reasoning",
+      "note": "a reasoning model"
+    },
+    "deepseek-ai/DeepSeek-R1-Distill-Llama-70B": {
+      "mode": "always",
+      "toggle": "none",
+      "source": "tokenizer_config.json",
+      "quote": "{{'<｜Assistant｜><think>\\n'}}",
+      "note": "an R1 distill: always reasons"
+    },
+    "deepseek-ai/DeepSeek-V3": {
+      "mode": "never",
+      "toggle": "—",
+      "source": "tokenizer_config.json",
+      "noThinking": true
+    },
+    "deepseek-ai/DeepSeek-V3.1": {
+      "mode": "hybrid",
+      "toggle": "thinking=False",
+      "default": "instant",
+      "source": "tokenizer_config.json",
+      "quote": "{%- if not thinking %}{{'</think>'}}"
+    },
+    "deepseek-ai/DeepSeek-V3.2-Exp": {
+      "mode": "hybrid",
+      "toggle": "thinking=False",
+      "default": "instant",
+      "source": "tokenizer_config.json",
+      "quote": "{%- if not thinking %}{{'</think>'}}"
+    },
+    "deepseek-ai/DeepSeek-V4-Flash-0731": {
+      "mode": "hybrid",
+      "toggle": "thinking_mode=\"chat\"",
+      "default": "thinking",
+      "source": "encoding/encoding_dsv4.py",
+      "quote": "thinking_mode: Either \"chat\" or \"thinking\".",
+      "note": "no Jinja template: the release ships encoding/encoding_dsv4.py, whose encode_messages takes thinking_mode \"chat\" or \"thinking\""
+    },
+    "deepseek-ai/DeepSeek-V4-Pro-0813": {
+      "mode": "hybrid",
+      "toggle": "thinking_mode=\"chat\"",
+      "default": "thinking",
+      "source": "encoding/encoding_dsv4.py",
+      "quote": "thinking_mode: Either \"chat\" or \"thinking\".",
+      "note": "no Jinja template: the release ships encoding/encoding_dsv4.py, whose encode_messages takes thinking_mode \"chat\" or \"thinking\""
+    },
+    "deepseek-ai/DeepSeek-V4.1-Flash": {
+      "mode": "hybrid",
+      "toggle": "enable_thinking=False (thinking_mode \"chat\")",
+      "default": "thinking",
+      "source": "chat_template.jinja",
+      "quote": "set thinking_mode = \"chat\" if (enable_thinking is defined and enable_thinking is not none and not enable_thinking) else \"thinking\""
+    },
+    "google/gemma-3-12b-it": {
+      "mode": "never",
+      "toggle": "—",
+      "source": "README.md",
+      "note": "gated template; Gemma 3 / 3n ship no thinking mode (Google's Gemma 4 card benchmarks \"Gemma 3 27B (no think)\")"
+    },
+    "google/gemma-3-1b-it": {
+      "mode": "never",
+      "toggle": "—",
+      "source": "README.md",
+      "note": "gated template; Gemma 3 / 3n ship no thinking mode (Google's Gemma 4 card benchmarks \"Gemma 3 27B (no think)\")"
+    },
+    "google/gemma-3-27b-it": {
+      "mode": "never",
+      "toggle": "—",
+      "source": "README.md",
+      "note": "gated template; Gemma 3 / 3n ship no thinking mode (Google's Gemma 4 card benchmarks \"Gemma 3 27B (no think)\")"
+    },
+    "google/gemma-3-4b-it": {
+      "mode": "never",
+      "toggle": "—",
+      "source": "README.md",
+      "note": "gated template; Gemma 3 / 3n ship no thinking mode (Google's Gemma 4 card benchmarks \"Gemma 3 27B (no think)\")"
+    },
+    "google/gemma-3n-E2B-it": {
+      "mode": "never",
+      "toggle": "—",
+      "source": "README.md",
+      "note": "gated template; Gemma 3 / 3n ship no thinking mode (Google's Gemma 4 card benchmarks \"Gemma 3 27B (no think)\")"
+    },
+    "google/gemma-3n-E4B-it": {
+      "mode": "never",
+      "toggle": "—",
+      "source": "README.md",
+      "note": "gated template; Gemma 3 / 3n ship no thinking mode (Google's Gemma 4 card benchmarks \"Gemma 3 27B (no think)\")"
+    },
+    "google/gemma-4-12B-it": {
+      "mode": "hybrid",
+      "toggle": "enable_thinking=False",
+      "default": "instant",
+      "source": "chat_template.jinja",
+      "quote": "{{- '<|channel>thought\\n<channel|>' -}}",
+      "note": "thinking is opt-in (enable_thinking=True); the roster pins the thinking variant"
+    },
+    "google/gemma-4-26B-A4B-it": {
+      "mode": "hybrid",
+      "toggle": "enable_thinking=False",
+      "default": "instant",
+      "source": "chat_template.jinja",
+      "quote": "{{- '<|channel>thought\\n<channel|>' -}}",
+      "note": "thinking is opt-in (enable_thinking=True); the roster pins the thinking variant"
+    },
+    "google/gemma-4-31B-it": {
+      "mode": "hybrid",
+      "toggle": "enable_thinking=False",
+      "default": "instant",
+      "source": "chat_template.jinja",
+      "quote": "{{- '<|channel>thought\\n<channel|>' -}}",
+      "note": "thinking is opt-in (enable_thinking=True); the roster pins the thinking variant"
+    },
+    "google/gemma-4-E2B-it": {
+      "mode": "hybrid",
+      "toggle": "enable_thinking=False",
+      "default": "instant",
+      "source": "chat_template.jinja",
+      "quote": "set enable_thinking = enable_thinking | default(false)",
+      "note": "thinking is opt-in (enable_thinking=True); the roster pins the thinking variant"
+    },
+    "google/gemma-4-E4B-it": {
+      "mode": "hybrid",
+      "toggle": "enable_thinking=False",
+      "default": "instant",
+      "source": "chat_template.jinja",
+      "quote": "set enable_thinking = enable_thinking | default(false)",
+      "note": "thinking is opt-in (enable_thinking=True); the roster pins the thinking variant"
+    },
+    "ibm-granite/granite-3.3-8b-instruct": {
+      "mode": "never",
+      "toggle": "—",
+      "template": "hybrid",
+      "source": "README.md",
+      "quote": "thinking=True",
+      "note": "thinking is opt-in (thinking=True); the roster entry is the non-reasoning deployment (pinned on AA's Non-reasoning row), so it is served thinking-off"
+    },
+    "ibm-granite/granite-4.0-1b": {
+      "mode": "never",
+      "toggle": "—",
+      "source": "chat_template.jinja",
+      "noThinking": true
+    },
+    "ibm-granite/granite-4.0-h-1b": {
+      "mode": "never",
+      "toggle": "—",
+      "source": "chat_template.jinja",
+      "noThinking": true
+    },
+    "ibm-granite/granite-4.0-h-small": {
+      "mode": "never",
+      "toggle": "—",
+      "source": "chat_template.jinja",
+      "noThinking": true
+    },
+    "ibm-granite/granite-4.0-micro": {
+      "mode": "never",
+      "toggle": "—",
+      "source": "chat_template.jinja",
+      "noThinking": true
+    },
+    "ibm-granite/granite-4.1-30b": {
+      "mode": "never",
+      "toggle": "—",
+      "source": "chat_template.jinja",
+      "noThinking": true
+    },
+    "ibm-granite/granite-4.1-3b": {
+      "mode": "never",
+      "toggle": "—",
+      "source": "chat_template.jinja",
+      "noThinking": true
+    },
+    "ibm-granite/granite-4.1-8b": {
+      "mode": "never",
+      "toggle": "—",
+      "source": "chat_template.jinja",
+      "noThinking": true
+    },
+    "ibm-granite/granite-4.2-30b": {
+      "mode": "hybrid",
+      "toggle": "enable_thinking=False",
+      "default": "thinking",
+      "source": "chat_template.jinja",
+      "quote": "{{- '<|im_start|>assistant\\n<think></think>' }}"
+    },
+    "ibm-granite/granite-4.2-3b": {
+      "mode": "hybrid",
+      "toggle": "enable_thinking=False",
+      "default": "thinking",
+      "source": "chat_template.jinja",
+      "quote": "{{- '<|im_start|>assistant\\n<think></think>' }}"
+    },
+    "ibm-granite/granite-4.2-8b": {
+      "mode": "hybrid",
+      "toggle": "enable_thinking=False",
+      "default": "thinking",
+      "source": "chat_template.jinja",
+      "quote": "{{- '<|im_start|>assistant\\n<think></think>' }}"
+    },
+    "IFM/K2-Horizon-0.9B": {
+      "mode": "always",
+      "toggle": "reasoning_effort (high / medium / low)",
+      "source": "chat_template.jinja",
+      "quote": "{{- '<|ifm|im_start|>assistant\\n<ifm|think_faster>\\n' }}"
+    },
+    "IFM/K2-Horizon-3.7B": {
+      "mode": "always",
+      "toggle": "reasoning_effort (high / medium / low)",
+      "source": "chat_template.jinja",
+      "quote": "Supported values: high, medium, low."
+    },
+    "IFM/K2-Horizon-375B-A23B": {
+      "mode": "always",
+      "toggle": "reasoning_effort (high / medium / low)",
+      "source": "chat_template.jinja",
+      "quote": "Supported values: high, medium, low."
+    },
+    "IFM/K2-Horizon-7B": {
+      "mode": "always",
+      "toggle": "reasoning_effort (high / medium / low)",
+      "source": "chat_template.jinja",
+      "quote": "Supported values: high, medium, low."
+    },
+    "IFM/K2-Horizon-MoVA-36B-A4B": {
+      "mode": "always",
+      "toggle": "reasoning_effort (high / medium / low)",
+      "source": "chat_template.jinja",
+      "quote": "Supported values: high, medium, low."
+    },
+    "inclusionAI/Ling-3.0-flash": {
+      "mode": "hybrid",
+      "toggle": "enable_thinking=False (thinking_option \"off\")",
+      "default": "thinking",
+      "source": "chat_template.jinja",
+      "quote": "{%- elif thinking_option == 'off' %}"
+    },
+    "inclusionAI/Ling-3.0-tiny": {
+      "mode": "hybrid",
+      "toggle": "enable_thinking=False (thinking_option \"off\")",
+      "default": "thinking",
+      "source": "chat_template.jinja",
+      "quote": "{%- elif thinking_option == 'off' %}"
+    },
+    "inclusionAI/Ling-3.1-flash": {
+      "mode": "hybrid",
+      "toggle": "enable_thinking=False (thinking_option \"off\")",
+      "default": "thinking",
+      "source": "chat_template.jinja",
+      "quote": "{%- elif thinking_option == 'off' %}"
+    },
+    "LGAI-EXAONE/EXAONE-4.0-1.2B": {
+      "mode": "hybrid",
+      "toggle": "enable_thinking=False",
+      "default": "instant",
+      "source": "chat_template.jinja",
+      "quote": "enable_thinking is defined and enable_thinking is true"
+    },
+    "LGAI-EXAONE/EXAONE-4.0-32B": {
+      "mode": "hybrid",
+      "toggle": "enable_thinking=False",
+      "default": "instant",
+      "source": "chat_template.jinja",
+      "quote": "enable_thinking is defined and enable_thinking is true"
+    },
+    "LGAI-EXAONE/EXAONE-4.5-33B": {
+      "mode": "hybrid",
+      "toggle": "enable_thinking=False",
+      "default": "thinking",
+      "source": "chat_template.jinja",
+      "quote": "enable_thinking is not defined or enable_thinking is true"
+    },
+    "LGAI-EXAONE/K-EXAONE-2.0-750B-A37B": {
+      "mode": "hybrid",
+      "toggle": "enable_thinking=False",
+      "default": "thinking",
+      "source": "chat_template.jinja",
+      "quote": "enable_thinking is not defined or enable_thinking is true"
+    },
+    "LiquidAI/LFM2-1.2B": {
+      "mode": "never",
+      "toggle": "—",
+      "source": "chat_template.jinja",
+      "noThinking": true
+    },
+    "LiquidAI/LFM2-2.6B": {
+      "mode": "never",
+      "toggle": "—",
+      "source": "chat_template.jinja",
+      "noThinking": true
+    },
+    "LiquidAI/LFM2-24B-A2B": {
+      "mode": "never",
+      "toggle": "—",
+      "source": "README.md",
+      "quote": "LFM2-24B-A2B is a general-purpose instruct model (without reasoning traces)"
+    },
+    "LiquidAI/LFM2-8B-A1B": {
+      "mode": "never",
+      "toggle": "—",
+      "source": "chat_template.jinja",
+      "noThinking": true
+    },
+    "LiquidAI/LFM2.5-1.2B-Thinking": {
+      "mode": "always",
+      "toggle": "none",
+      "source": "README.md",
+      "quote": "| [**LFM2.5-1.2B-Thinking**](https://huggingface.co/LiquidAI/LFM2.5-1.2B-Thinking) | 1.2B | General-purpose reasoning model |",
+      "note": "a dedicated Thinking checkpoint; LFM2.5-1.2B-Instruct is a separate model"
+    },
+    "LiquidAI/LFM2.5-2.6B": {
+      "mode": "always",
+      "toggle": "none",
+      "source": "README.md",
+      "quote": "LFM2.5-2.6B is a pure reasoning model that always thinks before it answers.",
+      "note": "a pure reasoning model"
+    },
+    "LiquidAI/LFM2.5-8B-A1B": {
+      "mode": "always",
+      "toggle": "none",
+      "source": "README.md",
+      "quote": "Because LFM2.5-8B-A1B is a reasoning model, assistant turns contain an explicit chain of thought before the final answer.",
+      "note": "a reasoning-tuned model"
+    },
+    "meituan-longcat/LongCat-2.0": {
+      "mode": "hybrid",
+      "toggle": "enable_thinking=False (/think_off)",
+      "default": "thinking",
+      "source": "tokenizer_config.json",
+      "quote": "{%- elif enable_thinking == false -%}"
+    },
+    "meta-llama/Llama-3.1-405B-Instruct": {
+      "mode": "never",
+      "toggle": "—",
+      "source": "README.md",
+      "note": "gated template; Llama 3.x Instruct has no thinking mode"
+    },
+    "meta-llama/Llama-3.1-70B-Instruct": {
+      "mode": "never",
+      "toggle": "—",
+      "source": "README.md",
+      "note": "gated template; Llama 3.x Instruct has no thinking mode"
+    },
+    "meta-llama/Llama-3.1-8B-Instruct": {
+      "mode": "never",
+      "toggle": "—",
+      "source": "README.md",
+      "note": "gated template; Llama 3.x Instruct has no thinking mode"
+    },
+    "meta-llama/Llama-3.2-1B-Instruct": {
+      "mode": "never",
+      "toggle": "—",
+      "source": "README.md",
+      "note": "gated template; Llama 3.x Instruct has no thinking mode"
+    },
+    "meta-llama/Llama-3.3-70B-Instruct": {
+      "mode": "never",
+      "toggle": "—",
+      "source": "README.md",
+      "note": "gated template; Llama 3.x Instruct has no thinking mode"
+    },
+    "meta-llama/Meta-Llama-3-70B-Instruct": {
+      "mode": "never",
+      "toggle": "—",
+      "source": "README.md",
+      "note": "gated template; Llama 3.x Instruct has no thinking mode"
+    },
+    "meta-llama/Meta-Llama-3-8B-Instruct": {
+      "mode": "never",
+      "toggle": "—",
+      "source": "README.md",
+      "note": "gated template; Llama 3.x Instruct has no thinking mode"
+    },
+    "meta-models/Muse-Glimmer-30B": {
+      "mode": "always",
+      "toggle": "reasoning strength (low / medium / high / xhigh)",
+      "source": "README.md",
+      "quote": "Muse Glimmer supports the following levels: low / medium / high / xhigh."
+    },
+    "meta-models/Muse-Spark-Open-816B-A42B": {
+      "mode": "always",
+      "toggle": "reasoning_effort (low / medium / high / xhigh)",
+      "source": "README.md",
+      "quote": "Any other value returns an error."
+    },
+    "microsoft/phi-4": {
+      "mode": "never",
+      "toggle": "—",
+      "source": "tokenizer_config.json",
+      "noThinking": true
+    },
+    "microsoft/Phi-4-mini-instruct": {
+      "mode": "never",
+      "toggle": "—",
+      "source": "tokenizer_config.json",
+      "noThinking": true
+    },
+    "MiniMaxAI/MiniMax-M1-80k": {
+      "mode": "always",
+      "toggle": "none",
+      "source": "README.md",
+      "quote": "the world's first open-weight, large-scale hybrid-attention reasoning model",
+      "note": "a reasoning model with 40K/80K thinking budgets"
+    },
+    "MiniMaxAI/MiniMax-M2": {
+      "mode": "always",
+      "toggle": "none",
+      "source": "chat_template.jinja",
+      "quote": "{{- ']~b]ai' ~ '\\n' ~ '<think>' ~ '\\n' }}",
+      "note": "the template always opens a <think> block"
+    },
+    "MiniMaxAI/MiniMax-M2.7": {
+      "mode": "always",
+      "toggle": "none",
+      "source": "chat_template.jinja",
+      "quote": "{{- ']~b]ai' ~ '\\n' ~ '<think>' ~ '\\n' }}",
+      "note": "the template always opens a <think> block"
+    },
+    "MiniMaxAI/MiniMax-M3": {
+      "mode": "hybrid",
+      "toggle": "thinking_mode=\"disabled\"",
+      "default": "adaptive",
+      "source": "chat_template.jinja",
+      "quote": "thinking_mode is defined and thinking_mode == \"disabled\""
+    },
+    "mistralai/Devstral-Small-2-24B-Instruct-2512": {
+      "mode": "never",
+      "toggle": "—",
+      "source": "chat_template.jinja",
+      "noThinking": true
+    },
+    "mistralai/Ministral-3-14B-Instruct-2512": {
+      "mode": "never",
+      "toggle": "—",
+      "source": "README.md",
+      "quote": "Reasoning capable",
+      "note": "the Instruct release; Mistral ships the reasoning variant as a separate \"Reasoning 2512\" checkpoint"
+    },
+    "mistralai/Ministral-3-3B-Instruct-2512": {
+      "mode": "never",
+      "toggle": "—",
+      "source": "README.md",
+      "quote": "Reasoning capable",
+      "note": "the Instruct release; Mistral ships the reasoning variant as a separate \"Reasoning 2512\" checkpoint"
+    },
+    "mistralai/Ministral-3-8B-Instruct-2512": {
+      "mode": "never",
+      "toggle": "—",
+      "source": "README.md",
+      "quote": "Reasoning capable",
+      "note": "the Instruct release; Mistral ships the reasoning variant as a separate \"Reasoning 2512\" checkpoint"
+    },
+    "mistralai/Mistral-Small-3.2-24B-Instruct-2506": {
+      "mode": "never",
+      "toggle": "—",
+      "source": "README.md",
+      "note": "Mistral ships tekken/mistral-common formats, no Jinja template; the Instruct release has no thinking mode"
+    },
+    "moonshotai/Kimi-K2-Thinking": {
+      "mode": "always",
+      "toggle": "none",
+      "source": "README.md",
+      "quote": "Kimi K2 Thinking is the latest, most capable version of open-source thinking model.",
+      "note": "a dedicated thinking checkpoint"
+    },
+    "moonshotai/Kimi-K3": {
+      "mode": "always",
+      "toggle": "reasoning_effort (low / high / max)",
+      "source": "README.md",
+      "quote": "Kimi K3 always has thinking enabled"
+    },
+    "Motif-Technologies/Motif-3": {
+      "mode": "hybrid",
+      "toggle": "enable_thinking=False",
+      "default": "thinking",
+      "source": "chat_template.jinja",
+      "quote": "{%- if enable_thinking is defined and not enable_thinking -%}"
+    },
+    "nex-agi/Nex-N2-Pro": {
+      "mode": "hybrid",
+      "toggle": "enable_thinking=False",
+      "default": "thinking",
+      "source": "chat_template.jinja",
+      "quote": "enable_thinking is defined and enable_thinking is false"
+    },
+    "NousResearch/Hermes-4-405B": {
+      "mode": "hybrid",
+      "toggle": "thinking=False",
+      "default": "instant",
+      "source": "README.md",
+      "quote": "Reasoning mode can be activated with the chat template via the flag `thinking=True`"
+    },
+    "NousResearch/Hermes-4-70B": {
+      "mode": "hybrid",
+      "toggle": "thinking=False",
+      "default": "instant",
+      "source": "README.md",
+      "quote": "Reasoning mode can be activated with the chat template via the flag `thinking=True`"
+    },
+    "nvidia/Llama-3.1-Nemotron-70B-Instruct-HF": {
+      "mode": "never",
+      "toggle": "—",
+      "source": "tokenizer_config.json",
+      "noThinking": true
+    },
+    "nvidia/Llama-3_1-Nemotron-Ultra-253B-v1": {
+      "mode": "hybrid",
+      "toggle": "system prompt \"detailed thinking off\"",
+      "default": "thinking",
+      "source": "README.md",
+      "quote": "Reasoning OFF mode"
+    },
+    "nvidia/Llama-3_3-Nemotron-Super-49B-v1": {
+      "mode": "hybrid",
+      "toggle": "system prompt \"detailed thinking off\"",
+      "default": "thinking",
+      "source": "README.md",
+      "quote": "We recommend using greedy decoding for Reasoning OFF mode"
+    },
+    "nvidia/Llama-3_3-Nemotron-Super-49B-v1_5": {
+      "mode": "hybrid",
+      "toggle": "enable_thinking=False (or /no_think)",
+      "default": "thinking",
+      "source": "tokenizer_config.json",
+      "quote": "{%- if not enable_thinking -%}{{- '<think>"
+    },
+    "nvidia/Nemotron-Cascade-2-30B-A3B": {
+      "mode": "hybrid",
+      "toggle": "enable_thinking=False",
+      "default": "thinking",
+      "source": "chat_template.jinja",
+      "quote": "{{- '<|im_start|>assistant\\n<think></think>' }}"
+    },
+    "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16": {
+      "mode": "hybrid",
+      "toggle": "enable_thinking=False",
+      "default": "thinking",
+      "source": "chat_template.jinja",
+      "quote": "{{- '<|im_start|>assistant\\n<think></think>' }}"
+    },
+    "nvidia/NVIDIA-Nemotron-3-Nano-4B-BF16": {
+      "mode": "hybrid",
+      "toggle": "enable_thinking=False",
+      "default": "thinking",
+      "source": "chat_template.jinja",
+      "quote": "{{- '<|im_start|>assistant\\n<think></think>' }}",
+      "note": "AA lists one unlabelled row; its IFBench (58.2) matches the card's reasoning-on figures, not the reasoning-off ones (43–44), so the row is the thinking variant"
+    },
+    "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16": {
+      "mode": "hybrid",
+      "toggle": "enable_thinking=False",
+      "default": "thinking",
+      "source": "chat_template.jinja",
+      "quote": "{{- '<|im_start|>assistant\\n<think></think>' }}"
+    },
+    "nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16": {
+      "mode": "hybrid",
+      "toggle": "enable_thinking=False",
+      "default": "thinking",
+      "source": "chat_template.jinja",
+      "quote": "{{- '<|im_start|>assistant\\n<think></think>' }}"
+    },
+    "nvidia/NVIDIA-Nemotron-3.5-Bolt-74B-A9B-BF16": {
+      "mode": "hybrid",
+      "toggle": "enable_thinking=False",
+      "default": "thinking",
+      "source": "chat_template.jinja",
+      "quote": "{{- '<|im_start|>assistant\\n<think></think>' }}"
+    },
+    "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16": {
+      "mode": "hybrid",
+      "toggle": "enable_thinking=False",
+      "default": "thinking",
+      "source": "chat_template.jinja",
+      "quote": "{{- '<|im_start|>assistant\\n<think></think>' }}"
+    },
+    "nvidia/NVIDIA-Nemotron-Nano-9B-v2": {
+      "mode": "hybrid",
+      "toggle": "enable_thinking=False (or /no_think)",
+      "default": "thinking",
+      "source": "tokenizer_config.json",
+      "quote": "ns.enable_thinking is defined and ns.enable_thinking is false"
+    },
+    "openai/gpt-oss-120b": {
+      "mode": "always",
+      "toggle": "reasoning_effort (low / medium / high)",
+      "source": "chat_template.jinja",
+      "quote": "{{- \"Reasoning: \" + reasoning_effort + \"\\n\\n\" }}",
+      "note": "harmony format: every answer opens the analysis channel; reasoning_effort only sets its depth"
+    },
+    "openai/gpt-oss-20b": {
+      "mode": "always",
+      "toggle": "reasoning_effort (low / medium / high)",
+      "source": "chat_template.jinja",
+      "quote": "{{- \"Reasoning: \" + reasoning_effort + \"\\n\\n\" }}",
+      "note": "harmony format: every answer opens the analysis channel; reasoning_effort only sets its depth"
+    },
+    "openbmb/MiniCPM5-2B": {
+      "mode": "hybrid",
+      "toggle": "enable_thinking=False",
+      "default": "adaptive",
+      "source": "chat_template.jinja",
+      "quote": "{%- if enable_thinking is false %}"
+    },
+    "Qwen/Qwen2.5-72B-Instruct": {
+      "mode": "never",
+      "toggle": "—",
+      "source": "tokenizer_config.json",
+      "noThinking": true
+    },
+    "Qwen/Qwen3-0.6B": {
+      "mode": "hybrid",
+      "toggle": "enable_thinking=False",
+      "default": "thinking",
+      "source": "tokenizer_config.json",
+      "quote": "enable_thinking is defined and enable_thinking is false"
+    },
+    "Qwen/Qwen3-1.7B": {
+      "mode": "hybrid",
+      "toggle": "enable_thinking=False",
+      "default": "thinking",
+      "source": "tokenizer_config.json",
+      "quote": "enable_thinking is defined and enable_thinking is false"
+    },
+    "Qwen/Qwen3-14B": {
+      "mode": "hybrid",
+      "toggle": "enable_thinking=False",
+      "default": "thinking",
+      "source": "tokenizer_config.json",
+      "quote": "enable_thinking is defined and enable_thinking is false"
+    },
+    "Qwen/Qwen3-235B-A22B-Thinking-2507": {
+      "mode": "always",
+      "toggle": "none",
+      "source": "tokenizer_config.json",
+      "quote": "{{- '<|im_start|>assistant\\n<think>\\n' }}",
+      "note": "a dedicated Thinking checkpoint; the Instruct sibling is a separate model"
+    },
+    "Qwen/Qwen3-30B-A3B-Thinking-2507": {
+      "mode": "always",
+      "toggle": "none",
+      "source": "tokenizer_config.json",
+      "quote": "{{- '<|im_start|>assistant\\n<think>\\n' }}",
+      "note": "a dedicated Thinking checkpoint; the Instruct sibling is a separate model"
+    },
+    "Qwen/Qwen3-32B": {
+      "mode": "hybrid",
+      "toggle": "enable_thinking=False",
+      "default": "thinking",
+      "source": "tokenizer_config.json",
+      "quote": "enable_thinking is defined and enable_thinking is false"
+    },
+    "Qwen/Qwen3-4B-Instruct-2507": {
+      "mode": "never",
+      "toggle": "—",
+      "source": "tokenizer_config.json",
+      "noThinking": true
+    },
+    "Qwen/Qwen3-8B": {
+      "mode": "never",
+      "toggle": "—",
+      "template": "hybrid",
+      "source": "tokenizer_config.json",
+      "quote": "enable_thinking is defined and enable_thinking is false",
+      "note": "hybrid template; the roster entry is the non-reasoning deployment (pinned on AA's Non-reasoning row), so it is served thinking-off"
+    },
+    "Qwen/Qwen3-Coder-30B-A3B-Instruct": {
+      "mode": "never",
+      "toggle": "—",
+      "source": "chat_template.jinja",
+      "noThinking": true
+    },
+    "Qwen/Qwen3-Coder-480B-A35B-Instruct": {
+      "mode": "never",
+      "toggle": "—",
+      "source": "chat_template.jinja",
+      "noThinking": true
+    },
+    "Qwen/Qwen3-Next-80B-A3B-Thinking": {
+      "mode": "always",
+      "toggle": "none",
+      "source": "tokenizer_config.json",
+      "quote": "{{- '<|im_start|>assistant\\n<think>\\n' }}",
+      "note": "a dedicated Thinking checkpoint; the Instruct sibling is a separate model"
+    },
+    "Qwen/Qwen3.5-0.8B": {
+      "mode": "never",
+      "toggle": "—",
+      "template": "hybrid",
+      "source": "chat_template.jinja",
+      "quote": "enable_thinking is defined and enable_thinking is true",
+      "note": "hybrid template with thinking opt-in; the roster entry is the non-reasoning deployment (pinned on AA's Non-reasoning row, which scores above the thinking row on GPQA/HLE/SciCode), so it is served thinking-off"
+    },
+    "Qwen/Qwen3.5-122B-A10B": {
+      "mode": "hybrid",
+      "toggle": "enable_thinking=False",
+      "default": "thinking",
+      "source": "chat_template.jinja",
+      "quote": "enable_thinking is defined and enable_thinking is false"
+    },
+    "Qwen/Qwen3.5-27B": {
+      "mode": "hybrid",
+      "toggle": "enable_thinking=False",
+      "default": "thinking",
+      "source": "chat_template.jinja",
+      "quote": "enable_thinking is defined and enable_thinking is false"
+    },
+    "Qwen/Qwen3.5-2B": {
+      "mode": "hybrid",
+      "toggle": "enable_thinking=False",
+      "default": "instant",
+      "source": "chat_template.jinja",
+      "quote": "enable_thinking is defined and enable_thinking is true",
+      "note": "thinking is opt-in (enable_thinking=True); the roster pins the thinking variant"
+    },
+    "Qwen/Qwen3.5-35B-A3B": {
+      "mode": "hybrid",
+      "toggle": "enable_thinking=False",
+      "default": "thinking",
+      "source": "chat_template.jinja",
+      "quote": "enable_thinking is defined and enable_thinking is false"
+    },
+    "Qwen/Qwen3.5-397B-A17B": {
+      "mode": "hybrid",
+      "toggle": "enable_thinking=False",
+      "default": "thinking",
+      "source": "chat_template.jinja",
+      "quote": "enable_thinking is defined and enable_thinking is false"
+    },
+    "Qwen/Qwen3.5-4B": {
+      "mode": "hybrid",
+      "toggle": "enable_thinking=False",
+      "default": "thinking",
+      "source": "chat_template.jinja",
+      "quote": "enable_thinking is defined and enable_thinking is false"
+    },
+    "Qwen/Qwen3.5-9B": {
+      "mode": "hybrid",
+      "toggle": "enable_thinking=False",
+      "default": "thinking",
+      "source": "chat_template.jinja",
+      "quote": "enable_thinking is defined and enable_thinking is false"
+    },
+    "Qwen/Qwen3.6-27B": {
+      "mode": "hybrid",
+      "toggle": "enable_thinking=False",
+      "default": "thinking",
+      "source": "chat_template.jinja",
+      "quote": "enable_thinking is defined and enable_thinking is false"
+    },
+    "Qwen/Qwen3.6-35B-A3B": {
+      "mode": "hybrid",
+      "toggle": "enable_thinking=False",
+      "default": "thinking",
+      "source": "chat_template.jinja",
+      "quote": "enable_thinking is defined and enable_thinking is false"
+    },
+    "Qwen/Qwen3.8-2.4T-A95B": {
+      "mode": "always",
+      "toggle": "reasoning_effort (xhigh / medium / low)",
+      "source": "chat_template.jinja",
+      "quote": "Disabling thinking is not supported."
+    },
+    "Qwen/Qwen3.8-27B": {
+      "mode": "hybrid",
+      "toggle": "enable_thinking=False",
+      "default": "thinking",
+      "source": "chat_template.jinja",
+      "quote": "enable_thinking is defined and enable_thinking is false"
+    },
+    "Qwen/Qwen3.8-Flash-Next": {
+      "mode": "hybrid",
+      "toggle": "enable_thinking=False",
+      "default": "thinking",
+      "source": "chat_template.jinja",
+      "quote": "enable_thinking is defined and enable_thinking is false"
+    },
+    "ServiceNow-AI/Apriel-1.5-15b-Thinker": {
+      "mode": "always",
+      "toggle": "none",
+      "source": "README.md",
+      "quote": "This model performs **extensive reasoning by default**",
+      "note": "a dedicated Thinker"
+    },
+    "ServiceNow-AI/Apriel-1.6-15b-Thinker": {
+      "mode": "always",
+      "toggle": "none",
+      "source": "chat_template.jinja",
+      "quote": "{%- set reasoning_asst_turn_start = 'Here are my reasoning steps:\\n' -%}",
+      "note": "a dedicated Thinker: the reply always opens with its reasoning steps"
+    },
+    "skt/A.X-K2": {
+      "mode": "hybrid",
+      "toggle": "enable_thinking=False",
+      "default": "instant",
+      "source": "chat_template.jinja",
+      "quote": "enable_thinking is defined and enable_thinking is true"
+    },
+    "stepfun-ai/Step-5-Preview": {
+      "mode": "always",
+      "toggle": "reasoning_effort (a system \"Reasoning: …\" line)",
+      "source": "chat_template.jinja",
+      "quote": "{{- '<|im_start|>assistant\\n<think>' }}"
+    },
+    "tencent/Hy3": {
+      "mode": "hybrid",
+      "toggle": "reasoning_effort=\"no_think\"",
+      "default": "instant",
+      "source": "chat_template.jinja",
+      "quote": "{%- elif reasoning_effort is defined and reasoning_effort == 'no_think' %}"
+    },
+    "thinkingmachines/Inkling": {
+      "mode": "hybrid",
+      "toggle": "reasoning_effort=\"none\" (effort 0)",
+      "default": "thinking",
+      "source": "chat_template.jinja",
+      "quote": "\"none\": 0.0"
+    },
+    "thinkingmachines/Inkling-Small": {
+      "mode": "hybrid",
+      "toggle": "reasoning_effort=\"none\" (effort 0)",
+      "default": "thinking",
+      "source": "chat_template.jinja",
+      "quote": "\"none\": 0.0"
+    },
+    "upstage/Solar-Open-100B": {
+      "mode": "hybrid",
+      "toggle": "reasoning_effort=\"low\"",
+      "default": "thinking",
+      "source": "chat_template.jinja",
+      "quote": "{%- if reasoning_effort in [\"low\", \"minimal\"] -%}"
+    },
+    "upstage/Solar-Open2-250B": {
+      "mode": "hybrid",
+      "toggle": "reasoning_effort=\"low\"",
+      "default": "thinking",
+      "source": "chat_template.jinja",
+      "quote": "{%- if reasoning_effort in [\"medium\", \"high\", \"xhigh\"] -%}"
+    },
+    "XiaomiMiMo/MiMo-V2.6-Flash-MOPD": {
+      "mode": "hybrid",
+      "toggle": "enable_thinking=False",
+      "default": "thinking",
+      "source": "chat_template.jinja",
+      "quote": "{%- if enable_thinking is false -%}"
+    },
+    "XiaomiMiMo/MiMo-V2.6-Pro-MOPD": {
+      "mode": "hybrid",
+      "toggle": "enable_thinking=False",
+      "default": "thinking",
+      "source": "chat_template.jinja",
+      "quote": "{%- if enable_thinking is false -%}"
+    },
+    "zai-org/GLM-4.5-Air": {
+      "mode": "hybrid",
+      "toggle": "enable_thinking=False",
+      "default": "thinking",
+      "source": "chat_template.jinja",
+      "quote": "'\\n<think></think>' if (enable_thinking is defined and not enable_thinking) else ''"
+    },
+    "zai-org/GLM-5.2": {
+      "mode": "hybrid",
+      "toggle": "enable_thinking=False",
+      "default": "thinking",
+      "source": "chat_template.jinja",
+      "quote": "'<think></think>' if (enable_thinking is defined and not enable_thinking) else '<think>'"
+    },
+    "zai-org/GLM-5.3": {
+      "mode": "always",
+      "toggle": "reasoning_effort (low / high / max)",
+      "source": "chat_template.jinja",
+      "quote": "<|assistant|>{{- '<think>' -}}"
+    },
+    "zai-org/GLM-5.3-Flash": {
+      "mode": "always",
+      "toggle": "reasoning_effort (low / high / max)",
+      "source": "chat_template.jinja",
+      "quote": "<|assistant|>{{- '<think>' -}}"
+    }
+  }
+}

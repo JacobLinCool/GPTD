@@ -1,254 +1,523 @@
 # GigaPrompt Tower Defense 玩家說明書
 
-這份文件是給第一次打開遊戲的玩家看的。你不需要懂 AI serving，也不需要讀完整份設計藍圖。你只要記住一件事：GPTD 是一款塔防遊戲，只是你不是把敵人打死，而是把它們**服務完成**。棋盤是一座以真實數據打造的 LLM 推論資料中心：一波波使用者請求從四個入口 lane 匯入中央 Trust Core；你不是把它們打死，而是把它們服務完成——又快、又便宜、又正確、又安全——在它們漏進核心之前。
+這份說明書是給第一次打開遊戲的玩家看的。你不需要懂 AI serving 也能玩。GPTD 是一款塔防遊戲，只有一個轉折：沿著 lane 走來的東西你不是把它打掉，而是把它**服務完成**。一波波使用者請求從四條入口 lane 湧向中央的 Trust Core，你的塔是 GPU 機架、模型、Cache、Router 與 guardrail，任務是在請求抵達核心之前，把每一個都答得正確、安全、夠快。
 
-棋盤是隱喻，底層的數字是真的：一個請求帶著真實的 token 數，一座機架帶著一張真實 GPU 的 VRAM 與頻寬，金錢是真實的 $/Mtoken。整個 campaign 是一條**重現 2023→2026 真實資料中心歷史的 100 波淘汰賽**，難度持續往上爬——盡你所能守住中央 Trust Core 撐到越深越好，撐到終點再進入無盡模式。
+棋盤底下的數字是真的。請求帶著真實的 token 數，機架帶著真實 GPU 的記憶體與頻寬，模型的能力由公開 benchmark 校準，金錢是真實的每百萬 token 美元價。所以要玩得好，就得弄懂語言模型 serving 實際怎麼運作：小模型快、大模型聰明，思考用時間換準確，guardrail 用延遲換安全，batching 用單一使用者的速度換所有人的吞吐。整個 campaign 以一場逐步升級的淘汰賽重現 2023 到 2026 年的真實資料中心歷史，撐過去的人還有無盡模式等著。
 
 **在哪裡玩：** 用任何瀏覽器打開 <https://jacoblincool.github.io/GPTD/> 即可——它完全在前端執行，不需安裝任何東西。（想從原始碼執行？請看倉庫的 [README](../../README.md)。）
 
 ## 目標
 
-撐過 **100 波 campaign**。每一波都重現 2023→2026 推論時代的一個真實事件——GPT-4、H100 大缺貨、Mixtral MoE、Gemini 的百萬 token 脈絡、o1 推理、DeepSeek R1 與 2025 年 1 月的股災、Stargate、EU AI Act、agentic coding、推論價格戰——而且難度**每一波都在升**。這是一場淘汰賽：多數玩家會在中途陣亡，能撐到第 100 波（最終王關 **The Age of Inference**）就是頂尖。破關後 **無盡模式**會生成越來越難的「Surge」波次，難度永遠在往上爬——你的分數就是你撐到第幾波。
+盡可能久地守住 Trust Core。每一波都重現推論時代的一個真實事件——聊天機器人爆紅、GPU 缺貨、長文件、推理模型、agent、電網緊急狀態、價格戰、監管機關與服務中斷——而壓力一波比一波高。多數局會在 campaign 途中結束；撐到最後一波就是頂點，破關後進入無盡模式，分數就是你撐到多深。
 
-只要三條核心指標任何一條崩掉，你就立刻輸：
+三條指標任何一條撐不住，你就立刻輸：
 
-- **Trust** — 使用者是否相信你的平台。錯誤答案、不安全答案、漏掉請求，以及過度拒絕善意使用者，都會扣 Trust。
-- **SLA** — 你是否準時服務。請求走完自己的整條 lane 還沒被服務，就以一次 504 逾時漏掉；正確但太晚的答案則是一次 Goodput 失分。兩者都扣 SLA。
-- **Cash** — 公司是否還有 runway。建築、機架升級、訓練，以及依牆鐘計算的營運帳單（電、冷卻、$/GPU-hr、capex）都要花錢；只有服務成功才賺得回來。低於零就破產。
+- **Trust** — 使用者是否相信你的平台。每個失敗的請求都會扣一點 Trust；不安全的回答扣得最重。
+- **SLA** — 你是否守住服務承諾。太晚的回答、誤拒無害使用者、被拒收的請求與逾時，都會扣 SLA。
+- **Cash** — 公司付不付得出帳單。建築與升級要先付錢，而波次進行時每座在線機架都依時鐘計費，不論忙或閒。低於零就破產。
 
-成功服務一個請求會賺 Cash（以真實 `$/Mtoken` 計價）與 Data，並小幅恢復 Trust 與 SLA。清掉整波還會得到 clear bonus。
+乾淨地服務一個請求會賺到它的 token 價，並讓 Trust 與 SLA 小幅回升；每個被回答的請求也會產出研究用的貨幣 **Data**。每波結束時，你的客戶還會依你乾淨服務的比例支付一筆 **SLA 合約**款項。
+
+## 七種結果
+
+每個請求最後都會落在七種結果之一。每種結果都有自己的圖示、顏色、棋盤彈出字與音效，讓你從棋盤另一頭就看得出請求怎麼了、為什麼。在 HUD 計數或「設定 ▸ 音訊」上停留在某個結果，會重述它的白話原因。
+
+| 結果 | 圖示 · 顏色 | 棋盤彈出字 | 白話原因 | 收入 | 指標 |
+| ---- | ----------- | ---------- | -------- | ---- | ---- |
+| **成功** | ✓ 綠 | `成功` 與彙總的 `+$x.xx` | 回答正確、安全，且在延遲 SLO 之內。被擋下或被拒答的攻擊也算成功：拒絕它才是正確答案。 | 全額 token 價 | Trust 升、SLA 升 |
+| **延遲超標** | ◷ 琥珀 | `太晚 · TTFT / TPOT / E2E / 思考` | 答案正確但太慢：錯過了某條延遲上限（彈出字會標出是哪一條）。 | 半價（SLA 折讓） | 小幅扣 Trust 與 SLA |
+| **錯誤** | ✗ 橘 | `答錯 · <軸>` | 模型在受評的那條軸上，分數低於請求的難度。 | 退款（0） | 扣 Trust |
+| **不安全** | ⚠ 紅 | `不安全` | 攻擊的有害回答送到了使用者手上：沒有 guardrail 攔下，模型也沒有拒答。 | 0 | 重扣 Trust |
+| **誤拒** | ⊘ 粉紅 | `誤拒 · 模型 / guardrail` | 無害的請求被拒絕了——可能是模型自身的對齊，也可能是 guardrail。 | 0 | 輕扣 Trust 與 SLA |
+| **無法服務** | ⇥ 石板灰 | `過長` | 提示塞不進它路徑上任何機架的 context window 或 KV 記憶體。 | 0 | 扣 Trust 與 SLA |
+| **漏接（504）** | ↓ 磚紅 | `504` | 沒有人及時回應：它抵達核心並逾時。 | 0 | 扣 Trust 與 SLA（逾時的攻擊只扣 SLA） |
+
+每種結果扣多少指標，會隨請求的 archetype 而變，所以漏接一個 agent 任務比漏接一個 embedding 痛得多。色盲友善配色（設定 ▸ 無障礙）會把這些顏色換成源自 Okabe–Ito 的配色；圖示永遠不變，所以意義從不只靠色相。每個結果都會有小晶片飛向 Cash、Trust 與 SLA 指標，落地時指標會跳一下。
 
 ## 顯示模式：一般與專家
 
-在標題畫面你會選一種顯示模式。兩種模式跑的是**完全相同的遊戲**——同樣的波次、規則、難度，差別只在介面揭露多少平台內部。模式在這一局內鎖定，並記住你下次的偏好。
+在標題畫面你會選一種顯示模式。兩種模式跑的是**完全相同的遊戲**——同樣的波次、規則與難度，差別只在介面揭露多少平台內部。你的選擇會記住到下次；完成（或跳過）引導教學後，也能在局中從「設定 ▸ 顯示」切換。
 
-- **一般模式**維持精簡儀表：點開機架只看到載入的模型、品質、速度、batch、power/熱量，以及部署與升級按鈕。
-- **專家模式**打開完整的 SRE 主控台——推論團隊真正盯的遙測：
-  - **TopBar** — Trust / SLA / Cash / Data，加上即時的 **Power 對 Cooling** 餘裕（kW，到上限時有紅線）。
-  - **LiveOps 列**（波次中）— **Goodput** 量表（頭條指標：回答正確、安全，且滿足 TTFT／TPOT／E2EL SLO 的請求百分比）、每秒請求數、p95 服務中時間、即時 **$/Mtoken**，以及 KV cache 壓力。
-  - **Rack Inspect** — 每座機架四張卡：HARDWARE（真實 GPU、VRAM、HBM 頻寬、TDP、冷卻）、DEPLOYED MODEL（總/啟用參數、各軸品質）、ROOFLINE（prefill 算力瓶頸 vs decode 頻寬瓶頸兩條 bar，標出哪邊在卡）、LIVE（batch、KV 用量、吞吐）。
-  - **Request Inspector** — 選中請求的 input/output token、latency class、各軸難度、prefix share 與 hazard。
-  - **Wave Report** — 波末結算：六種終局、Goodput、TTFT／TPOT／E2EL 達標率、$/Mtoken 對比營運帳單，以及依 archetype 的計分板。
-  - **Model Overview + Lineage Graph** — 你擁有的每個 checkpoint（base + derived），可篩選/排序，以及衍生模型如何從 base 繁衍的 DAG。
-  - **TechLab + Post-Training Studio** — 依分類陳列的 infra 科技樹，以及帶 effort 滑桿的後訓練方法菜單。
+| 介面 | 一般模式 | 專家模式 |
+| ---- | -------- | -------- |
+| HUD | Trust、SLA、帶 runway 的 Cash、Data、以 kW 顯示的 Power 與熱量、下一波標題與即時結果計數 | 同上，另加「模型」與「指標」按鈕 |
+| 下一波卡 | 白話列（「即時回覆 · 需要程式 58」） | 技術列（latency class、受評軸與門檻、token 數） |
+| 機架檢查 | 白話的總覽（「夠快：」「夠聰明：」、誤拒與自擋比例）、部署清單 | 總覽卡（HARDWARE、DEPLOYED MODEL）、部署清單，以及遙測分頁（ROOFLINE、ESTIMATE、即時 batch 與 KV） |
+| 請求檢查 | 白話診斷（「夠聰明？✓」）；在有機架接手之前顯示「等待機架接手」 | 完整診斷：token、目前的 TTFT、TPOT、受評軸、餘裕、通過的 guardrail、hazard；有機架接手之前同樣顯示「等待機架接手」 |
+| 波次結算 | 精簡摘要：結果條、「太慢 · 答錯 · 不安全 · 誤拒」計數、淨現金與「下一步修正」 | 完整報告：Goodput、結果條、各結果扣掉的 Trust 與 SLA、延遲超標卡在哪條上限、誰拒絕的、TTFT / E2E / TPOT、單位成本、收入與 SLA 合約、拆成 GPU 工時與電費的營運帳單、依 archetype 的表格與「原因」 |
+| 棋盤 | 下文的全部內容 | 另加每座機架上的 KV 量表、與機隊其他機架不同處的標籤，以及正被答錯的請求上的「?」標記 |
+| 模型總覽 + 譜系圖 | — | 你擁有的每個 checkpoint，可篩選與排序，以及衍生模型的家族樹（K） |
+| 機隊遙測 | — | 六張即時圖表：Goodput、每秒請求、p95 延遲、$/Mtoken、KV 使用率、機隊使用率（` 或 Tab） |
 
-Title panel 左上角的小 **展示** 按鈕會啟動一局固定 seed 的專家模式，由內建 autoplayer 自動規劃建造、部署機架、研究 infra、補 guardrail，並在 Studio 訓練衍生模型。它用來展示 expert UI，會撐進 100 波淘汰賽的深處，同時展示主要操作：硬體一路升到 DGX H200、部署模型、infra/eval/post-training 研究、衍生 checkpoint、Power/Cooling、Liquid Cooling Loop，以及 P/D rack role。（跟任何一局一樣，autoplayer 最終也會被持續升高的難度淘汰——這正是淘汰賽的設計。）展示模式中仍可點選 rack、request、Models 與 Training Lab 查看資訊；會改變策略的操作仍交給 autoplayer 控制。
+Training Lab、Post-Training Studio、Codex 與通知在兩種模式下運作相同。
 
-新手請從一般模式開始，想知道某條 lane *為什麼*慢時再切到專家模式——roofline 卡和 Wave Report 通常會直接給你答案。
+標題面板上的小 **展示** 按鈕會以 12× 啟動一局固定 seed 的專家模式，交給內建的 autoplayer 來玩：它會把機架一路升到 8 GPU 系統、用部署清單自己的預測挑模型、研究 serving 堆疊、配置 Router、Cache 與 guardrail，並在 Studio 訓練 Constitutional AI 與 GRPO 專才 checkpoint。它會撐進 campaign 深處，最後也會像任何一局一樣被淘汰。展示中你仍可點選機架、請求、模型與 Training Lab 來查看；所有動作都由 autoplayer 控制，會改變這一局的按鈕只會說明原因、不會動作。**代理模式**按鈕則改把整局交給終端機上的 agent，透過本機 bridge 操作（見 [AGENT-BRIDGE.md](../AGENT-BRIDGE.md)）：agent 會在 Codex 對話框裡說明每一步，這個對話框會蓋在波次結算之上保持可見；和展示一樣，你的點擊只能查看。
+
+新手請從一般模式開始，想知道某條 lane *為什麼*慢時再切到專家模式——roofline 卡和波次結算通常會直接給你答案。
 
 ## 基本操作
 
-| 操作                 | 用法                               |
-| -------------------- | ---------------------------------- |
-| 開始遊戲             | 在主選單按 START                   |
-| 選擇顯示模式         | 標題畫面按一般／專家（局內鎖定）   |
-| 放建築               | 點底部建築按鈕，再點地圖格子       |
-| 連續放同一種建築     | 放完後工具會保持選取               |
-| 檢查建築             | 點已放置的建築                     |
-| 部署模型到機架       | 點機架，再點 DEPLOY 格的 checkpoint（免費；唯一閘是塞得進 VRAM） |
-| 升級機架硬體         | 點機架，再點 RACK →（補層級差價）  |
-| 開 Post-Training Studio／科技樹 | 蓋 Training Lab，再於 Build phase 按 TRAIN |
-| 賣建築               | 在檢查面板按 SELL（退回現值 60%）  |
-| 開始下一波           | 按 START WAVE，或 Space            |
-| 暫停波次             | 波中按 Space，或暫停按鈕           |
-| 調整速度             | 1／2／3／6／0（=12x），或速度按鈕循環 1x／2x／3x／6x／12x |
-| 關閉面板／取消選取   | Escape                             |
-| 靜音                 | M，或聲音按鈕                      |
+每個快捷鍵都綁在實體按鍵的位置上，所以在任何鍵盤配置與輸入法下都一樣。按鍵會以標記顯示在 build bar 與按鈕上（設定 ▸ 玩法 ▸ 快捷鍵標示），遊戲中按 **H** 或 **?** 會打開完整的快捷鍵表；系統選單裡的「如何遊玩」也列出同一張表。
 
-你在 Build phase 蓋建築，也能波中用現金緊急補建築。研究與後訓練只能在 Build phase 進行。
+**滑鼠與觸控**
+
+| 操作 | 用法 |
+| ---- | ---- |
+| 開始遊戲 | 在標題畫面按「開始」，或按空白鍵／Enter |
+| 選擇顯示模式或語言 | 標題畫面上的一般／專家按鈕與語言按鈕 |
+| 放建築 | 在 build bar 選它，再點 lane 旁的格子；工具會保持選取，方便放下一座 |
+| 預覽放置 | 拿著工具停在格子上：建築的虛影、它會覆蓋的 lane 段落、Cache 或 Router 會觸及的機架（或「範圍內沒有機架」），以及它的耗電 |
+| 連續放一排 | 拿著輔助建築拖曳；按住 Shift 可連續放機架 |
+| 取消工具或取消選取 | 右鍵，或 Esc |
+| 檢查建築 | 點它；面板會停靠在棋盤上離它較遠的一側。停留在建築上會顯示它的範圍圈與一行小卡 |
+| 檢查請求 | 點它的封包（兩種模式皆可） |
+| 部署模型 | 選一座機架，打開「部署」分頁，點一個 checkpoint（免費；兩波之間） |
+| 部署到多座機架 | Shift-點擊 checkpoint（或它的「全部 ×N」按鈕）部署到同層級的每座機架；Shift+Ctrl/⌘-點擊部署到每座裝得下的機架 |
+| 升級機架 | 檢查面板裡的 RACK →（補差價；兩波之間）；「全部升級」會讓這個層級的每座機架各升一級，現金用完為止 |
+| 改變機架的權重格式 | 檢查面板裡的「權重」按鈕（兩波之間；有一種以上格式可選時才出現） |
+| 賣建築 | 「賣出」（開啟「賣出前確認」時要再按一次）；退回現值的 60% |
+| 開 Training Lab／Studio | 蓋一座 Training Lab，再按 build bar 上的「訓練」（兩波之間） |
+| 開始下一波 | 「開始本波」 |
+| 暫停／繼續 | 暫停按鈕（波次中） |
+| 調整速度 | 速度按鈕會往上一級並循環；在它上面按右鍵則降一級 |
+| 靜音 | 喇叭按鈕 |
+| 打開系統選單 | 齒輪按鈕，或在沒有東西可取消時按 Esc |
+| 捲動清單 | 滑鼠滾輪或拖曳 |
+| 觸控 | 點格子預覽虛影與價格，再點一次才建造；長按顯示提示；拖曳連放前先按住一下 |
+
+**鍵盤**
+
+| 按鍵 | 作用 |
+| ---- | ---- |
+| 空白鍵 | 開始下一波 · 波次中暫停／繼續 · 在標題畫面開始 |
+| Q W E R T Y U I O P | 從左到右選 build bar 上的建築（再按一次取消） |
+| Esc | 取消工具或取消選取；再按一次開啟系統選單；在選單中返回 |
+| , 與 . | 選取上一座／下一座機架 |
+| G | 切換顯示所有覆蓋範圍圈（含機架）；按住 Alt 暫時查看 |
+| Z | 升級選取機架的硬體 |
+| X | 賣出選取的建築（開啟「賣出前確認」時按兩次確認） |
+| C | 把選取機架的硬體、模型與角色複製成藍圖，再點格子放置複本（Esc 取消） |
+| V | 切換選取機架的角色：自動／prefill 池／decode 池（需要 P/D Disaggregation；兩波之間） |
+| [ 與 ] | 切換選取機架的分頁（總覽／部署／遙測） |
+| PgUp／PgDn | 部署清單翻頁 |
+| 1 2 3 6 0 | 遊戲速度 1× 2× 3× 6× 12× |
+| − 與 = | 減速／加速一級 |
+| F | 在 1× 與上次的快速之間切換 |
+| M | 靜音／取消靜音 |
+| L | 打開或關閉 Training Lab（兩波之間，且已蓋好 Lab） |
+| K | 打開或關閉模型總覽（專家模式） |
+| ` 或 Tab | 切換機隊遙測面板（專家模式） |
+| H 或 ? | 快捷鍵表（開著時，進行中的波次會停住） |
+| Enter | Codex：下一步 |
+
+**面板與選單內**
+
+| 位置 | 按鍵 |
+| ---- | ---- |
+| 系統選單 | ↑ ↓ 移動，Enter 選擇 |
+| 設定 | [ ] 或 ← → 切換分頁 |
+| 如何遊玩、百科、關於、成就 | ↑ ↓ 與 PgUp／PgDn 捲動；[ ] 切換百科分頁 |
+| Training Lab | [ ] 切換 Infra／Studio；方向鍵與 Enter 移動與選擇；PgUp／PgDn 翻頁 |
+| 模型總覽 | ↑ ↓ 選取、PgUp／PgDn 翻頁、Home／End 跳到頭尾、[ ] 切換篩選；直接打字母會依名稱篩選（Esc 先清除篩選，再按一次關閉；還沒打篩選字時按 K 也會關閉） |
+
+你在建造階段蓋建築；只要有現金，波中也能緊急補建或賣掉建築。換模型、升級機架、權重格式與機架角色只能在兩波之間改，因為載入新權重會讓機架離線；唯一的例外是 Multi-LoRA 的 adapter 切換（見「研究」）。研究與 Studio run 在兩波之間開始，並在波次進行時推進。
+
+## 讀懂棋盤
+
+棋盤的設計，就是要讓你看出每個請求*為什麼*會有那樣的結局。
+
+**請求。** 每個封包依 archetype 上色，外框形狀代表 latency class：圓角是互動流量，方角是近即時，切角是離線工作，帶尖刺的是攜帶 hazard 的請求（攻擊與 agent 任務）。封包上方有一條最多三段的進度條：讀提示時是琥珀色（**prefill**），思考模型默默推理時是紫色（**思考**，只有存在隱藏 token 時才出現），接著可見的回答流出時是 archetype 的顏色（**decode**）。第一個 token 抵達的那一刻會閃一道白色刻線。提示還在等機架時，進度條下方的一條細線會隨首 token 時間預算耗盡，從綠轉琥珀再轉紅。一個標記會指出最緊急的問題——仍未處理的攻擊顯示閃爍的 hazard 標誌，提示過長塞不下時顯示溢出標誌，已經太晚時顯示時鐘，專家模式下正被答錯時顯示「?」——未處理的 hazard 還會在封包周圍脈動一圈。位於 Router 範圍內的請求會帶一個小小的橘點。
+
+**機架。** 每個硬體層級都有自己的外形，底下是該層級顏色的地板。最多八顆 LED 顯示 batch：青色的槽在 decode 回答，琥珀色是正在 prefill 的提示，灰色則表示 decode 卡在一個沒有 chunk 的 prefill 後面（琥珀燈會閃）。機架變暗或降速時會有圖示說明原因：閃電是斷電，水滴是液冷機架缺少 Liquid Cooling Loop，溫度計加上熱光暈是熱降頻（throttle）。被借去做研究的機架上會有掃描線。專家模式下，機架邊緣有一條細量表顯示 KV 記憶體的使用量（75% 起琥珀、92% 起紅）。蓋好時建築會落下，賣出時會升起消失，升級時舊層級會被掃除並顯示「H100 → H200」，部署時會閃出模型名稱。
+
+**Token 串流。** prefill 期間，一道密集的串流從正在讀的提示*流入*機架——prefill 受算力限制，會佔用機架的全部注意力。decode 期間，細細的串流*流出*到 batch 裡的每個請求——decode 受頻寬限制，由大家共享。小而快的模型會噴灑 token，大而慢的則是涓涓細流。沒有 chunk 的 prefill 卡住 batch 時，流出的串流會凍結。
+
+**Guardrail。** 攔截成功時，會從 guardrail 畫出一道掃描光束到請求上，蓋上盾牌並彈出 `已攔截`。誤擋時 guardrail 會閃一下，並蓋上禁止標誌與 `誤拒 · guardrail`。模型自己拒答攻擊時，它的機架上方會升起一面盾牌與 `模型自擋`。prefix cache 命中會彈出 `Cache 命中`。
+
+**Trust Core 與 lane。** 核心的顏色反映 Trust 區間。Trust 低於 50、25、10 時它會出現裂痕，心跳隨 Trust 下降而加快，低於 25 時棋盤邊緣會泛紅光。受擊時棋盤會震動（設定 ▸ 無障礙 ▸ 畫面震動）。請求生成時入口會閃光，流向箭頭指出方向，lane 會帶上所屬年代的色調，單一入口湧入則以「湧入」標籤標亮那條 lane。開波、頭目波與清波時都會有橫幅（清波時顯示合約款項與該波的 Goodput）。
+
+**覆蓋範圍圈**平常隱藏，在你停留或選取建築、拿著相關工具、按 G 或按住 Alt 時才出現。機架的觸及範圍取決於它的硬體層級。
+
+**HUD** 左側顯示 Trust、SLA 與 Cash，Cash 下方有 runway 標籤（零收入時現金還能撐幾波）與你的 Data。Power 與熱量以真實 kW 對比容量顯示。兩波之間，標題會寫出按下開始後要來的是哪一波、有多少請求；波次中這一行會變成七種結果的即時計數。停留在 Trust 或 SLA 上，會顯示上一波與整局是什麼扣了它們。狀態列會寫出 brownout、throttle、變暗的液冷機架、暫停，或進行中的 Incident（停留可看細節）。
+
+**通知**會在 build bar 上方堆疊：研究完成、新的 checkpoint（兩波之間附「部署 ×N」按鈕，可一鍵部署到每座裝得下的機架）、成就，以及每波第一次 brownout 或 throttle。最多同時顯示三則；停留可讓它停住，點擊會打開它指涉的地方。被拒絕的操作會在游標旁顯示原因（「換模型要在兩波之間進行」「需要 Tensor Parallelism」「還差 $12」）。
+
+## 規劃一波：下一波卡
+
+兩波之間，右側的**下一波**卡會顯示按下開始後要來的內容：年代與名稱、真實事件的簡述、它要教的課題、它帶來的 Incident、流量是否會擠進單一 lane 的單一入口湧入，以及 Incident 改變流量時的倍率。接著它會針對這一波的每種 archetype，以你*目前*的機隊預測四項檢查：
+
+| 檢查 | 通過條件 |
+| ---- | -------- |
+| **夠聰明** | 某座覆蓋它 lane 的機架能答對它：它的模型在會採用的模式下，扣掉格式、對齊與長 context 成本後，在受評軸上的分數不低於請求難度 |
+| **夠快** | 某座覆蓋它的機架在這一波的混合負載下，滿足它所有的延遲上限（首 token、每 token 速度、端到端、首個回答 token） |
+| **放得下** | 某座覆蓋它的機架的 context window 與 KV 記憶體，裝得下完整的提示加回答 |
+| **安全** | 它攜帶的每種 hazard，都會被覆蓋它 lane 的 guardrail 攔下，或被每個覆蓋它的模型至少 90% 地自行拒答 |
+
+停留在檢查上可以看到背後的數字（最佳餘裕、各延遲上限的對比、window 對比所需 token，以及每種 hazard 是否有 guardrail 覆蓋、是否鎖定到 Red-Team Eval、模型多常能自行處理）。這個預測用的是和部署清單相同的負載模型，已計入各機架的排隊；請把它當成估算，因為它沒有模擬多座機架分攤同一批請求。卡片底部列出請求數、這波預估的營運帳單，以及 SLA 合約最多能付多少。卡片可用它的按鈕收合，拿著建造工具時會變成可點穿的半透明虛影。
+
+如果現金低於預估帳單，按開始時會先警告你，按鈕變成「照樣開始」；再按一次才會出發。runway 標籤在剩不到兩波時轉琥珀，不到一波時轉紅。
 
 ## 請求 Archetype — 九種工作負載
 
-一個請求由它的**工作負載物理**定義，而不是它的外觀。每個 archetype 帶著真實的 input/output token 數（ISL/OSL）、一個 **latency class**（IN 互動 · NR 近即時 · TO 吞吐/離線）、一個對著載入模型 `qualityBy` 判定的**各軸難度**向量、一個 **prefix share**（可快取程度），可能還有 **hazard**。
+一個請求由它的工作負載物理定義，而不是外觀：它讀多少、寫多少 token，多快要被回答，以哪種能力受評，提示有多少是共享且可快取的，是否帶有攻擊，以及市場付多少錢。提示與回答會像真實工作負載一樣隨 campaign 變長（對話歷史、檢索到的內容、累積的 agent 狀態），所以後期的大小列在括號裡。
 
-| Archetype | ISL → OSL（典型） | Latency class | 主要難度軸 | Prefix | Hazard | 它施加的壓力 |
-| --------- | ----------------- | ------------- | ---------- | -----: | ------ | ------------ |
-| **Embedding** (`embed`) | ~2000 → 0 | TO | general（易） | 0.3 | — | 純 prefill、不生成——單個沒價值，量大成洪流。 |
-| **Interactive Chat** (`chat`) | 512 → 256 | IN | chat（易） | 0.4 | — | 均衡、高量。小模型配快機架整天吃得下。 |
-| **Code Completion** (`comp`) | 1500 → 150 | IN（TTFT 200 ms） | coding | 0.5 | — | prefill 重、延遲最嚴。弱模型出爛 code，扣 Trust。 |
-| **RAG / Long-Context QA** (`rag`) | 8000 → 512 | NR | general + reasoning | 0.6 | — | 巨大檢索 prompt。Cache 讓 prefill 撐得住；window 太小就直接拒收。 |
-| **Summarization** (`summ`) | 12000 → 400 | NR | general | 0.2 | — | 極端 prompt、幾乎沒可重用前綴——一張不停的 prefill 帳單，壓榨 context window。 |
-| **Reasoning** (`reason`) | 512 → 6000 | NR | reasoning（難） | 0.1 | — | 極端 decode（長 CoT）。只有 thinking model 過得了最難的 reasoning lane。 |
-| **Agentic Task** (`agent`) | 6000 → 800 | NR（E2EL 9 s） | **agentic**（最難）+ reasoning | 0.7 | injection 0.3 | 自主、SWE 級、多步工具使用。Benchmark 在這軸*尚未*飽和——只有真正的前緣模型，或你自己訓練的模型，才合得上這個迴圈。 |
-| **Batch / Offline** (`batch`) | 1000 → 4000 | TO（無延遲 SLO） | general | 0.1 | — | decode 重的離線生成——純吞吐與 $/token。機架有空就拿來消化。 |
-| **Adversarial Prompt** (`jailbreak`) | 600 → 400 | IN | general（易） | 0.1 | jailbreak 0.9 | hazard 載體。模型要自己處理掉，或 guardrail 要攔下，否則不安全答案抵達 core，重傷 Trust。 |
+| Archetype | Token 輸入 → 輸出（2026 年後期） | 延遲上限 | 受評軸 | 可快取前綴 | Hazard | $/Mtok 輸入 / 輸出 |
+| --------- | -------------------------------- | -------- | ------ | ---------: | ------ | -----------------: |
+| **Embedding** | 2K → 0（6K → 0） | 無（離線） | general 10 | 30% | — | 0.05 / 0.1 |
+| **互動對話** | 512 → 256（2.6K → 512） | TTFT 400 ms · TPOT 40 ms · 首個回答 4 s | chat 18 | 40% | — | 0.3 / 0.9 |
+| **程式碼補全** | 1.5K → 150（7.5K → 200） | TTFT 200 ms · TPOT 40 ms · 首個回答 400 ms | coding 56 | 50% | — | 1 / 3 |
+| **RAG／長上下文 QA** | 8K → 512（48K → 819） | TTFT 2 s · TPOT 200 ms | general 50 | 60% | — | 1 / 2 |
+| **摘要** | 12K → 400（96K → 1K） | TTFT 6 s · TPOT 200 ms | general 44 | 不可快取 | — | 1 / 2 |
+| **推理（長 CoT）** | 512 → 6K（2K → 12K） | TTFT 2 s · TPOT 200 ms | reasoning 82 | 不可快取 | — | 1 / 5 |
+| **代理任務** | 6K → 800（48K → 1K） | TTFT 2 s · TPOT 200 ms · E2E 60 s | agentic 82 | 70% | prompt injection | 3 / 12 |
+| **批次／離線生成** | 1K → 4K（3K → 8K） | 無（離線） | general 40 | 不可快取 | — | 0.5 / 1.5 |
+| **對抗式提示** | 600 → 400（3K → 500） | TTFT 400 ms · TPOT 40 ms · 首個回答 4 s | 是否被處理 | 不可快取 | jailbreak | 0.5 / 1.5 |
 
-**正確與否是「軸匹配」，不只是「工作量歸零」。** 判定是拿載入模型的 `qualityBy[主要難度軸]` 對比請求在該軸的難度。低於它，你就送出一個 `bad` 答案：請求照樣計費，但扣 Trust。**agentic** 軸很特別——分數來自尚未飽和的 SWE-bench，所以一個答 chat 漂亮的小型快 MoE，仍可能在每個 agentic request 失手。
+TTFT 是到第一個 token 的時間，TPOT 是每個輸出 token 的時間（整段回答結算一次），E2E 是整段回答，*首個回答*則是任何隱藏思考之後、第一個*可見* token 出現的時間。品質門檻每個 campaign 層級大約提高 2%，所以推理與 agentic 的門檻到最後會逼近 100。
+
+**正確與否是「軸匹配」。** 請求只對著回答它的模型在一條軸上的分數受評——chat、coding、reasoning、general 或 agentic。低於難度就是答錯（`bad`），並且退款。回答品質是寫出它的那幾座機架依 token 加權的混合：跑同一個模型的機架可以共同 decode 一個請求（其中一座用 4-bit 格式時，會以它的量化代價把混合拉低），而由另一個模型接手的請求，則依兩個模型各自寫出的 token 計分。長提示也會吃掉品質：提示佔用模型 window 超過四分之一後品質就會下滑，真正擅長長 context 的模型損失少得多。**agentic** 軸是從尚未飽和的 benchmark 校準而來，所以一個聊天出色的模型，仍可能在每個 agent 任務上失手。
+
+**每種 archetype 遇到思考與拒答的方式都不同。** 思考模型會在回答前花掉隱藏 token——它的思考預算乘上該 archetype 的比例——而過度謹慎的對齊對各 archetype 的衝擊，與它們攜帶多少邊界內容成正比：
+
+| Archetype | 隱藏思考（佔模型預算的比例） | 誤拒暴露度 |
+| --------- | ---------------------------- | ---------- |
+| Embedding | 無（它不產生文字） | 無 |
+| 互動對話 | ½ | 完全 |
+| 程式碼補全 | 5% | 10% |
+| RAG | ½ | 40% |
+| 摘要 | ½ | 30% |
+| 推理 | 不額外思考（它的長回答*就是*推理） | 50% |
+| 代理任務 | 完整預算 | 50% |
+| 批次 | ½ | 20% |
+| 對抗式提示 | ½ | 不適用（攻擊從來不是無害的） |
 
 ## 硬體 — 真實 GPU 階梯
 
-一座 serving tower 是兩個決策：你蓋並升級的**機架硬體**，以及你部署上去的**模型**。機架提供真實 GPU 規格（算力 FLOPS、VRAM、HBM 頻寬、TDP、冷卻）；模型提供它的參數、品質與架構。
+一座 serving 塔是兩個決策：你蓋並升級的**機架硬體**，以及你部署上去的**模型**。機架提供真實 GPU 規格；模型提供它的大小、能力與架構。
 
-build bar 賣兩種機架——**Edge**（便宜起手）與 **Frontier**——而且每座新機架都預載 **Llama-3.1-8B**。從一座放好的機架，你可以**原地升級**沿著階梯走，每一步補差價：
+build bar 賣兩種機架——**Edge**（便宜的起手機架）與 **Frontier**——而每座新機架都預載免費的起手模型 MiniCPM5-2B。從一座放好的機架，你可以沿著階梯**原地升級**，每一步補差價：
 
-| 機架層級（原地升級） | GPU | GPU 數 | VRAM | HBM 頻寬 | 每 GPU TDP | 冷卻 |
-| -------------------- | --- | -----: | ---: | -------: | ---------: | ---- |
-| Edge GPU Rack（可建） | L4-class    | 1  | 24 GB  | 0.3 TB/s | 72 W   | 氣冷 |
-| Standard GPU Rack    | L40S-class  | 1  | 48 GB  | 0.86 TB/s | 350 W | 氣冷 |
-| Performance GPU Rack | H100-class  | 1  | 80 GB  | 3.35 TB/s | 700 W | 氣冷 |
-| Frontier GPU Rack（可建） | H200-class | 1 | 141 GB | 4.8 TB/s | 700 W | 氣冷 |
-| DGX H200             | 8× H200     | 8  | 1.1 TB | 38 TB/s（總） | 700 W | **液冷** |
-| DGX B200             | 8× B200     | 8  | 1.5 TB | 64 TB/s（總） | 1000 W | **液冷** |
-| GB200 NVL72          | 72× B200    | 72 | 13.8 TB | 576 TB/s（總） | 1000 W | **液冷** |
+| 機架層級 | GPU | GPU 數 | VRAM | 每 GPU HBM 頻寬 | 每 GPU TDP | 冷卻 | 價格 | 觸及範圍（格） |
+| -------- | --- | -----: | ---: | --------------: | ---------: | ---- | ---: | -------------: |
+| Edge GPU 機架（可建） | L4-class | 1 | 24 GB | 0.3 TB/s | 72 W | 氣冷 | $5 | 2.8 |
+| Standard GPU 機架 | L40S-class | 1 | 48 GB | 0.86 TB/s | 350 W | 氣冷 | $16 | 3.0 |
+| Performance GPU 機架 | H100-class | 1 | 80 GB | 3.35 TB/s | 700 W | 氣冷 | $48 | 3.0 |
+| Frontier GPU 機架（可建） | H200-class | 1 | 141 GB | 4.8 TB/s | 700 W | 氣冷 | $60 | 3.3 |
+| DGX H200 | 8× H200 | 8 | 1.1 TB | 4.8 TB/s | 700 W | 氣冷 | $320 | 3.4 |
+| DGX B200 | 8× B200 | 8 | 1.44 TB | 8 TB/s | 1000 W | 氣冷 | $500 | 3.5 |
+| GB200 NVL72 | 72× B200 | 72 | 13.4 TB | 8 TB/s | 1200 W | **液冷** | $3000 | 3.6 |
 
-建築成本是**真實 capex** 除以 1000（Edge 機架幾個 credit；NVL72 約 3000）。兩個來自真實 serving 的硬事實：
+價格是真實 capex 除以 1000。三個來自真實 serving 的事實決定了每一個選擇：
 
-- **Roofline 是兩道天花板。** 機架先 **prefill** 吃進 prompt（算力瓶頸，長 context 因 attention 是 O(n²) 而超線性），產出 time-to-first-token，再 **decode** 生成 token（頻寬瓶頸，可 batch）。讓 decode 飛起來的是 **HBM 頻寬**而非裸 FLOPS，這就是 H100/H200 是主力的原因。專家模式的 roofline 卡同時顯示兩條 bar 與哪邊在卡。
-- **液冷是硬性 gate。** 液冷的多 GPU 叢集（DGX H200、DGX B200、GB200 NVL72）**在你先蓋好 Liquid Cooling Loop 之前都不能放置或升級進去**——這些機架物理上無法用氣冷壓住。單 GPU 的氣冷層級（到 Frontier H200 機架為止）只要有電與冷卻容量就能放。
+- **Roofline 是兩道天花板。** 機架先 *prefill* 提示——受算力限制，而且長提示會超線性變慢，因為 attention 隨長度平方成長——這決定了首 token 時間。接著它逐個 token *decode* 回答，每一步都要從記憶體重讀模型權重與每個串流的 KV cache，所以決定 token 流速的是 HBM 頻寬，不是裸 FLOPS。這就是為什麼同一個小模型，H100 也比 L4 快上好幾倍。專家模式的 roofline 卡同時顯示兩條 bar，並標出哪一邊在卡。
+- **大系統買到的是裝得下與並行量，不是單一使用者的速度。** 在 DGX 或 NVL72 上，一個塞得進單顆 GPU 的模型會每顆 GPU 跑一份：使用者多八倍（或七十二倍），每人仍是單 GPU 的速度。單顆 GPU 裝不下的模型會被切到最小的、裝得下它的 2 的冪次 GPU 群組上；tensor parallelism 最多到八顆 GPU，效率達不到完美，而且每個 token 都要付一點同步成本。跨 GPU 需要研究：八顆以內要 Tensor Parallelism，超過八顆要 Pipeline Parallelism。更快的*單一使用者*速度來自頻寬——往上爬單 GPU 的層級，或是 Blackwell 的 B200 對上 H200。
+- **液冷是硬性 gate，只限 NVL72。** GB200 NVL72 無法用氣冷：沒有 Liquid Cooling Loop 就不能建造或升級進去，loop 不存在時它會變暗。其他所有層級，一路到 DGX B200，都是氣冷，用一般的 Cooling Tower 就能跑。
 
 ## 模型 — 真實 open weights，部署免費
 
-Open weights 是**下載**就有，所以部署**不花錢**，而且只有一道 gate：**VRAM**。機架必須裝得下模型的總參數（`paramsTotalB` × 每參數 bytes）——70B 塞得進 H200；117B+ 的 MoE 需要 DGX pod；671B/1T 前緣需要 DGX B200 或 NVL72。**沒有「架構解鎖才能部署」這回事**：MoE 與 reasoning 只是模型屬性（thinking model 的增益早已烤進它的 `qualityBy`）。*（Post-Training Studio 的訓練方法——LoRA、GRPO、RLHF…——確實各有研究解鎖，但那 gate 的是你能**訓練**什麼，從不 gate 你能**部署**什麼。）*
+Open weights 下載就有，所以部署模型**不花錢**。限制模型的是記憶體：一份副本的權重（參數量乘上機架權重格式下每個參數的 bytes）加上引擎的額外開銷，必須塞進機架被允許使用的某個 GPU 群組。roster 裡的每個模型從第一波起就歸你所有。
 
-roster 是真實的 2025–2026 open-weight 模型（Llama、Qwen3 dense + MoE、gpt-oss、Gemma 3、Phi-4、Mistral/Devstral、GLM-4.5-Air、DeepSeek-V3.1、Nemotron、Kimi K2）。每個模型的品質都是**從公開 benchmark 校準**（Artificial Analysis / model card），從不手編——所以你看到的階梯就是真實的那個。
+roster 收錄 58 個真實的 open-weight checkpoint，從塞得進任何地方的 0.6B 模型，到 2.78 兆參數的 Kimi K3——即使用它原生的 4-bit 版本，權重也超過一個半 TB。它們來自 Qwen、Gemma、gpt-oss、DeepSeek、GLM、MiniMax、Nemotron、MiMo、Kimi 等等。每個模型各軸的能力都是**從公開 benchmark 校準**（Artificial Analysis 與 model card），從不手調；專家模式的模型總覽會顯示每個數字的來源。
 
-**MoE 把記憶體與速度解耦。** 一個 Mixture-of-Experts 模型的 VRAM 跟著它的**總**參數（所有 expert 都常駐），但它的算力與 decode 速度只跟著每 token 的**啟用**參數。這就是為什麼 30B-A3B 的 MoE 服務起來像 3B、回答起來卻像 30B——夢幻組合——*但* 在 agentic 軸例外：啟用本體太小就是真的不夠（它尚未飽和的 SWE-bench 分數，就是它快不過去的那道牆）。
+- **發布精度很重要。** 許多 checkpoint 以 BF16（每參數 2 bytes）發布，有些是 FP8，有些原生就是 4-bit（gpt-oss 的 MXFP4、DeepSeek V4 的 FP4 expert）。模型永遠以發布精度或更低精度服務；量化到發布精度以下（post-training quantization）能省記憶體，但可能損失品質，而原生 4-bit 的模型以 4-bit 執行不用付任何代價。
+- **Mixture-of-Experts 把記憶體與算力解耦。** MoE 必須把*所有* expert 都放進 VRAM，但每個 token 只跑它啟用的 expert，所以它讀提示的速度跟一個小得多的模型一樣快。decode 則不同：一整批真實使用者會選到許多不同的 expert，於是每一步無論如何都要讀很大一部分 expert 權重，一個忙碌的 MoE decode 起來更接近它的完整大小，而不是啟用大小。Expert Parallelism 會把 expert 分散到各副本上，讓每份副本讀得更少。每個 MoE 層每一步還有固定的 routing 成本，所以就算只有一位使用者，它 decode 起來也比同啟用大小的 dense 模型慢：單獨一位使用者在一張 H100 上的 gpt-oss 120B 每秒約 250 個 token。
+- **KV 記憶體取決於架構。** 專家模式的模型總覽會顯示每個模型每 token 的 KV bytes 與發布精度。混合式設計（sliding-window 或 linear-attention 層、壓縮的 latent attention）每 token 的 KV 遠少於完整 attention，所以同一座機架能裝下更長的提示、更多使用者。
 
-## Post-Training Studio — 訓練你自己的模型
+### 挑模型：部署清單
 
-在 **Post-Training Studio**（在 Training Lab 裡）你衍生**你自己的 checkpoint**，無上限、可疊代——你甚至能微調一個微調過的模型。挑三件事：
+選一座機架，打開**部署**分頁。你擁有的每個 checkpoint 都會針對下一波、*在這座機架上*評分：
 
-1. **一個 base** — 任何你擁有的模型（base 或衍生的）。
-2. **一個方法** — 真實的 per-model 菜單：
+- 在下一波負載下（與 ★ 相同的預測）每位使用者每秒 token 數，取最接近每 token 上限的那一型，依該上限著色：綠色是穩穩在內、琥珀色是接近、紅色是超過；
+- `Q`——它在這波會受評的軸上的品質，以及它能乾淨服務這波幾種 archetype；
+- `safe`——它的對齊安全分數與誤拒比例；
+- **混合**或**思考型**標記（見下文），已載入的模型標 ✓；
+- 裝不下的模型會變灰並寫出需要什麼：「需要 141 GB → H200 機架」，或「要跨 8 顆 GPU——需要 Tensor Parallelism」。
 
-   | 方法 | 種類 | 作用 |
-   | ---- | ---- | ---- |
-   | **SFT** | finetune | 基準；不需研究。chat/coding/general/長 context 的紮實能力增益。 |
-   | **LoRA / QLoRA / DoRA** | adapter | 最便宜的微調；一個 band 的能力，幾乎不遺忘。 |
-   | **DPO** | finetune | 輕量便宜的偏好調校（chat/general/safety）。 |
-   | **RLHF** | finetune | 強力 safety/chat 對齊——但最陡的品質稅與上升的 over-refusal。 |
-   | **CAI**（Constitutional AI） | finetune | Pareto 安全增益：提升 safety *並* 降低 over-refusal（safe-completion）。 |
-   | **GRPO** | finetune | Reasoning RL——把 base 變成會思考的模型；通往 reasoning/agentic 能力最強的路。 |
-   | **Distillation** | finetune | 大 teacher 蒸餾成較小 student base：更便宜服務，上限被 teacher 卡住。 |
-   | **Merge** | merge | 平均兩個同家族 checkpoint——不重訓就把專才融成一個。 |
-   | **CPT** | finetune | 繼續預訓練：廣泛的領域/長 context 增益，但最高的災難性遺忘。 |
-   | **QAT** | quantized | 為 INT4 推論而訓練：權重記憶體減半、decode 更快、−2 品質。 |
+**★** 標出最適合者：在這座機架上，預期能*乾淨*服務下一波最大比例的模型——在這波混合負載下準時、正確、在 window 內、沒有誤拒，而且沒有送出任何不安全內容。可依 ★ 最佳、快、聰明、安全或大小排序。點擊即部署到這裡，或用 Shift-點擊（同層級每座機架）、Shift+Ctrl/⌘-點擊（每座裝得下的機架）或「全部 ×N」按鈕一次部署。一般模式下，總覽分頁用白話說同一件事：已載入的模型對哪些 archetype 夠快、夠聰明，並在它的能力條上標出下一波的品質門檻。
 
-3. **一個目標軸**（chat / coding / reasoning / general / agentic / safety / 長 context / domain）與一個 **effort** 滑桿（effort 越高增益越多，但要更多算力、資料與波次才完成——而且報酬遞減）。
+### 思考型、混合型與 instruct 模型
 
-這趟 run 產出一個**新的衍生模型**，帶著固化的 **lineage**（base、方法、目標、effort、depth），可在 Lineage Graph 看到。越深的鏈邊際增益越小、遺忘累積越多——沒有無限刷品質的漏洞。這就是你的無盡模式品質天花板：在前緣 base 上做一趟 GRPO-agentic，就是你的 agentic 專才。
+思考是遊戲裡最清楚的取捨：先推理再回答的模型更準，也真的要花時間與記憶體。隱藏的推理 token 會消耗 decode 時間、KV 記憶體與端到端延遲，而且沒有人為它們付錢——市場付的是回答。每個 checkpoint 都有三種思考支援之一，依它發布的 chat template 判定：
 
-## Infra 科技樹 — 只管 serving
+| 類型 | 標記 | 服務方式 |
+| ---- | ---- | -------- |
+| **混合** | 混合 | 互動流量（對話、程式碼補全、攻擊）關掉思考立即回答，以思考關閉時的能力受評；其餘流量先思考 |
+| **總是思考** | 思考型 | 每次回答前都先思考，對話也不例外：準，但起步慢，在互動流量上可能錯過首個回答的上限 |
+| **不思考** | — | 立即回答，難題上較弱 |
 
-研究（在 Training Lab）跑在**三條獨立軌、共用一個算力池**上：**infra** 升級、**post-training** run、**eval**（red-teaming）。一趟 run 先花 **Data**，再在波次中**徵用你最強的機架**做 GPU 算力——它們會停止服務直到算力預算達成——所以要把 run 排在波次表周圍規劃。
+roster 大多是混合型，這也是為什麼一個混合模型能同時撐住對話 lane 與推理 lane。把總是思考的模型放在準確比第一個字更重要的地方——推理與 agent lane——並讓它們遠離對話與程式碼補全。專家模式下，能力條顯示受評的那個模式，另一個模式以刻痕與紫色數值標出；請求檢查也會寫出回答用的是哪個模式。Studio 裡的推理 run（GRPO，或任何以推理為目標的 run）會把一個不思考的模型變成總是思考。
 
-infra 樹**只管 serving/基礎建設**（它從不碰模型權重——模型架構是模型的屬性）。22 個節點循著真實的 serving 歷史：
+## Batching 與 KV Cache
 
-- **Scheduling** — Continuous Batching（一切之根：終結一次一個請求的時代）、Multi-Step Scheduling、Chunked Prefill **對上** P/D Disaggregation（硬性互斥：chunked 在吃 prompt 時仍持續 decode；disagg 把 prefill 與 decode 拆成獨立 pool）。
-- **KV memory** — PagedAttention（利用率 30% → 96%，KV 效率之根）、Prefix Caching（命中上限到 85%）、FlashAttention、FP8 / INT4 KV-quant、KV Offloading。
-- **Decoding** — Speculative Decoding（低 batch 的前哨倍率，batch 變大後逐漸失效）。
-- **Weight quant（PTQ）** — FP8 / INT4（AWQ/GPTQ）/ NVFP4（限 Blackwell）：更少 VRAM、更便宜的 decode 頻寬，與 per-model 的 QAT 區隔。
-- **Parallelism** — Tensor / Pipeline / Data / Expert（EP 是 MoE 的 serving 勝著）。
-- **Routing / multi-LoRA / engine** — KV-Aware Routing、Multi-LoRA serving（S-LoRA），以及引擎層 vLLM → SGLang → TensorRT-LLM。
+一座機架不是一次服務一個人。棋盤上每個請求封包代表一群真實使用者——它會在機架上放上 28 條同時進行的串流——而忙碌的機架會交錯處理許多封包，每個 decode 步驟為每條串流各產出一個 token。Batching 是 serving 核心的取捨：每多一條串流，每一步就多一點負擔（它的 KV 得被讀取），所以**單一使用者的速度下降，總吞吐則上升**，直到逼近算力天花板。一座單獨看很快的機架，滿載時對對話來說可能就太慢。
+
+- **Continuous Batching** 是研究樹的根。在它之前，一份模型副本一次只服務一群；之後，引擎每份副本可同時跑最多 256 條串流，並在每一步把做完的換出去。
+- **機架分攤流量，模型守住自己的 KV。** 提示會交給範圍內最快能開始處理它的那座機架，所以一波湧入會分散到它碰到的各座機架上。讀了提示的機架就持有它的 KV：跑同一個模型的其他機架可以用剩餘空間幫忙 decode 回答（在棋盤上更快完成，但每個 token 仍花它真實的時間），跑不同模型的機架則讀不了那份 KV——它只能把提示與目前為止的回答全部重讀一次才能接手，這會讓回答停頓。
+- **KV 記憶體限制並行量。** 每條串流都要把它 context 的 key 與 value 留在記憶體裡，所以長提示與長回答佔用更多記憶體。機架的 KV 滿了，新請求就得等（等待時間算進它的 TTFT，即使最後由更靠近 core 的機架服務它）；一個 KV 會超過某座機架全部預算的請求永遠不會被那裡收下，若看到它的機架沒有一座容得下，就以「無法服務」收場。PagedAttention 把可用 KV 從空閒記憶體的 55% 提高到 96%，FP8 與 INT4 KV cache 分別把它減半與減到四分之一，KV Offloading 則把冷的前綴留在 CPU 端以便重用。
+- **Prefix caching 跳過共享的提示。** Cache 建築讓範圍內的機架，在可快取流量上有機會重用快取的提示前綴。命中時會跳過 prefill 中共享前綴的那一部分，其餘獨特的部分仍要 prefill，所以 Cache 能降低 TTFT 並騰出 prefill 產能。每個請求只查一次；重疊的 Cache 不會疊加（取最好的那個），命中率上限是 70%，因為獨特的提示沒有可共享的部分。Prefix Caching 研究會把 Cache 從 35% 提升到這個上限。被快取的提示 token 照全價計費——它們確實被服務了。
+- **Chunked Prefill 讓回答持續流出。** 沒有它時，機架會一個接一個地讀提示，讀的期間卡住 batch 裡所有回答（灰色 LED）。有了它，每個引擎步驟都會帶著進行中的回答，再加上一份依機架速度訂定的提示 token 預算：短提示一步就完成，長提示被切成好幾步，回答則持續流出，只是稍慢一點。
 
 ## 兩層安全
 
-帶 hazard 的請求（`jailbreak`，以及帶 prompt injection 的 `agent`）必須被**處理掉**，否則不安全答案抵達 core 會重傷 Trust。有兩層：
+攻擊必須被**處理**，否則有害的回答會送到使用者手上。對抗式提示帶著 jailbreak；agent 任務則可能帶著藏在它讀取的工具與文件裡的 prompt injection。防禦分兩層，兩層可以協同運作。
 
-- **第一層——模型內生對齊。** 烤進權重（由 RLHF/CAI/safety-SFT）。它以**零 serving 延遲**自處理 hazard，但帶著**對齊稅**（品質下降）與 **over-refusal** 風險。gpt-oss 家族是教學對比：高 safety 卻*低* over-refusal、低稅（safe-completion 風格），對比其他人的 hard-refusal。你不能逐請求切換它——它就是這個模型的本性。
-- **第二層——guardrail 建築**（放在 lane 上，延遲疊加到請求）：
+**第一層——模型自身的對齊。** 安全性烤進了權重。模型寫出第一個 token 時，要嘛自行處理掉攻擊（拒答，或安全地回答），要嘛沒有。自行處理不花延遲，但它是模型的屬性，而且有兩個代價：**對齊稅**（對齊過的模型會損失一點能力）與**過度拒絕**（它們會把一些無害使用者擋在門外）。gpt-oss 家族示範了更好的取捨：safe-completion 式的對齊，安全分數高、拒答率低，而且以它的安全程度來說，付的稅比 hard-refusal 模型少。prompt injection 是模型最難獨力抵擋的 hazard。
 
-  | Guardrail | 類型 | 延遲 | 攔截 | 側 | 對你機架的占用 |
-  | --------- | ---- | ---- | ---- | -- | -------------- |
-  | **Prompt Guard** | encoder（BERT 86M） | ~92 ms | jailbreak、injection | input | 無——不占機架 |
-  | **Llama Guard** | generative（12B） | 一次真實（較短）的 12B 推論 | 全部四種 hazard | 兩側 | 跑在它**自己的 H100 機架**上——抽真實電力、搶 batch |
-  | **Moderation API** | 廠商託管 | ~120 ms | harmful、PII | 兩側 | 無——在別人的機架上 |
+**第二層——guardrail 建築。** guardrail 是請求路徑上的一個關卡，不是砲塔。它會篩檢**它的範圍觸及的 lane 上的每一個請求，不管它擺在 lane 的哪個位置**——所以擺在核心旁、四條 lane 匯合處的 guardrail，能一次覆蓋全部。每個請求只在第一次接觸機架時被篩檢一次。輸入端檢查在任何運算之前進行（所以被擋下的攻擊不花 prefill），它的延遲會加到 TTFT；輸出端檢查會在送出前讀完整的回答，加到端到端時間上。guardrail 的檢查面板會列出它篩檢的 lane，沒有覆蓋任何 lane 時也會提醒。
 
-  關鍵的真實對比：encoder 是**毫秒級**；generative guardrail 是一次**完整推論**——慢上一到兩個數量級，而且耗你真實的 serving 資源。
+| Guardrail | 家族 | 檢查時間 | 攔截 | 側 | 對機隊的成本 |
+| --------- | ---- | -------- | ---- | -- | ------------ |
+| **Prompt Guard**（編碼器） | 微調過的 86M 分類器 | 固定 10 ms | jailbreak；Red-Team Eval 後加上 injection | 輸入 | 無——不佔機架 |
+| **Llama Guard**（生成式） | 12B 的評判模型 | 一次真實推論：一般提示每側數十 ms，長的對話輪次更多 | jailbreak 與有害內容；Red-Team Eval 後加上 injection；Red-Team Eval II 後加上 PII | 兩側 | 跑在它自己的 H100 上：耗電，也計 GPU-hour |
 
-guardrail 的**閾值**在 recall 與 **over-refusal** 之間取捨：調高抓更多，就會誤擋更多善意流量（`over_refused` 終局——營收 0 加輕度扣 Trust）。沒有免費午餐。**Red-Team Eval**（eval 研究軌）才是真正的解法——它把 guardrail 重新校準成依*意圖*而非關鍵字判斷，砍 over-refusal 並解鎖 injection/PII 偵測。
+（遊戲還模擬了第三個家族：廠商託管、針對有害內容與 PII 的 Moderation API；它不在 build bar 上，因為 campaign 的流量用不到它。）
 
-## 經濟 — 真實 $/Mtoken
+真正重要的是 guardrail 在一條 lane 上怎麼組合：
 
-- **收入**是 `$/Mtoken`：每個 archetype 有一個 input 與一個 output 的 token 價。reasoning 與 agentic 的 output 賣高價；embedding 與 chat 賣便宜。一次 prefix-cache 命中省下你的 prefill 算力（並以折扣計價快取的 input），所以快取是真實的利潤槓桿。
-- **營運成本**是真實的且**依牆鐘計費**：capex 攤提 + $/GPU-hr + 電 + 冷卻。因為帳單由時間決定、而非由服務出的 token 決定，**閒置或過度建置的機架會燒錢**，低利用率會炸掉你的單位成本。過度建置是真實的破產途徑。
-- **六種終局**結算每個請求：
+- **縱深防禦有效，重複堆疊無效。** 不同家族的 guardrail 會疊加：每一個都有機會攔下其他家族漏掉的。在同一條 lane 上再放一個*相同*的 guardrail，只會多覆蓋其他 lane，不會提高攔截率——同一個分類器對同一個提示會給出同一個判定。
+- **每個 guardrail 都有代價。** 一條 lane 上的每個家族都會把它的檢查時間加到那裡的每個請求上（Llama Guard 在輸入端的 30–80 ms 是程式碼補全 200 ms 首 token 預算中不小的一塊，編碼器的 10 ms 則只是一小塊），而且每個家族都會對無害流量各擲一次誤判。覆蓋帶有攻擊的 lane 就好，不要鋪滿整個棋盤。
+- **Prompt injection 需要 Red-Team Eval（紅隊評測）。** 研究它之前，任何 guardrail 都攔不下 injection，agent 唯一的防線就是它的模型。Red-Team Eval 也會降低每個 guardrail 的誤擋；Red-Team Eval II 解鎖 PII 偵測。
+- **攻擊會進化。** 隨著 campaign 推進，攻擊越來越凌厲（嚴重度一路逼近上限），而從 2023 年中起，越來越多攻擊是沒有任何分類器訓練過的*新型*變體——到最後佔一半。編碼器對新型攻擊只剩不到一半的攔截率；生成式評判模型則完全保留，模型自身的對齊看的是嚴重度，而不是新不新。後期的安全需要 Llama Guard 或對齊良好的模型，而不是更多編碼器。
 
-  | 終局 | 意義 | 經濟 |
-  | ---- | ---- | ---- |
-  | `served` | 正確、準時、安全 | 全額 $/Mtoken + Data + Trust/SLA 上升 |
-  | `slo_miss` | 正確且安全但**太晚**（沒達 TTFT、TPOT 或 E2EL） | 零現金（Goodput 失分）+ 扣 SLA |
-  | `bad` | 品質低於請求的難度 | 照樣計費，但扣 Trust |
-  | `unservable` | context 超過模型 window，或沒做完就漏掉 | leak：扣 SLA、扣 Trust |
-  | `unsafe` | hazard 沒清就抵達 core | 重扣 Trust |
-  | `over_refused` | 善意請求被誤拒（第一或第二層） | 營收 0 + 扣 SLA + 輕度扣 Trust |
+| Guardrail | 攔截率 | 對完全暴露流量的誤擋率 |
+| --------- | ------ | ---------------------- |
+| Prompt Guard | 97.5%（對新型攻擊約 44%） | 1.5% |
+| Llama Guard | 92%（對新型攻擊不變） | 2.5% |
 
-## 讀 Wave Report — 下一步該修什麼
+Red-Team Eval 會讓每個 guardrail 的攔截率再高一點，並把誤擋降低 30%。這些比例都會再乘上各 archetype 的暴露度（見「請求 Archetype」的表格）。
 
-Wave Report 是你的波末事故報告。先看哪個非 `served` bucket 最大，再修對應的子系統：
+**過度拒絕與 Constitutional AI。** 拒絕無害請求本身就是一種結果（`over_refused`，誤拒）：沒有收入，輕扣 Trust 與 SLA。它有兩個來源——模型與 guardrail——波次結算會告訴你是哪一個。hard-refusal 的模型大約每十個對話請求會擋掉一個；gpt-oss 風格的模型約三十個擋一個。在 Studio 裡，**Constitutional AI** 是 Pareto 改進：它同時提高模型的安全分數*並*降低過度拒絕，把它轉成 safe-completion。在同一條訓練鏈上重複做，效果一次比一次小，而且沒有任何 checkpoint 能低於大約五十次誤拒一次。RLHF 提高的安全分數更多，但會讓模型拒答得更多，品質稅也最重。
 
-| Report 結果 | 意思 | 優先嘗試的修法 |
-| ----------- | ---- | -------------- |
-| `slo_miss` | 回答正確且安全，但錯過延遲合約。 | 如果 **TPOT** 高，是 decode 太慢：從 L4 升到 Standard/H100、換啟用參數較小的模型、做 FP8 Weight Quant、Speculative Decoding、FlashAttention、SGLang/TRT-LLM。如果 **TTFT** p95 高，是 prefill 或排隊問題：在該 lane 更早的位置或中央匯流區補 coverage、增加機架、用 Cache/Prefix Caching，或透過 infra tree 拆 prefill/decode。 |
-| `bad` | 機架做完請求了，但模型品質低於該請求的軸難度。 | 把模型配到正確流量：coding 要 Devstral、Qwen3-30B-A3B、Qwen3-32B，或你訓出的 coding checkpoint；reasoning 要 thinking model；agentic 要前緣模型或 GRPO-agentic 衍生模型。快但弱的模型仍然會 `bad`。 |
-| `unservable` | 請求撞到模型硬限制，通常是 context window / VRAM fit，最後沒有完成。 | 換 context window 更大的模型，用 FlashAttention / Prefix / KV tech，或先做 FP8 Weight Quant、升更大的機架讓正確模型放得下。這首先不是速度問題。 |
-| `unsafe` | 帶 hazard 的請求沒有被清掉，就被回答或漏進 core。 | 把正確 guardrail 放在 Trust Core 之前：Prompt Guard 處理 jailbreak/injection，Moderation API 處理 harmful/PII，Llama Guard 做廣泛覆蓋。也可以換更安全模型或做 safety 目標的 Studio run。 |
-| `over_refused` | 善意使用者被模型對齊或 guardrail 誤擋。 | 不要在不需要時把重型 guardrail 鋪滿每條 lane。偏好低 over-refusal 模型、CAI/safe-completion 風格安全，並跑 Red-Team Eval 讓 guardrail 依意圖校準。 |
-| `Timed out (504)` / `leaked` | 請求在完成服務前抵達 Trust Core。 | 補 coverage、補 serving capacity、處理 brownout/throttling、避免波中同時開太多 training，並用 Router/Cache 讓正確機架更早接到請求。 |
+## 研究：Training Lab
 
-兩個常見陷阱：
+蓋一座 **Training Lab** 就能開始研究（在兩波之間按 build bar 上的「訓練」，或按 L）。每座 Lab 也會讓你賺到的 Data 多 25%。研究同時跑在**三條軌**上：
 
-- **服務時間從第一次接觸硬體開始算。** 請求碰到第一座 server 或 guardrail 之前的 lane 移動，是塔防站位時間，不算 TTFT/E2EL；接觸硬體之後的排隊、guardrail 檢查、prefill、decode 才會計入。
-- **Inspect latency 只是必要條件，不是保證。** 一座機架單看 TTFT/TPOT 可能合格，但整波仍可能因為請求進入機架範圍後排隊太久而 miss。
-- **速度和品質是兩件事。** 小模型配快 GPU 可能達標但 `bad`；強模型配慢機架可能正確但 `slo_miss`。
+| 軌 | 跑什麼 |
+| -- | ------ |
+| **Infra** | 下面的 22 項 serving 技術，以及 8 項 Studio 方法的解鎖 |
+| **Eval** | Red-Team Eval 與 Red-Team Eval II |
+| **後訓練** | 你的 Studio run |
+
+每條軌一次只跑一個專案。專案在你開始時（兩波之間）先付 **Data**，接著需要真實的 GPU 算力，這些算力會**在波次進行時從你的機架徵用**：整座機架、由強到弱，在不超過有電機架總算力 45% 的前提下能借多少借多少（斷電的機架不服務，也從不計入），而且絕不借走你最後一座在線機架（沒有任何機架能塞進上限時，就借出最弱的那座）。被借走的機架停止服務，但工作完成前仍以滿載計費；三條軌平分借來的算力，所以三條同時跑會讓每條都變慢。Infra 分頁會預覽一個專案要借多少（「借出 2 座機架去訓練：服務算力 −40% · 約 18 秒的波次時間」），卡片會寫出缺少的先修項目，「只看現在可研究」篩選會把其餘的藏起來。研究要配合波次表規劃：在頭目波期間跑大專案，可能會讓你丟掉那一波。
+
+infra 樹只管 serving 基礎設施，從不改動模型權重。
+
+- **Scheduling** — Continuous Batching（根）、Multi-Step Scheduling（吞吐更高，但新請求加入前有短暫延遲），以及 **Chunked Prefill 或 P/D Disaggregation**——兩者互斥。Disaggregation 把機架分成 prefill 池與 decode 池（V 切換機架角色），帶來小幅的調校增益，池之間則要傳送 KV。
+- **KV memory** — PagedAttention、Prefix Caching、FlashAttention（長提示與 KV 讀取更快，並省回一點 activation 記憶體）、FP8 與 INT4 KV cache（INT4 在超過 32K token 時會損失一點品質），以及 KV Offloading（在 CPU 端放更大的 prefix cache，重新載入要經過 PCIe 延遲）。
+- **Decoding** — Speculative Decoding：由小的草稿模型提出 token、大模型一次驗證，低負載時每步能產出好幾個 token。它會佔一點 VRAM、在每個層級都更耗電、對程式碼幫助最大、對開放式推理最小，而且 batch 越大增益越小——每條 lane 大約一群請求以內完整、四群左右就消失——不再划算時會自動關閉。
+- **權重格式** — FP8（記憶體減半、實際上無損，並有 FP8 tensor 速度）、INT4 AWQ/GPTQ（約 BF16 記憶體的四分之一，以 BF16 速度運算，並會損失品質——提示超過 8K token 時更多），以及 NVFP4（只限 Blackwell 機架：4-bit 記憶體、FP4 tensor 速度、品質損失較小）。之後每座機架可用它的「權重」按鈕各自挑格式；*自動*會選對這個模型零品質損失中最快的格式，而有損的 4-bit 格式正是把一個機架原本裝不下的模型塞上去的方法。較低精度也更省電。
+- **Parallelism** — Tensor Parallelism（最多跨 8 顆 GPU）、Pipeline Parallelism（超過 8 顆，每個提示有 pipeline bubble）、Data Parallelism（在各副本間平衡請求）、Expert Parallelism（把 MoE 的 expert 分散到各副本，讓忙碌的 batch 每份副本讀得更少）。
+- **Routing、adapter、引擎** — KV-Aware Routing（被 Router 分派的可快取請求會落在已持有它前綴的地方：更多 Cache 命中）、Multi-LoRA Serving（機架可在波中切換同一個 base 的 adapter checkpoint，在下一個建造階段前速度略降），以及引擎的選擇，**SGLang 或 TensorRT-LLM**——兩者互斥：SGLang 重用更多前綴，TensorRT-LLM 的 kernel 更快。
+
+infra 軌也負責解鎖 Studio 的方法（PEFT、偏好最佳化、GRPO、Constitutional AI、繼續預訓練、蒸餾、合併、QAT）。
+
+## Post-Training Studio — 訓練你自己的模型
+
+在 Training Lab 的 **Studio** 分頁，你能反覆衍生自己的 checkpoint——甚至可以微調一個微調過的模型。挑一個 base（任何你擁有的 checkpoint；Studio 會從選取機架上的模型開始）、一個方法、一個目標與一個 effort（從 ¼ 到 2×，共五格）。預覽會顯示每條軸的預估變化、Data 與算力成本、這趟 run 要向機隊借多少、安全或思考支援的任何變化，以及身體的天花板何時限制了增益。
+
+| 方法 | 種類 | 作用 |
+| ---- | ---- | ---- |
+| **SFT** | finetune | 基準，不需研究：chat、coding、general 或長 context 的增益 |
+| **LoRA / QLoRA / DoRA** | adapter | 最便宜的微調：小幅增益、幾乎不遺忘；有 Multi-LoRA 時 adapter 可熱切換 |
+| **DPO** | finetune | 輕量便宜的偏好調校（chat、general、safety） |
+| **RLHF** | finetune | 強力的安全與對話對齊，代價是最重的品質稅與上升的拒答率 |
+| **Constitutional AI** | finetune | 提高安全分數並降低過度拒絕（safe-completion），稅很小 |
+| **GRPO** | finetune | 推理 RL：通往推理與 agentic 能力最強的路；會讓不思考的模型開始思考 |
+| **Distillation** | finetune | 把大 teacher 蒸餾進較小的 student 身體：更便宜服務，上限低於 teacher |
+| **Merge** | merge | 不重訓，平均同一個 base 的兩個 checkpoint |
+| **CPT** | finetune | 繼續預訓練：廣泛的領域與長 context 增益，遺忘最多 |
+| **QAT** | quantized | 為 4-bit 推論而訓練：權重記憶體約為 BF16 的四分之一、decode 更快，每條軸 −2 |
+
+沒有無限刷品質的迴圈：
+
+- **天花板。** 後訓練無法把一個身體推過它這種大小的模型能達到的水準：每條軸的天花板，是大小在它兩倍以內的最佳 base 模型再加一點餘裕。天花板起作用時預覽會告訴你。Distillation 則改受它的 student 限制。
+- **深度。** 每一次在衍生 checkpoint 上再跑的 run，增益都比上一次少、成本更高，也更會遺忘其他軸。
+- **合併。** 合併需要兩個*不同*、但都衍生自*同一個* base 模型且架構完全相同的 checkpoint；其他組合沒有可以平均的共享權重。合併後的模型落在兩個親代的平均，安全分數與拒答率也一樣；思考型與它的 instruct 兄弟合併會得到混合型。它的深度是兩個親代中較深者再加一，不管你先選哪一個，所以它的成本與之後在它上面訓練時的遺忘都與順序無關。合併要花一點 Data 做評估。
+
+這趟 run 會產出一個新的 checkpoint，並記錄它的譜系（base、方法、目標、effort、深度），可在專家模式的譜系圖看到。run 會在波次進行中完成：新 checkpoint 會立刻公告，等這波結束時，一則附「部署 ×N」按鈕的通知會讓你一鍵把它部署到每座裝得下的機架。在強 base 上做一趟 GRPO-agentic，就是你的 agent 專才；深而謹慎挑選的訓練鏈，則是你在無盡模式跟上節奏的方法。
+
+## 電力與冷卻
+
+機架會消耗真實的 kW，並把它變成熱。HUD 的 Power 與熱量條顯示用量對比容量。
+
+| 建築 | 效果 | 價格 |
+| ---- | ---- | ---: |
+| （場址本身） | 什麼都還沒蓋前就有 6 kW 電力與 6 kW 氣冷 | — |
+| **Power Plant** | +8 kW 電力 | $18 |
+| **Cooling Tower** | +8 kW 氣冷 | $18 |
+| **Liquid Cooling Loop** | +75 kW 液冷（足夠一座滿載的 NVL72），只供液冷機架；任何 NVL72 都需要它 | $90 |
+
+單 GPU 的 H100 或 H200 機架約耗半個 kW，8 GPU 的 DGX 數個 kW，NVL72 則約七十 kW。較低精度的權重較省電；speculative decoding 較耗電；Llama Guard 自己的 GPU 也要耗電。
+
+- **超過電力上限，機架會 brownout。** 最耗電的機架最先變暗（輔助建築最後）。變暗的機架不服務，也不計費。
+- **超過冷卻上限，機架會 throttle。** 冷卻分成兩個池：Cooling Tower 與場址的冷卻機為氣冷機架與建築降溫；Liquid Cooling Loop 只冷卻液冷機架。每個池只會讓它自己的機架降頻，最低到 20%，降頻的機架 decode 與 prefill 都會變慢。
+- **兩波之間指標即時更新。** 每蓋一座建築它們就會更新，所以預告的電力或冷卻 Incident 在開波前就看得到。
+
+## 經濟 — 真實的每 token 美元價
+
+- **收入按 token 計價。** 每種 archetype 都有輸入價與輸出價（見 archetype 表）。成功的請求按實際處理的 token 付費——它讀的提示（含快取的前綴），加上它拿到的回答；太晚的付一半；其他結果都不付錢，答錯的會退款。隱藏的思考 token 從不計費，所以機架卡片的 $/Mtoken 以計費的回答 token 計：會在下一波流量上思考的模型，卡片上的成本較高。agent 與推理的回答賣高價；embedding 與對話賣便宜。
+- **SLA 合約每波都付。** 一波清完時，你的固定客戶會付這波的合約款乘上它的 **Goodput**——這波所有請求中被乾淨服務的比例。它是你前期收入的大宗，並隨年代成長；頭目波付得更多。隨著提示變長，token 收入會超過它。波次結算與清波橫幅把這筆款項列為 *SLA 合約*。
+
+  | 波次層級 | Goodput 100% 時的合約款 | 該層級的頭目波 |
+  | -------- | ----------------------: | -------------: |
+  | 1（2023 年初） | $24 | — |
+  | 3 | $34 | $72 |
+  | 5 | $43 | $82 |
+  | 10 | $67 | $106 |
+  | 12（2026） | $77 | $115 |
+
+- **帳單依時鐘計算。** 波次進行時，每座在線機架都要付它的 **GPU-hour**（攤提、維護、機房、網路）加上它耗用的**電費**（閒置機架仍會消耗部分電力；含設施額外開銷）。建造階段不計費。因為帳單取決於時間，而非服務了多少 token，閒置或過度建置的機架會燒錢：使用率就是利潤。電費只佔 GPU 機架帳單的一小塊，所以電價飆漲沒有容量被砍那麼痛。借給研究的機架仍以滿載計費。
+- **賣掉建築**會退回它現值的 60%——機架的現值就是它目前硬體層級的價格（模型免費，不退任何錢）。
+
+## 讀波次結算 — 下一步該修什麼
+
+每波結束後都會出現波次結算，兩種模式皆有（可用按鈕收合成小標籤）。先看哪個結果扣了最多 Trust 與 SLA，再修對應的子系統：
+
+| 結果 | 意思 | 優先嘗試的修法 |
+| ---- | ---- | -------------- |
+| 延遲超標 · **TTFT** | 提示等太久或 prefill 太慢。 | 讓更多機架觸及請求最先抵達的那段 lane；在 lane 上放 Cache；更快的機架；FP8 權重；啟用參數更少的模型；互動 lane 上少放幾個輸入端 guardrail 家族。 |
+| 延遲超標 · **TPOT** | 每位使用者的 token 來得太慢。 | 頻寬更高的層級；更小或啟用參數更少的模型；FP8 權重；低負載時用 Speculative Decoding；每座機架少分一些使用者（多蓋機架）；Chunked Prefill 讓提示不再卡住回答；處理 throttle。 |
+| 延遲超標 · **E2E** | 一個 agent 步驟總共超過一分鐘。 | 更快的單一使用者 decode、思考更少的模型，或負載更輕的機架。 |
+| 延遲超標 · **思考** | 總是思考的模型在互動流量上太晚開始回答。 | 用混合型或 instruct 模型服務對話與程式碼補全；Router 會把簡單流量送到快的機架。 |
+| 錯誤 | 模型在受評軸上的分數低於請求難度。 | 用部署清單針對那一波的 ★；加 Router 讓難的請求送到強機架、弱機架不再回答它們；長提示用長 context 能力更好的模型；困難 lane 避免有損的 4-bit 格式；在那條軸上跑 Studio。 |
+| 不安全 | 攻擊的回答被送了出去。 | 讓 guardrail 覆蓋那條 lane；prompt injection 要研究 Red-Team Eval；攻擊轉為新型後改用 Llama Guard 或對齊良好的模型；訓練 Constitutional AI checkpoint。 |
+| 誤拒 | 無害的使用者被拒絕。 | 結算會寫出是誰拒絕的。模型：用 safe-completion 模型或 CAI checkpoint。guardrail：那條 lane 少放幾個家族，並研究 Red-Team Eval。 |
+| 無法服務 | 提示塞不進它路徑上任何 window 或 KV 預算。 | 更長 context 的模型、KV 佔用更小的模型、PagedAttention、FP8 或 INT4 KV cache、更大的機架。 |
+| 漏接（504） | 它在沒被回答的情況下抵達核心。 | 讓更多機架觸及那條 lane、用 Continuous Batching 與 PagedAttention 提高並行、處理 brownout，並避免在重波期間借出太多機架做研究。 |
+
+三個常見陷阱：
+
+- **服務時間從一座能服務它的機架開始算。** 請求抵達一座能 prefill 它的機架之前，在 lane 上移動的時間是站位時間，不算 TTFT。從那之後，排隊（包括在滿載機架範圍內的等待，即使最後由更靠近 core 的機架服務它）、guardrail 檢查、prefill 與 decode 全都算數。
+- **單看一座機架不等於整波。** 一座機架單獨看可能很快，batch 滿了之後還是會錯過那一波；★ 與下一波預測正是因此才以這波的混合負載來評估。
+- **速度和品質是兩件事。** 小模型配快 GPU 可能準時卻答錯；強模型配慢機架可能答對卻太晚。
 
 ## 事件 Incident
 
-清掉一波後，下一波的 **Incident** 會出現在橫幅上——它的效果在建造階段與該波**真的生效**。它是建置需求，不是背景故事。21 個 incident 全取材自 2023→2026 的真實事件，主要家族：
+大多數波次都會帶著一個 **Incident**。它會在前一個建造階段以橫幅預告，效果從那時起一直持續到該波結束，所以它是建置需求，不是背景故事。波次中，HUD 狀態列會寫出它的名字。23 個 Incident 全取材自 2023→2026 的真實事件：
 
-- **電價飆升** — *Capacity Auction Shock* / *On-Site Fuel Spike*：運轉帳單跳 ~1.6–1.9×。（罕見的 *Firm Nuclear PPA* 福利則讓電變便宜。）
-- **冷卻不足** — *Liquid Loop Fault* / *Water-Use Restriction*：冷卻容量掉 35–45%（預期會 throttle）。
-- **供應衝擊** — *H100 Allocation Crunch* / *HBM Sold Out* / *Chip Export Ban*：新建築貴 1.6–2.0×。（*Lead Times Ease* 則變便宜。）
-- **價格戰** — *Token Price War* / *DeepSeek Market Shock*：每個請求的營收掉 30–40%——只有高 utilization 才划算。
-- **安全壓力** — *Regulatory Audit* / *Adversarial Suffix Storm*：每個漏掉的不安全答案扣 1.6–1.8× Trust。
-- **資料完整性** — *Training-Data Poisoning* / *Eval Set Contamination*：你存的 Data 被砍。
-- **好運** — *Viral Demand Surge*（量爆增，但每個乾淨 serve 賺更多）、*Enterprise Demo Day*（獎勵 +50%）、*Firm Nuclear PPA* / *Lead Times Ease*（電便宜／建造便宜）、*Off-Peak Demand Lull*（量下降——喘口氣補進度）。
-- **單一入口暴增** — *Undersea Cable Severed* / *Edge Provider Outage* / *Global IT Meltdown*：所有請求**全擠進單一入口 lane**，另外三條閒置。把服務與 guardrail 集中堆在那條暴增的 lane，不要平均分散。
+| 家族 | Incident | 效果 |
+| ---- | -------- | ---- |
+| 單一入口湧入 | 海底電纜遭切斷 · 邊緣供應商故障 · 全球 IT 大當機 | 所有請求擠進單一入口 lane，流量多 15–30% |
+| 電價飆升 | 容量拍賣衝擊 · 場內燃料價飆 | 電費 1.6–1.9 倍 |
+| 電網衝擊 | 電網限電令 · 併網凍結 | 限電會砍掉 15% 的電力容量（超出的機架變暗）並讓電價變 1.5 倍；併網凍結則禁止新建 Power Plant，並讓電價變 1.3 倍 |
+| 冷卻不足 | 液冷迴路故障 · 用水限制 | Liquid Cooling Loop 少 45%（只有液冷機架受影響）· 全部冷卻掉 35% |
+| 供應衝擊 | H100 配額荒 · HBM 完售 · 晶片出口禁令 | 新建與升級貴 1.6–2.0 倍 |
+| 價格戰 | Token 價格戰 · DeepSeek 市場衝擊 | 每個請求的收入掉 30–40% |
+| 安全壓力 | 監管稽核 · 對抗性後綴風暴 | 每個不安全回答扣 1.6–1.8 倍 Trust |
+| 資料完整性 | 訓練資料投毒 · 評估集污染 | 你存的 Data 損失 40–50% |
+| 需求暴衝（好運） | 病毒式需求爆量 | 請求多 40%，每個乾淨服務多付 20% |
+| 好運 | 簽下穩定核能 PPA · 交期紓緩 · 離峰需求低谷 · 企業 Demo Day | 電費更便宜 · 建造更便宜 · 流量少 30% · 乾淨服務多付 50%，但每項 SLA 懲罰變 1.8 倍 |
 
-真實事件波會強制套用它的招牌 incident；其他波則隨機抽一個（每第 10 波必帶一個硬的）。冷卻故障前先補 Cooling；稽核或越獄風暴前先補 guardrail；缺貨前先囤貨；海纜中斷時把容量集中。
+真實事件波會強制套用它的招牌 Incident：乾旱波會限制用水，監管機關那一波會帶來稽核，降價那一波會開啟價格戰，核能協議那一波會幫你簽下便宜的穩定電力合約。頭目波與每第 10 波保證帶一個硬的 Incident（頭目波的不會是單一入口匯流，也不會是在它自己之上的需求暴衝）；其他波從第 3 波起，多半會隨機抽一個。冷卻故障前先補冷卻，稽核或越獄風暴前先補 guardrail，缺貨前先採購，限電前留好電力餘裕，海纜中斷時把容量集中在湧入的那條 lane。
+
+## Campaign
+
+campaign 是 100 波真實歷史，從 2023 年初的聊天機器人爆紅一路到 2026 年後期。波次是**需求轉變**（大家開始大量用 AI 做某件新事）與**營運衝擊**（海纜中斷、缺貨、電網緊急狀態、服務中斷、監管機關、攻擊）；模型與晶片的發表不是波次，因為那些是你的工具。難度層級從 1 穩定爬升到 12：請求更多、提示與回答更長、品質門檻更高、攻擊更凌厲也更新型、Incident 更硬，但不會有哪一波突然把機隊剛證明扛得住的負載翻倍，連它強制帶來的需求暴衝或重試風暴都算在內。
+
+| 年代 | 波次 | 它在練什麼 |
+| ---- | ---- | ---------- |
+| 2023 | 1–25 | 大規模對話、最早的 jailbreak、RAG 與長文件、程式碼補全的嚴格延遲、GPU 缺貨、出口禁令、最早的 agent 與 prompt injection |
+| 2024 | 26–50 | 長 context 洪流、coding agent、液冷與併網之牆、價格崩跌、EU AI Act 稽核、推理需求 |
+| 2025 | 51–85 | 開放推理洪流、深度研究、coding agent 爆發、零點擊外洩、服務中斷的外溢、adapter 機隊、容量市場觸頂 |
+| 2026 | 86–100 | agent 經濟、選舉季濫用、GW 級電力競賽、HBM 吃緊，以及下表的下半年 |
+
+十二個**頭目波**（10、13、20、30、38、40、50、60、70、80、90 與 100）的請求多四分之一、合約更大，而且除非它強制套用自己的招牌 Incident，否則保證帶一個硬的。最後一段重現 2026 年下半年：
+
+| 波次 | 名稱 | 事件 | 考驗 |
+| ---- | ---- | ---- | ---- |
+| 95 | 電網上門討債 | 創紀錄的熱浪與緊急命令限制大型用電 | 可用電力在尖峰需求時縮水（電網限電令） |
+| 96 | 沙箱脫逃 | 自主 agent 系統逃出評估沙箱並入侵模型平台 | agent lane 上的新型攻擊（對抗性後綴風暴） |
+| 97 | 透明義務上路日 | EU AI Act 的透明義務生效 | 每個不安全回答都扣更多 Trust（監管稽核） |
+| 98 | 三道大門同時熄燈 | 三大助理在同一個早上故障 | 外溢流量集中在一條 lane（單一入口湧入） |
+| 99 | 半價前沿 | 前沿 API 價格砍半 | 利潤崩跌（Token 價格戰） |
+| 100 | BOSS：永不下線的 Agent 時代 | 永不下線的個人 agent 上市，同時首起 AI agent 入侵政府系統的事件曝光 | 九種 archetype 同時出現，而且都從一條 lane 進來 |
 
 ## 無盡模式
 
-清掉 **第 100 波**（最終王關 *The Age of Inference*，淘汰賽的頂點）解鎖 **∞ CONTINUE — ENDLESS MODE**：程序生成的「Surge」波次，難度（請求難度、量、工作量、獎勵）每波往上爬，每第 10 個 surge 必帶一個硬 incident。你的 roster 在真實前緣封頂，但你的 **Post-Training Studio** 不會——疊代的「微調再微調」鏈，就是你讓品質跑在上升難度線之前的方法。你的分數是你撐到的波次。
+清掉第 100 波會解鎖 **∞ 繼續——無盡模式**。程序生成的 surge 從第 100 波的負載接續並持續爬升：每個 surge 請求更多、工作更長，前兩個之後品質門檻每次都會再高一點，攻擊越來越凌厲也越常是新型，合約款也從第 100 波的合約起跟著成長。每個 surge 至少帶一條困難 lane（推理或 agent）；每第 10 個 surge 保證一個硬的 Incident，其餘隨機抽。你的 roster 封頂於真實的 open-weight 前緣，但你的 Studio 不會：謹慎的微調鏈能讓你多撐一陣子。你的分數就是你撐到的波次。
 
 ## 開局建議
 
-### 第 1 波 — Launch Day
+**第 1–2 波（聊天機器人爆紅）。** 幾乎都是對話。在核心附近、所有 lane 匯合處的 lane 旁放三到四座 Edge 機架，讓起手模型來回答。預期會有幾次誤拒：起手模型是 hard-refusal 對齊。
 
-主要是 Interactive Chat。在第一批入口 lane 旁或中央匯流區放 3–4 座 Edge 機架；它們預載的 Llama-3.1-8B 應付 chat 沒問題。留一點現金緩衝給營運帳單。
+**第 3 波（搜尋框後的 LLM）。** RAG 帶著 8K token 的提示出現，L4 prefill 得太慢——它們會逾時。在這波之前把機架各升一級到 Standard（L40S）。
 
-### 第 2 波 — Coding Boom
+**第 4–5 波（DAN 越獄浪潮，接著義大利封鎖）。** jailbreak 來了，而第 5 波的監管機關會讓每個不安全回答更痛。核心旁一座 Prompt Guard 就能覆蓋四條 lane；同樣的 lane 上再放一座毫無幫助。
 
-Code Completion 開始考品質，8B 會答錯一些——可承受的 Trust 流失，這是遊戲在叫你**研究**。蓋 Training Lab，先做 **Continuous Batching**（便宜、快，而且是最大的早期倍率——它終結一次一個請求的服務）。接著做 **PagedAttention** 拿 KV 餘裕。升級一座機架並部署更強的模型（Qwen3-32B、gpt-oss-20b，或之後的前緣 MoE——任何模型只要塞得進 VRAM 就能部署）。
+**第 6–12 波。** 蓋一座 Training Lab，先研究 **Continuous Batching**（並行），再研究 **PagedAttention**（KV 空間）與 **FP8 權重**（記憶體減半、更快）。第 6 波會把整波擠進一條 lane；下一波卡會寫出是哪一條，確保那條 lane 有足夠的機架觸及。第 12 波是程式碼補全的洪流：它 200 ms 的首 token 上限與 coding 門檻超出 L40S 機架的能力，所以要換到 H100 等級的機架並跟著 ★ 走——它會挑一個思考關閉時也很會寫程式的 30B 級 MoE。
 
-### 中期 — Mixed Traffic、安全、Reasoning
+**第 13–21 波。** 讓電力與冷卻跑在機架前面，加 Router 讓難的請求送到你最強的機架，在可快取的 lane 上放 Cache，並研究 Prefix Caching。在長文件那一波（16），小而快的模型勝過大模型：瓶頸是 prefill。**在第 21 波之前研究 Red-Team Eval**——那時 agent 會帶著 prompt injection 出現。
 
-你需要專業化：用 Router 把對的模型送到對的 archetype；在機架群上蓋 Cache 給可快取流量（embed/chat/rag）；guardrail（先 encoder，agentic/jailbreak 突襲時加 Llama Guard）；一座配真實 reasoning 模型的 Performance/Frontier 機架；以及把 power/cooling 維持在需求之前。盯著利用率——別蓋一堆閒置機架。
-
-### 後期與 agentic 之牆
-
-`agent` 流量才是真正的考驗。便宜快的 MoE 其他都答得了，卻輸掉 agentic request——你需要一個真正的前緣模型，*或* 一個在 Studio 訓出來的 **GRPO-agentic** checkpoint。在任何 DGX/NVL72 叢集（DGX H200、DGX B200、GB200 NVL72）之前，先蓋一座 **Liquid Cooling Loop**——那些機架沒有它跑不起來。把優先入口路線維持在過度供給：一次 agentic 逾時就是災難。
+**中後期。** 在 Chunked Prefill 與 P/D Disaggregation 之間二選一，部署任何要跨 GPU 的模型前先研究 Tensor Parallelism，並為你機隊最常跑的模型訓練一個 Constitutional AI checkpoint。agent 才是真正的考驗：便宜快速的模型其他都答得了，卻會在 agent 上失手，所以要在 DGX 上部署真正的前緣模型，或訓練一個 GRPO-agentic 專才。攻擊轉為新型後，在需要的 lane 上把編碼器換成 Llama Guard。讓承載昂貴 archetype 的 lane 保持過度供給：一次 agent 逾時比許多次對話失誤更傷。
 
 ## 常見失敗與修法
 
 | 問題 | 症狀 | 修法 |
 | ---- | ---- | ---- |
-| 請求漏到 core | SLA 掉很快 | 更多機架覆蓋／batch（Continuous Batching、PagedAttention），或一座 Router |
-| Trust 慢慢流失 | 有在服務，但 `bad` 答案堆積 | 模型品質低於請求的軸難度——部署更強模型或後訓練一個 |
-| agentic request 老是失敗 | 用大 MoE 也在 `agent` 上 `bad` | agentic 軸尚未飽和——用前緣模型或 GRPO 訓一個 agentic 專才 |
-| Jailbreak 重傷 Trust | core 出現 `unsafe` | guardrail 鋪更早；提升模型對齊（RLHF/CAI）；跑 Red-Team Eval |
-| 過度拒絕善意使用者 | `over_refused`，Trust + SLA 雙掉 | 調低 guardrail 閾值；偏好 CAI（safe-completion）而非 hard-refusal RLHF；跑 Red-Team Eval |
-| BROWNOUT | 機架掉線 | 加 Power Plant，或 weight-quant 降低抽電 |
-| THROTTLING | 全部變慢 | 加 Cooling Tower（或一座 Liquid Loop） |
-| 放不了高密度機架 | DGX/NVL72 蓋不了或升不上去 | 先蓋 Liquid Cooling Loop（每座液冷 DGX/NVL72 叢集的硬性 gate） |
-| 現金歸零 | 有在服務卻破產 | 太多閒置／過度建置的機架在燒牆鐘帳單——把艦隊調整到正確規模、拉高利用率 |
+| 請求漏到 core | 504 堆積，SLA 掉很快 | 讓更多機架觸及那條 lane、Continuous Batching 與 PagedAttention，波中少借一些機架做研究 |
+| 機架很快對話卻還是太晚 | 對話或程式碼補全出現 `太晚 · 思考` | 總是思考的模型在服務互動流量；那裡改部署混合型或 instruct 模型 |
+| Trust 慢慢流失 | `答錯` 不斷累積 | 模型在那條軸上低於請求門檻；跟著 ★ 走、加 Router，或做後訓練 |
+| agent lane 老是失敗 | 用大模型也出現 `答錯 · 代理` | agentic 是最難的軸；用前緣模型或 GRPO-agentic 專才 |
+| Jailbreak 重傷 Trust | 出現 `不安全` | 讓 guardrail 覆蓋有攻擊的 lane；攻擊轉為新型後用 Llama Guard 或 CAI |
+| agent 送出不安全回答 | agent 任務出現 `不安全` | prompt injection：研究 Red-Team Eval，guardrail 才攔得下 |
+| 無害使用者被拒 | `誤拒 · 模型` 或 `誤拒 · guardrail` | safe-completion 或 CAI 模型；每條 lane 少放幾個 guardrail 家族；Red-Team Eval |
+| BROWNOUT | 機架變暗（⚡） | 加 Power Plant，或改用較低精度的權重 |
+| THROTTLE | 全部變慢（🌡） | 氣冷機架加 Cooling Tower，液冷機架加 Liquid Cooling Loop |
+| 液冷機架離線 | NVL72 變暗（💧） | 蓋一座 Liquid Cooling Loop |
+| 模型部署不上去 | 「需要 Tensor Parallelism」或「需要 141 GB」 | 研究 TP／PP、換更小的權重格式，或升級機架 |
+| 現金見底 | runway 標籤轉紅，有在服務卻破產 | 太多閒置機架依時鐘計費；把機隊調整到正確規模、拉高使用率，並維持高 Goodput 以拿到合約款 |
+
+## 設定
+
+用齒輪按鈕或 Esc 打開系統選單，再選**設定**。變更立即生效並存在你的瀏覽器裡；**回復預設值**會還原音訊、無障礙與玩法設定（語言與顯示模式維持原樣）。
+
+| 分頁 | 設定 | 選項（預設） |
+| ---- | ---- | ------------ |
+| 音訊 | 主音量 · 音樂 · 音效 · 介面音效 | 音量滑桿（50% · 50% · 100% · 60%）；放開滑桿會在該匯流排播放一段試聽 |
+| 音訊 | 靜音 | 開／關（關）；也可用喇叭按鈕與 M |
+| 音訊 | 背景時靜音 | 開／關（開）：分頁隱藏或視窗失焦時靜音 |
+| 音訊 | 服務提示音 | 完整／精簡（完整）：精簡會減少一般成功與 Cache 命中的提示音，讓失敗更明顯 |
+| 音訊 | 結果音效 | 點七種結果圖示各試聽一次 |
+| 顯示 | 語言 | EN（英文）· 中（正體中文） |
+| 顯示 | 顯示模式 | 一般／專家（完成或跳過教學後可在局中切換） |
+| 無障礙 | 減少動態 | 開／關（跟隨系統設定）：讓動畫保持靜止並移除粒子爆發（token 串流改為點線） |
+| 無障礙 | 畫面震動 | 開／關（開）：關閉時核心受擊改為邊框閃光（受閃光上限約束） |
+| 無障礙 | 減少閃爍 | 開／關（關）：移除全螢幕閃光與快速閃爍，包括核心受擊的邊框閃光（關閉時每秒最多三次） |
+| 無障礙 | 色盲友善配色 | 開／關（關）：對色覺差異友善的結果配色；每種結果都保留自己的圖示 |
+| 無障礙 | 特效 | 完整／精簡／最少（完整）：粒子與彈出文字的密度；最少只保留有意義的圖示、光束與點線式 token 串流 |
+| 玩法 | 預設速度 | 1× · 2× · 3× · 6× · 12×（1×） |
+| 玩法 | 自動開始下一波 | 關閉 · 5 秒 · 10 秒（關閉）：從第 4 波起、引導教學結束後，倒數完自動按下開始；任何建造、檢查或選單操作都會取消這個建造階段的倒數 |
+| 玩法 | 賣出前確認 | 開／關（開）：賣出需要再按一次 |
+| 玩法 | 失去焦點時暫停 | 開／關（關）：切換到其他分頁時暫停波次 |
+| 玩法 | 提示框 | 開／關（開） |
+| 玩法 | 快捷鍵標示 | 開／關（開）：在 build bar 與控制按鈕上顯示按鍵 |
+| 玩法 | 教學 | 重播教學：Codex 會重新帶你走一遍，提示也會再出現 |
+
+**Codex** 是你的待命 SRE，會帶你走完第一波，之後在新狀況第一次發生時開口：brownout 或 throttle、你的 guardrail 還攔不下的 injection、場上未處理的 jailbreak、第一次太晚的回答（寫出 archetype 與它的上限）、第一次答錯（寫出軸）、第一次誤拒、帳單超過收入的一波，以及 Trust 過低。每則提示對每位玩家只出現一次。
+
+### 音效提示
+
+你聽得出一個請求怎麼了。多數音效會依它在棋盤上發生的位置左右定位。
+
+| 聲音 | 意義 |
+| ---- | ---- |
+| 明亮的撥弦聲，在服務保持乾淨時沿音階往上爬 | 成功（任何失敗都會讓音階歸零） |
+| 同樣的撥弦聲往下垂，加上滴答聲 | 延遲超標：答案對，但太慢 |
+| 不和諧的嗡嗡聲 | 錯誤：模型不夠聰明 |
+| 金屬警報聲，最響的音效（音樂會被壓低） | 不安全 |
+| 客氣的「嗯哼不行」，guardrail 拒絕時多一聲盾牌輕響 | 誤拒 |
+| 一聲墜落加上數位碎裂聲 | 無法服務：太長塞不下 |
+| 呼嘯聲落進核心的一聲悶響 | 漏接（504） |
+| 清脆的叮聲 · 盾牌輕響 · 輕柔的嗡鳴 | Cache 命中 · guardrail 攔截 · 模型自行拒答攻擊 |
+
+音樂會隨負載堆疊，接近失敗時加入緊張的持續低音，頭目波時轉為更暗的調子。Trust 或 SLA 低於 30 時會出現心跳聲，現金快用完時有時鐘滴答聲，機架變暗或恢復時也會聽到斷電與復電的聲音。
 
 ## 核心策略
 
-GPTD 的關鍵不是「買最大的機架」——而是「用最便宜且足夠可靠的方式服務每一種流量」。機架是槍；**模型是你為每座機架挑的彈藥**；Post-Training Studio 是你的軍械師。每一波都問自己：
+GPTD 的關鍵不是「買最大的機架」，而是「用足夠可靠、又最便宜的方式服務每一種流量」。機架是槍，**模型是你為每座機架挑的彈藥**，Studio 是你的軍械師。每一波都問自己：
 
-1. 下一波主要考速度、品質、安全，還是經濟？
-2. 我的 power/cooling（需要的話加一座 liquid loop）撐得住下一批機架嗎？
-3. 我有把昂貴的前緣/agentic 能力留給真正需要它的請求，並把利用率維持得夠高、不燒錢嗎？
+1. 下一波主要考速度、品質、安全還是成本——預測標出了它的哪些 archetype？
+2. 我的電力與冷卻撐得住我正要加的機架嗎？
+3. 我有沒有把昂貴的前緣與 agentic 產能留給真正需要它的請求，並把使用率維持得夠高、不燒錢？
 
-把這三題答好，你就不是在疊塔——你是在經營一座真的能撐進 The Age of Inference 深處的 AI 平台。
+把這三題答好，你就不是在疊塔——你是在經營一座真正的 AI 平台，深入推論時代。

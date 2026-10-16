@@ -5,11 +5,19 @@
  *                    requests / research) — GPTD's real-grounding showcase.
  *   • AboutPanel   — version, slogan, data-source credential, links.
  *
- * All three are read-only, scroll on the wheel, and share ContentPanel (dim +
- * panel + title + Back + a masked scrolling body). Layout is height-driven so
- * wrapped paragraphs never overlap the next row.
+ * All three are read-only, scroll on the wheel / a touch drag / ↑↓ PgUp PgDn, and
+ * share ContentPanel (dim + panel + title + Back + a masked scrolling body).
+ * Layout is height-driven so wrapped paragraphs never overlap the next row.
  */
-import { Container, Graphics, Sprite, Text, type FederatedWheelEvent, type Texture } from 'pixi.js'
+import {
+  Container,
+  Graphics,
+  Sprite,
+  Text,
+  type FederatedPointerEvent,
+  type FederatedWheelEvent,
+  type Texture,
+} from 'pixi.js'
 import { COLORS, DESIGN_H, DESIGN_W } from '../config'
 import { modelName, reqDesc, reqName, t, towerDesc, towerName } from '../i18n'
 import {
@@ -24,6 +32,8 @@ import {
 } from '../sim/content'
 import { eraTokenRange } from '../sim/campaign'
 import type { TextureFactory } from '../render/textures'
+import { hotkeyRows } from './help'
+import { getPref, setPref } from './prefs'
 import { drawPanel, label, UIButton } from './theme'
 
 const r0 = (v: number): number => Math.round(v)
@@ -51,6 +61,8 @@ export abstract class ContentPanel {
   private viewH: number
   private scrollY = 0
   private contentH = 0
+  /** touch drag-scroll: the pointer y where the drag last was. */
+  private dragY: number | null = null
 
   constructor(
     onBack: () => void,
@@ -81,7 +93,30 @@ export abstract class ContentPanel {
     this.view.addChild(this.dim, this.panel, this.titleLbl, this.back, this.maskG, this.body)
     this.view.eventMode = 'static'
     this.view.on('wheel', (e: FederatedWheelEvent) => this.scrollBy(e.deltaY))
+    // touch: drag the body to scroll (mouse keeps the wheel)
+    this.view.on('pointerdown', (e: FederatedPointerEvent) => {
+      if (e.pointerType === 'touch') this.dragY = e.global.y
+    })
+    this.view.on('globalpointermove', (e: FederatedPointerEvent) => {
+      if (this.dragY === null) return
+      const s = this.view.worldTransform.d || 1
+      this.scrollBy((this.dragY - e.global.y) / s)
+      this.dragY = e.global.y
+    })
+    const end = (): void => {
+      this.dragY = null
+    }
+    this.view.on('pointerup', end)
+    this.view.on('pointerupoutside', end)
     this.view.visible = false
+  }
+
+  /** Keyboard: ↑/↓/PgUp/PgDn scroll the body. Subclasses add tab keys. Returns true when used. */
+  key(code: string): boolean {
+    const step = code === 'ArrowDown' ? 60 : code === 'ArrowUp' ? -60 : code === 'PageDown' ? this.viewH * 0.9 : code === 'PageUp' ? -this.viewH * 0.9 : 0
+    if (!step) return false
+    this.scrollBy(step)
+    return true
   }
 
   protected scrollBy(dy: number): void {
@@ -113,6 +148,7 @@ export abstract class ContentPanel {
     tl.y = y
     if (wrapW) {
       tl.style.wordWrap = true
+      tl.style.breakWords = true // CJK paragraphs have no spaces to wrap at
       tl.style.wordWrapWidth = wrapW
       tl.style.lineHeight = size + 4
     }
@@ -185,24 +221,8 @@ export abstract class ContentPanel {
 
 // ------------------------------------------------------------------ Help -------
 
-const HELP_LOOP =
-  'Waves of AI user requests stream from four ingress lanes toward your central Trust Core. Build a serving platform — GPU racks, models, caches, routers, guardrails, power and cooling — to answer each request correctly, safely, and within its latency SLO before it reaches the core. A request that times out at the core hurts SLA and Trust.'
-
-const HELP_METERS: [string, string][] = [
-  ['help.meter.trust', 'Trust — your reputation. Unsafe answers and timeouts drain it. Hits zero → game over.'],
-  ['help.meter.sla', 'SLA — service level. Late / wrong serves erode it.'],
-  ['help.meter.cash', 'Cash — token revenue funds racks; idle / over-provisioned racks still bleed the operating bill.'],
-  ['help.meter.power', 'Power (kW) — racks draw real power; over capacity browns out GPUs. Build Power Plants.'],
-  ['help.meter.cooling', 'Cooling (kW) — racks emit heat; over capacity thermal-throttles them. Build Cooling Towers.'],
-]
-
-const HELP_KEYS: [string, string][] = [
-  ['Space', 'Start the next wave (build) / pause (during a wave)'],
-  ['1 2 3 6 0', 'Game speed: 1× 2× 3× 6× 12×'],
-  ['M', 'Mute / unmute'],
-  ['` / Tab', 'Toggle the telemetry panel (Expert)'],
-  ['Esc', 'Open the system menu · back · cancel selection'],
-]
+/** The meter lines of How to Play (both locales hold the copy: src/i18n). */
+const HELP_METERS = ['help.meter.trust', 'help.meter.sla', 'help.meter.cash', 'help.meter.power', 'help.meter.cooling']
 
 export class HelpPanel extends ContentPanel {
   constructor(
@@ -217,17 +237,17 @@ export class HelpPanel extends ContentPanel {
     this.clearBody()
     let y = 0
 
-    y = this.sectionHeader(t('help.loop.h', undefined, 'The Loop'), y)
-    y = this.para(t('help.loop.body', undefined, HELP_LOOP), 13, COLORS.text, 0, y, this.bodyW) + 16
+    y = this.sectionHeader(t('help.loop.h'), y)
+    y = this.para(t('help.loop.body'), 13, COLORS.text, 0, y, this.bodyW) + 16
 
-    y = this.sectionHeader(t('help.meters.h', undefined, 'Meters'), y)
-    for (const [key, fb] of HELP_METERS) {
+    y = this.sectionHeader(t('help.meters.h'), y)
+    for (const key of HELP_METERS) {
       this.addText('•', 13, COLORS.sla, 0, y)
-      y = this.para(t(key, undefined, fb), 13, COLORS.text, 18, y, this.bodyW - 18) + 8
+      y = this.para(t(key), 13, COLORS.text, 18, y, this.bodyW - 18) + 8
     }
     y += 8
 
-    y = this.sectionHeader(t('help.requests.h', undefined, 'Requests'), y)
+    y = this.sectionHeader(t('help.requests.h'), y)
     for (const d of REQUEST_LIST) {
       this.addIcon(this.factory.request(d), 0, y - 2, 26)
       this.addText(reqName(d), 13, COLORS.textBright, 38, y, true)
@@ -237,7 +257,7 @@ export class HelpPanel extends ContentPanel {
     }
     y += 8
 
-    y = this.sectionHeader(t('help.towers.h', undefined, 'Buildings'), y)
+    y = this.sectionHeader(t('help.towers.h'), y)
     for (const id of BUILD_ORDER) {
       const d = TOWER_DEFS[id]
       if (!d) continue
@@ -247,11 +267,11 @@ export class HelpPanel extends ContentPanel {
     }
     y += 8
 
-    y = this.sectionHeader(t('help.keys.h', undefined, 'Hotkeys'), y)
-    for (const [k, fb] of HELP_KEYS) {
-      this.addText(k, 13, COLORS.cash, 0, y, true)
-      this.addText(t('help.key.' + k, undefined, fb), 13, COLORS.text, 130, y)
-      y += 24
+    // the same table that binds the keys (ui/help.ts), so the list cannot drift
+    y = this.sectionHeader(t('help.keys.h'), y)
+    for (const row of hotkeyRows()) {
+      this.addText(row.caps, 13, COLORS.cash, 0, y, true)
+      y = Math.max(y + 24, this.para(row.desc, 13, COLORS.text, 190, y, this.bodyW - 190) + 8)
     }
 
     this.setContentHeight(y + 20)
@@ -333,7 +353,7 @@ export interface ChatHost {
 export class CodexBrowser extends ContentPanel {
   private tabBtns: UIButton[] = []
   private chatBtn: UIButton
-  private current = 0
+  private current = Math.max(0, Math.min(CODEX_TABS.length - 1, getPref('codex.tab', 0)))
   private chatActive = false
 
   constructor(
@@ -362,8 +382,21 @@ export class CodexBrowser extends ContentPanel {
   private selectTab(i: number): void {
     this.chatActive = false
     this.current = i
+    setPref('codex.tab', i)
     this.resetScroll()
     this.refresh()
+  }
+
+  /** [ / ] cycle the tabs (chat included, last); otherwise scroll keys. */
+  override key(code: string): boolean {
+    const step = code === 'BracketLeft' ? -1 : code === 'BracketRight' ? 1 : 0
+    if (!step) return this.chatActive ? false : super.key(code)
+    const n = CODEX_TABS.length + 1
+    const cur = this.chatActive ? CODEX_TABS.length : this.current
+    const next = (cur + step + n) % n
+    if (next === CODEX_TABS.length) this.selectChat()
+    else this.selectTab(next)
+    return true
   }
 
   private selectChat(): void {
@@ -409,16 +442,30 @@ export class CodexBrowser extends ContentPanel {
     const rx = this.bodyW - 430
     for (const m of MODEL_LIST) {
       this.swatch(m.real ? COLORS.data : COLORS.textDim, y)
-      const flags = [m.isMoE ? 'MoE' : '', m.isReasoning ? 'Reasoning' : ''].filter(Boolean).join(' · ')
-      const size = m.isMoE ? `${sizeLabel(m.paramsTotalB)} / ${sizeLabel(m.paramsActiveB)} act` : sizeLabel(m.paramsTotalB)
+      const thinks = m.thinking === 'always' ? t('codex.row.reasoning') : m.thinking === 'hybrid' ? t('codex.row.hybrid') : ''
+      const flags = [m.isMoE ? t('codex.row.moe') : '', thinks]
+        .filter(Boolean)
+        .join(' · ')
+      const size = m.isMoE
+        ? t('codex.row.active', { total: sizeLabel(m.paramsTotalB), active: sizeLabel(m.paramsActiveB) })
+        : sizeLabel(m.paramsTotalB)
       this.addText(modelName(m), 14, COLORS.textBright, 16, y, true)
       this.addText(size + (flags ? '  ·  ' + flags : ''), 12, COLORS.sla, rx, y)
       const real = m.real
-      const prov = real ? `${real.developer} · ${real.released} · ${real.license} · ctx ${real.contextWindowK}k` : ''
+      const prov = real
+        ? `${real.developer} · ${real.released} · ${real.license} · ${t('codex.row.ctx', { k: real.contextWindowK })}`
+        : ''
       this.addText(prov, 11, COLORS.textDim, 16, y + 20)
       const q = m.qualityBy
       this.addText(
-        `Q${r0(m.quality)}  ·  chat ${r0(q.chat)} · cod ${r0(q.coding)} · rea ${r0(q.reasoning)} · gen ${r0(q.general)} · agt ${r0(q.agentic)}`,
+        t('codex.row.quality', {
+          q: r0(m.quality),
+          chat: r0(q.chat),
+          code: r0(q.coding),
+          rsn: r0(q.reasoning),
+          gen: r0(q.general),
+          agt: r0(q.agentic),
+        }),
         11,
         COLORS.textDim,
         rx,
@@ -452,7 +499,7 @@ export class CodexBrowser extends ContentPanel {
       this.addIcon(this.factory.request(d), 0, y - 2, 28)
       this.addText(reqName(d), 14, COLORS.textBright, 40, y, true)
       const late = eraTokenRange(d)
-      const meta = `${d.latClass} · ${d.primaryAxis} · ${d.inputTokens}→${d.outputTokens} tok  (${lateLbl} ~${fmtTok(late.input)}→${fmtTok(late.output)}) · $${d.pricePerMtokOut}/Mtok${d.toolUse ? ' · tools' : ''}${d.cacheable ? ' · cacheable' : ''}`
+      const meta = `${d.latClass} · ${t('spec.' + d.primaryAxis)} · ${d.inputTokens}→${d.outputTokens} tok  (${lateLbl} ~${fmtTok(late.input)}→${fmtTok(late.output)}) · $${d.pricePerMtokOut}/Mtok${d.toolUse ? ' · ' + t('codex.row.tools') : ''}${d.cacheable ? ' · ' + t('codex.row.cacheable') : ''}`
       this.addText(meta, 11, COLORS.sla, 40, y + 20)
       const descBottom = this.para(reqDesc(d), 11, COLORS.textDim, this.bodyW - 360, y, 360)
       y = Math.max(y + 44, descBottom) + 8
@@ -466,9 +513,10 @@ export class CodexBrowser extends ContentPanel {
     for (const d of RESEARCH_LIST) {
       const top = y
       const col = kindColor[d.kind] ?? COLORS.textDim
-      this.addText(d.name, 14, COLORS.textBright, 16, top, true)
-      this.addText(`${d.kind} · ${d.dataCost} data`, 12, col, this.bodyW - 160, top)
-      const explain = t('codex.tech.' + d.id, undefined, CODEX_TECH[d.id] ?? d.desc)
+      this.addText(t(`research.${d.id}.name`, undefined, d.name), 14, COLORS.textBright, 16, top, true)
+      this.addText(t('codex.row.research', { kind: t('codex.kind.' + d.kind), data: d.dataCost }), 12, col, this.bodyW - 160, top)
+      // infra nodes carry a Codex blurb; method-unlock and eval nodes reuse their localized research text
+      const explain = t('codex.tech.' + d.id, undefined, CODEX_TECH[d.id] ?? t(`research.${d.id}.desc`, undefined, d.desc))
       const bottom = this.para(explain, 12, COLORS.text, 16, top + 22, this.bodyW - 16)
       // left bar spans the whole row (name → end of the wrapped description) so
       // rows of different line counts read evenly.
@@ -482,9 +530,6 @@ export class CodexBrowser extends ContentPanel {
 // ------------------------------------------------------------------ About ------
 
 const GAME_VERSION = '0.1.0'
-
-const ABOUT_DATA =
-  'GPTD is a tower-defense game built on real-world simulation — every number is grounded in real data. The roster is drawn from real open-weight models; each model’s capability vector is calibrated from public Artificial Analysis benchmark scores, and the serving math — rooflines, KV cache, power/cooling in real kW, token-priced revenue — is grounded in real hardware and pricing.'
 
 const ABOUT_LINKS: { key: string; fallback: string; url: string }[] = [
   { key: 'about.link.aa', fallback: 'Artificial Analysis — the benchmark source', url: 'https://artificialanalysis.ai' },
@@ -503,10 +548,10 @@ export class AboutPanel extends ContentPanel {
     let y = 0
     this.addText('GIGAPROMPT TOWER DEFENSE', 22, COLORS.textBright, 0, y, true)
     y += 34
-    y = this.para(t('about.slogan', undefined, '“The board is the metaphor, the numbers are real.”'), 14, COLORS.sla, 0, y, this.bodyW) + 18
+    y = this.para(t('about.slogan'), 14, COLORS.sla, 0, y, this.bodyW) + 18
 
-    y = this.sectionHeader(t('about.data.h', undefined, 'Where the numbers come from'), y)
-    y = this.para(t('about.data.body', undefined, ABOUT_DATA), 13, COLORS.text, 0, y, this.bodyW) + 16
+    y = this.sectionHeader(t('about.data.h'), y)
+    y = this.para(t('about.data.body'), 13, COLORS.text, 0, y, this.bodyW) + 16
     this.addText(t('about.benchmarks', undefined, 'Artificial Analysis benchmarks:'), 12, COLORS.textBright, 0, y, true)
     y += 22
     y = this.para('MMLU-Pro · GPQA-Diamond · LiveCodeBench · SciCode · TerminalBench-Hard · IFBench · HLE · LCR', 12, COLORS.textDim, 0, y, this.bodyW) + 18
@@ -516,13 +561,7 @@ export class AboutPanel extends ContentPanel {
       y = this.link(t(l.key, undefined, l.fallback), l.url, 0, y) + 8
     }
     y += 8
-    this.addText(
-      t('about.build', { v: GAME_VERSION }, `Build ${GAME_VERSION} · Vite + TypeScript + PixiJS v8 + Web Audio`),
-      11,
-      COLORS.textDim,
-      0,
-      y,
-    )
+    this.addText(t('about.build', { v: GAME_VERSION }), 11, COLORS.textDim, 0, y)
     this.setContentHeight(y + 30)
   }
 }

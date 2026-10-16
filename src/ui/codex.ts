@@ -2,7 +2,9 @@ import { Container, Graphics, Sprite, Text } from 'pixi.js'
 import { COLORS } from '../config'
 import type { TextureFactory } from '../render/textures'
 import { t } from '../i18n'
+import { prefersReducedMotion } from '../settings'
 import { drawPanel, UIButton } from './theme'
+import { uiSound } from './uiSound'
 
 export interface Rect {
   x: number
@@ -40,6 +42,7 @@ export class Codex {
   readonly highlight = new Graphics()
   private targetRect: Rect | null = null
   private t = 0
+  private bubbleTop = AVATAR_Y
 
   constructor(factory: TextureFactory, cb: { onNext: () => void; onSkip: () => void }) {
     this.highlight.eventMode = 'none'
@@ -57,7 +60,9 @@ export class Codex {
         fontSize: 14,
         fill: COLORS.text,
         wordWrap: true,
-        wordWrapWidth: BUBBLE_W - 28,
+        breakWords: true,
+        // a little slack: fallback glyphs (→, CJK) can render wider than they measure
+        wordWrapWidth: BUBBLE_W - 40,
         lineHeight: 19,
       },
     })
@@ -80,12 +85,16 @@ export class Codex {
   }
 
   say(msg: CodexMessage): void {
-    this.view.visible = true
     const hideControls = msg.hideControls ?? false
     // Prefix: tutorial (no speaker) keeps the "CODEX:" persona; an agent passes its
     // own name (e.g. "CLAUDE:") or an empty string for no prefix at all.
     const prefix = msg.speaker === undefined ? t('codex.prefix') : msg.speaker ? `${msg.speaker}:  ` : ''
-    this.txt.text = prefix + msg.text
+    const text = prefix + msg.text
+    // a NEW message chirps (re-showing the same line, e.g. after a modal closed, stays quiet;
+    // the engine rate-limits the cue so an agent narrating every move never chatters)
+    if (text !== this.txt.text) uiSound('codex')
+    this.view.visible = true
+    this.txt.text = text
     const textH = this.txt.height
     const showNext = msg.showNext ?? false
     // Reserve the Skip/Next button row only when the controls are shown; agent
@@ -93,6 +102,7 @@ export class Codex {
     const btnRow = hideControls ? 0 : 34
     const bubbleH = Math.max(hideControls ? 48 : 64, textH + 24 + btnRow)
     const by = AVATAR_Y - 24 - bubbleH
+    this.bubbleTop = by
 
     this.bubble.clear()
     drawPanel(this.bubble, BUBBLE_X, by, BUBBLE_W, bubbleH, { edge: COLORS.sla, alpha: 0.97 })
@@ -128,14 +138,33 @@ export class Codex {
     this.targetRect = null
   }
 
+  /** The bubble's top edge in design px while it shows (a panel above it can stop there). */
+  get top(): number | null {
+    return this.view.visible ? this.bubbleTop : null
+  }
+
+  /** The bubble is waiting on its Next button (Enter can press it). */
+  get awaitingNext(): boolean {
+    return this.view.visible && this.nextBtn.visible
+  }
+
+  /** Enter on the keyboard = the Next button. Returns true when it was pressed. */
+  pressNext(): boolean {
+    if (!this.awaitingNext) return false
+    this.nextBtn.activate()
+    return true
+  }
+
   update(dt: number): void {
     if (!this.view.visible) return
     this.t += dt
-    this.avatar.y = AVATAR_Y + Math.sin(this.t * 3) * 2.5
+    // reduced motion holds the avatar bob and the highlight pulse steady
+    const steady = prefersReducedMotion()
+    this.avatar.y = steady ? AVATAR_Y : AVATAR_Y + Math.sin(this.t * 3) * 2.5
     this.highlight.clear()
     if (this.targetRect) {
       const r = this.targetRect
-      const pulse = 0.5 + 0.5 * Math.sin(this.t * 6)
+      const pulse = steady ? 1 : 0.5 + 0.5 * Math.sin(this.t * 6)
       const pad = 2 + pulse * 2
       this.highlight
         .roundRect(r.x - pad, r.y - pad, r.w + pad * 2, r.h + pad * 2, 8)

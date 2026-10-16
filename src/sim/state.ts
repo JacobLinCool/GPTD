@@ -4,7 +4,18 @@ import type { ActiveModifiers, GameState } from '../core/types'
 import { STARTER_MODELS } from './content'
 
 export function defaultModifiers(): ActiveModifiers {
-  return { powerPrice: 1, coolingCap: 1, buildCost: 1, safetyDamage: 1, volume: 1, reward: 1 }
+  return {
+    powerPrice: 1,
+    coolingCap: 1,
+    buildCost: 1,
+    safetyDamage: 1,
+    volume: 1,
+    reward: 1,
+    powerCap: 1,
+    powerBuild: 1,
+    slaDamage: 1,
+    liquidCoolingCap: 1,
+  }
 }
 
 export function createState(seed = 12345): GameState {
@@ -15,6 +26,7 @@ export function createState(seed = 12345): GameState {
     data: START.data,
     power: { used: 0, cap: START.basePower },
     cooling: { used: 0, cap: START.baseCooling },
+    coolingLiquid: { used: 0, cap: 0 },
     routingPower: 0,
     towers: [],
     requests: [],
@@ -27,7 +39,19 @@ export function createState(seed = 12345): GameState {
     upgrades: {},
     modifiers: defaultModifiers(),
     pendingIncident: null,
-    stats: { served: 0, sloMiss: 0, bad: 0, unservable: 0, unsafe: 0, overRefused: 0, leaked: 0, cashEarned: 0, peakConcurrent: 0 },
+    stats: {
+      served: 0,
+      sloMiss: 0,
+      bad: 0,
+      unservable: 0,
+      unsafe: 0,
+      overRefused: 0,
+      leaked: 0,
+      cashEarned: 0,
+      peakConcurrent: 0,
+      trustLostBy: {},
+      slaLostBy: {},
+    },
     waveStats: null,
     lastReport: null,
     models: Object.fromEntries(STARTER_MODELS.map((id) => [id, true as const])),
@@ -40,12 +64,11 @@ export function createState(seed = 12345): GameState {
       kv: { utilization: 0.55, prefixHitCeil: 0, quantBytes: 2, offloadGb: 0, flash: 0 },
       disagg: false,
       spec: { enabled: false, level: 0 },
-      weightQuantBytes: 2,
+      quant: { fp8: false, int4: false, nvfp4: false },
       par: { tp: false, pp: false, dp: false, ep: false },
       routing: { kvAware: false },
       loraSlots: 0,
       engineTier: 0,
-      throughput: 0,
     },
     research: { infra: null, posttrain: null, eval: null },
     // §3.6 global guardrail decision threshold (no-free-lunch): default 0.5.

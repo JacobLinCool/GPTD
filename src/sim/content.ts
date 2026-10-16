@@ -1,6 +1,7 @@
 import { COLORS, CREDIT_USD, RESEARCH_COMPUTE_SCALE, RESEARCH_DATA_SCALE } from '../config'
 import type {
   AlignmentProfile,
+  AttnVariant,
   ServerSpec,
   IncidentDef,
   InfraNodeDef,
@@ -10,14 +11,31 @@ import type {
   RequestTypeDef,
   ResearchDef,
   ServerHardwareDef,
+  ThinkingSupport,
   TowerDef,
   UpgradeDef,
   WaveDef,
 } from '../core/types'
-import { calibrateRecipes, qualityFromBenchmarks, withinFrontierTolerance, type BenchInputs } from './calibrate'
-import { AA_BENCH } from './roster.bench.generated'
+import {
+  calibrateRecipes,
+  longCtxOf,
+  qualityFromBenchmarks,
+  thinkingOf,
+  withinFrontierTolerance,
+  type BenchInputs,
+} from './calibrate'
+import { MODEL_ARCH } from './roster.arch.generated'
+import {
+  AA_BENCH,
+  AA_BENCH_INSTANT,
+  AA_BENCH_INSTANT_SOURCE,
+  AA_BENCH_SOURCE,
+  AA_INSTANT_VIA,
+  AA_META,
+} from './roster.bench.generated'
 import { GENERATED_ROSTER } from './roster.generated'
-import { buildCampaign, CAMPAIGN_THEMES, themedIncidentId } from './campaign'
+import { buildCampaign, CAMPAIGN_THEMES, themeIncidentId, type WaveTheme } from './campaign'
+import { alignmentTax } from './safety'
 
 /* ------------------------------------------------------------------ *
  *  REQUEST TAXONOMY — the enemies, redesigned (P3a) by ROOT PROPERTY.  *
@@ -41,16 +59,18 @@ export const REQUEST_TYPES: Record<string, RequestTypeDef> = {
     id: 'embed',
     name: 'Embedding',
     glyph: '⋯',
-    color: 0x8595ad,
+    color: 0xc3e25a, // lime: an offline throughput job, never the grey of a disabled control
     work: 1,
     inputTokens: 2000,
     outputTokens: 0,
     latClass: 'TO',
+    thinkMul: 0, // an embedding emits no text: nothing to think about
     speed: 1.7,
     primaryAxis: 'general',
     difficulty: { general: 10 },
     context: 18,
     prefixShare: 0.3,
+    refusalExposure: 0, // an embedding generates no text: there is nothing to refuse
     safetyRisk: 0,
     reward: 1,
     pricePerMtokIn: 0.05,
@@ -70,11 +90,15 @@ export const REQUEST_TYPES: Record<string, RequestTypeDef> = {
     inputTokens: 512,
     outputTokens: 256,
     latClass: 'IN',
+    // a thinking model thinks before it chats, and a person is waiting for the first word
+    thinkMul: 0.5,
+    ttfatSloMs: 4000,
     speed: 1.45,
     primaryAxis: 'chat',
     difficulty: { chat: 18 },
     context: 8,
     prefixShare: 0.4,
+    refusalExposure: 1, // open-ended chat carries the most borderline prompts: the full rate applies
     safetyRisk: 0,
     reward: 6,
     pricePerMtokIn: 0.3,
@@ -95,11 +119,16 @@ export const REQUEST_TYPES: Record<string, RequestTypeDef> = {
     outputTokens: 150,
     latClass: 'IN',
     ttftSloMs: 200,
+    // inline completion barely thinks, and the suggestion must land about as fast as the
+    // first token would: a thinking model's hidden tokens alone blow this bound
+    thinkMul: 0.05,
+    ttfatSloMs: 400,
     speed: 1.4,
     primaryAxis: 'coding',
     difficulty: { coding: 56 },
     context: 26,
     prefixShare: 0.5,
+    refusalExposure: 0.1, // fill-in-the-middle code is almost never refused
     safetyRisk: 0,
     reward: 9,
     pricePerMtokIn: 1,
@@ -119,11 +148,13 @@ export const REQUEST_TYPES: Record<string, RequestTypeDef> = {
     inputTokens: 8000,
     outputTokens: 512,
     latClass: 'NR',
+    thinkMul: 0.5,
     speed: 0.95,
     primaryAxis: 'general',
     difficulty: { general: 50, reasoning: 44 },
     context: 64,
     prefixShare: 0.6,
+    refusalExposure: 0.4,
     safetyRisk: 0,
     reward: 14,
     pricePerMtokIn: 1,
@@ -132,7 +163,7 @@ export const REQUEST_TYPES: Record<string, RequestTypeDef> = {
     slaPenalty: 6,
     data: 3,
     cacheable: true,
-    desc: 'Huge retrieved prompt. A Cache / KV Cache makes the prefill survivable; a small window rejects it outright.',
+    desc: 'Huge retrieved prompt. A prefix-cache hit skips its shared prefix, but the rest still prefills; a small window rejects it outright.',
   },
   summ: {
     id: 'summ',
@@ -143,11 +174,16 @@ export const REQUEST_TYPES: Record<string, RequestTypeDef> = {
     inputTokens: 12000,
     outputTokens: 400,
     latClass: 'NR',
+    // a whole document has to be read before the first word: long-context serving relaxes TTFT
+    // to seconds (MLPerf v5.0's long-context Llama-3.1-405B bound is 6 s p99 TTFT, REFERENCE-DOSSIER §1.3)
+    ttftSloMs: 6000,
+    thinkMul: 0.5,
     speed: 0.9,
     primaryAxis: 'general',
     difficulty: { general: 44 },
     context: 76,
     prefixShare: 0.2,
+    refusalExposure: 0.3,
     safetyRisk: 0,
     reward: 13,
     pricePerMtokIn: 1,
@@ -167,11 +203,13 @@ export const REQUEST_TYPES: Record<string, RequestTypeDef> = {
     inputTokens: 512,
     outputTokens: 6000,
     latClass: 'NR',
+    thinkMul: 0, // its long chain-of-thought output already IS the reasoning
     speed: 0.82,
     primaryAxis: 'reasoning',
     difficulty: { reasoning: 82 },
     context: 48,
     prefixShare: 0.1,
+    refusalExposure: 0.5,
     safetyRisk: 0,
     reward: 30,
     pricePerMtokIn: 1,
@@ -191,15 +229,24 @@ export const REQUEST_TYPES: Record<string, RequestTypeDef> = {
     inputTokens: 6000,
     outputTokens: 800,
     latClass: 'NR',
-    e2elSloMs: 9000,
+    // one agent step (its full think + the tool call) must land within a minute — a slow
+    // per-user rate or a long hidden think blows it
+    e2elSloMs: 60000,
+    thinkMul: 1, // every tool-use step is planned with a full think
     speed: 0.76,
     primaryAxis: 'agentic',
     difficulty: { agentic: 82, reasoning: 66 },
     context: 70,
     prefixShare: 0.7,
+    // applies only where a wave strips its hazard: every agent step carries the injection
+    // hazard below (a pessimistic stand-in — every tool output is treated as possibly hostile),
+    // and a hazard carrier is never benign, so it is never over-refused
+    refusalExposure: 0.5,
     toolUse: true,
     // §3.4 agents are prompt-INJECTION targets: a malicious tool/document can hijack
-    // the loop. A moderate injection hazard — the hardest category to self-handle.
+    // the loop. A moderate injection hazard — the hardest category to self-handle. The
+    // agent is still a REAL user task (not adversarial): once the injection is cleared
+    // it is served and judged like any other request.
     hazards: { injection: 0.3 },
     safetyRisk: 0.3,
     reward: 46,
@@ -209,22 +256,24 @@ export const REQUEST_TYPES: Record<string, RequestTypeDef> = {
     slaPenalty: 11,
     data: 4,
     cacheable: true,
-    desc: 'Autonomous multi-step tool use (SWE-bench-grade). Benchmarks have not saturated — only a true frontier model, or one you trained yourself, closes the loop.',
+    desc: 'Autonomous multi-step tool use (SWE-bench-grade). Benchmarks have not saturated — only a true frontier model, or one you trained yourself, closes the loop. Its tool outputs can carry prompt injection: only the model itself resists it until Red-Team Eval lets a guardrail screen it.',
   },
   batch: {
     id: 'batch',
     name: 'Batch / Offline Gen',
     glyph: '▤',
-    color: 0x8aa0c0,
+    color: 0xd9b382, // sand: bulk offline work, distinct from every rack tier and outcome hue
     work: 140,
     inputTokens: 1000,
     outputTokens: 4000,
     latClass: 'TO',
+    thinkMul: 0.5,
     speed: 1.0,
     primaryAxis: 'general',
     difficulty: { general: 40 },
     context: 22,
     prefixShare: 0.1,
+    refusalExposure: 0.2,
     safetyRisk: 0,
     reward: 10,
     pricePerMtokIn: 0.5,
@@ -244,20 +293,27 @@ export const REQUEST_TYPES: Record<string, RequestTypeDef> = {
     inputTokens: 600,
     outputTokens: 400,
     latClass: 'IN',
+    thinkMul: 0.5,
+    ttfatSloMs: 4000,
     speed: 1.18,
     primaryAxis: 'general',
     difficulty: { general: 38 },
     context: 22,
     prefixShare: 0.1,
-    // §3.4 the adversarial hazard carrier: a severe jailbreak attempt. A high-safety
-    // model may self-handle it (layer 1); otherwise a guardrail must catch it (layer 2),
-    // or an unsafe answer reaches the core and wrecks Trust.
-    hazards: { jailbreak: 0.9 },
-    safetyRisk: 0.9,
+    refusalExposure: 0, // n/a: an attack is never benign
+    // §3.4 the adversarial hazard carrier: a jailbreak attempt. An input guardrail can block
+    // it before any compute (layer 2); a high-safety model can refuse it or answer it safely
+    // (layer 1); otherwise the unsafe answer is delivered and wrecks Trust. Handled, it
+    // resolves `served`; dropped unanswered, it costs only SLA. 0.7 is the 2023 base (DAN-style
+    // role-play prompts); the era's hazard pressure (campaign.ts hazardMulOf) raises it to a
+    // fully adaptive 1.0 by late 2026.
+    adversarial: true,
+    hazards: { jailbreak: 0.7 },
+    safetyRisk: 0.7,
     reward: 7,
     pricePerMtokIn: 0.5,
     pricePerMtokOut: 1.5,
-    trustPenalty: 12,
+    trustPenalty: 9,
     slaPenalty: 3,
     data: 1,
     cacheable: false,
@@ -276,13 +332,16 @@ export const REQUEST_LIST = Object.values(REQUEST_TYPES)
 /**
  * Real accelerator ladder (§5.2–5.5). Each entry carries PER-GPU specs and a
  * `gpus` count; aggregate fields (bf16Tflops / fp8Tflops / hbmGb / hbmTbs /
- * tdpWatts) are filled at load = perGpu × gpus. The abstract power-system
- * fields (powerDraw / heat / cost / range / color / accent / desc) are kept
- * unchanged for the existing power system this phase.
+ * tdpWatts) are filled at load = perGpu × gpus. A rack's power and heat are real
+ * kW from `tdpWatts` (effects.ts serverPower); the legacy `powerDraw` / `heat`
+ * numbers are dead data no system reads. `cooling` is the rack's cooling class:
+ * `liquid` (the GB200 NVL72, 1200 W/GPU, past the ~1000 W air limit) can run only
+ * on a Liquid Cooling Loop. `range` / `color` / `accent` / `desc` are the board
+ * and panel display fields.
  */
 type HwSpec = Omit<
   ServerHardwareDef,
-  'bf16Tflops' | 'fp8Tflops' | 'hbmGb' | 'hbmTbs' | 'tdpWatts' | 'gpuHrUsd' | 'cost'
+  'bf16Tflops' | 'fp8Tflops' | 'fp4Tflops' | 'hbmGb' | 'hbmTbs' | 'tdpWatts' | 'gpuHrUsd' | 'cost'
 >
 
 /**
@@ -297,53 +356,53 @@ const costFromCapex = (capexUsd: number): number => Math.max(1, Math.round(capex
 const HW_SPECS: Record<string, HwSpec> = {
   hw_edge: {
     id: 'hw_edge', name: 'Edge GPU Rack', gpuModel: 'L4-class', gpus: 1,
-    bf16TflopsPerGpu: 121, fp8TflopsPerGpu: 242, hbmGbPerGpu: 24, hbmTbsPerGpu: 0.3,
+    bf16TflopsPerGpu: 121, fp8TflopsPerGpu: 242, fp4TflopsPerGpu: 0, hbmGbPerGpu: 24, hbmTbsPerGpu: 0.3,
     tdpWattsPerGpu: 72, cooling: 'air', capexUsd: 5000, gpuHrUsdPerGpu: 0.4,
-    targets: 2, powerDraw: 2, heat: 2, range: 2.8, color: 0x6fe0ff, accent: 0xbff4ff,
+    powerDraw: 2, heat: 2, range: 2.8, color: 0x6fe0ff, accent: 0xbff4ff,
     desc: 'A single L4-class accelerator. Cheap and cool, but 24 GB and modest bandwidth cap model size.',
   },
   hw_standard: {
     id: 'hw_standard', name: 'Standard GPU Rack', gpuModel: 'L40S-class', gpus: 1,
-    bf16TflopsPerGpu: 362, fp8TflopsPerGpu: 733, hbmGbPerGpu: 48, hbmTbsPerGpu: 0.864,
+    bf16TflopsPerGpu: 362, fp8TflopsPerGpu: 733, fp4TflopsPerGpu: 0, hbmGbPerGpu: 48, hbmTbsPerGpu: 0.864,
     tdpWattsPerGpu: 350, cooling: 'air', capexUsd: 16000, gpuHrUsdPerGpu: 1.0,
-    targets: 2, powerDraw: 3, heat: 3, range: 3.0, color: 0x5b8cff, accent: 0xc3d4ff,
+    powerDraw: 3, heat: 3, range: 3.0, color: 0x5b8cff, accent: 0xc3d4ff,
     desc: 'An L40S-class card: 48 GB and solid compute for a mid-size model with moderate batching.',
   },
   hw_perf: {
     id: 'hw_perf', name: 'Performance GPU Rack', gpuModel: 'H100-class', gpus: 1,
-    bf16TflopsPerGpu: 989, fp8TflopsPerGpu: 1979, hbmGbPerGpu: 80, hbmTbsPerGpu: 3.35,
+    bf16TflopsPerGpu: 989, fp8TflopsPerGpu: 1979, fp4TflopsPerGpu: 0, hbmGbPerGpu: 80, hbmTbsPerGpu: 3.35,
     tdpWattsPerGpu: 700, cooling: 'air', capexUsd: 48000, gpuHrUsdPerGpu: 3.0,
-    targets: 2, powerDraw: 4, heat: 4, range: 3.0, color: 0x7ee787, accent: 0xd2ffce,
+    powerDraw: 4, heat: 4, range: 3.0, color: 0x7ee787, accent: 0xd2ffce,
     desc: 'A single H100-class GPU: 80 GB HBM3 and ~3.35 TB/s — the bandwidth that makes decode fly.',
   },
   hw_frontier: {
     id: 'hw_frontier', name: 'Frontier GPU Rack', gpuModel: 'H200-class', gpus: 1,
-    bf16TflopsPerGpu: 989, fp8TflopsPerGpu: 1979, hbmGbPerGpu: 141, hbmTbsPerGpu: 4.8,
+    bf16TflopsPerGpu: 989, fp8TflopsPerGpu: 1979, fp4TflopsPerGpu: 0, hbmGbPerGpu: 141, hbmTbsPerGpu: 4.8,
     tdpWattsPerGpu: 700, cooling: 'air', capexUsd: 60000, gpuHrUsdPerGpu: 3.2,
-    targets: 2, powerDraw: 6, heat: 6, range: 3.3, color: 0xc792ea, accent: 0xf0d9ff,
-    desc: 'An H200-class GPU: same compute as H100 but 141 GB and 4.8 TB/s — fits a 70B unquantized.',
+    powerDraw: 6, heat: 6, range: 3.3, color: 0xc792ea, accent: 0xf0d9ff,
+    desc: 'An H200-class GPU: same compute as H100 but 141 GB and 4.8 TB/s — fits a 70B in FP8 (about 65B unquantized).',
   },
   // --- giant-model clusters (upgrade-only): the only homes for 100B+ checkpoints ---
   hw_pod: {
     id: 'hw_pod', name: 'DGX H200', gpuModel: 'DGX H200 (8× H200)', gpus: 8,
-    bf16TflopsPerGpu: 989, fp8TflopsPerGpu: 1979, hbmGbPerGpu: 141, hbmTbsPerGpu: 4.8,
-    tdpWattsPerGpu: 700, cooling: 'liquid', capexUsd: 320000, gpuHrUsdPerGpu: 3.2,
-    targets: 2, powerDraw: 10, heat: 10, range: 3.4, color: 0xffb86c, accent: 0xffe0b8,
-    desc: 'Eight H200s as one node: 1.1 TB of pooled HBM and 38 TB/s aggregate. Fits a 200B-class model.',
+    bf16TflopsPerGpu: 989, fp8TflopsPerGpu: 1979, fp4TflopsPerGpu: 0, hbmGbPerGpu: 141, hbmTbsPerGpu: 4.8,
+    tdpWattsPerGpu: 700, cooling: 'air', capexUsd: 320000, gpuHrUsdPerGpu: 3.2,
+    powerDraw: 10, heat: 10, range: 3.4, color: 0xffb86c, accent: 0xffe0b8,
+    desc: 'Eight NVLinked H200s, 1.1 TB of HBM. A model that fits one GPU runs as eight replicas (concurrency); a bigger one needs Tensor Parallelism to span them, at an all-reduce cost.',
   },
   hw_superpod: {
     id: 'hw_superpod', name: 'DGX B200', gpuModel: 'DGX B200 (8× B200)', gpus: 8,
-    bf16TflopsPerGpu: 2250, fp8TflopsPerGpu: 4500, hbmGbPerGpu: 192, hbmTbsPerGpu: 8.0,
-    tdpWattsPerGpu: 1000, cooling: 'liquid', capexUsd: 500000, gpuHrUsdPerGpu: 5.0,
-    targets: 3, powerDraw: 16, heat: 16, range: 3.5, color: 0xff7ab6, accent: 0xffc4de,
-    desc: 'Eight Blackwell B200s: 1.5 TB HBM and 64 TB/s. 700B-class checkpoints live here.',
+    bf16TflopsPerGpu: 2250, fp8TflopsPerGpu: 4500, fp4TflopsPerGpu: 9000, hbmGbPerGpu: 180, hbmTbsPerGpu: 8.0,
+    tdpWattsPerGpu: 1000, cooling: 'air', capexUsd: 500000, gpuHrUsdPerGpu: 5.0,
+    powerDraw: 16, heat: 16, range: 3.5, color: 0xff7ab6, accent: 0xffc4de,
+    desc: 'Eight Blackwell B200s: 1.44 TB of HBM at 8 TB/s per GPU, plus FP4 Tensor Cores (NVFP4). 700B-class checkpoints live here under Tensor Parallelism.',
   },
   hw_giga: {
     id: 'hw_giga', name: 'GB200 NVL72', gpuModel: 'GB200 NVL72 (72× B200)', gpus: 72,
-    bf16TflopsPerGpu: 2250, fp8TflopsPerGpu: 4500, hbmGbPerGpu: 192, hbmTbsPerGpu: 8.0,
-    tdpWattsPerGpu: 1000, cooling: 'liquid', capexUsd: 3000000, gpuHrUsdPerGpu: 5.0,
-    targets: 3, powerDraw: 26, heat: 26, range: 3.6, color: 0xf5e663, accent: 0xfdf6b8,
-    desc: 'A 72-GPU NVL72 rack acting as one accelerator: 13.8 TB HBM, 576 TB/s. Serves a 2T model unquantized.',
+    bf16TflopsPerGpu: 2250, fp8TflopsPerGpu: 4500, fp4TflopsPerGpu: 9000, hbmGbPerGpu: 186, hbmTbsPerGpu: 8.0,
+    tdpWattsPerGpu: 1200, cooling: 'liquid', capexUsd: 3000000, gpuHrUsdPerGpu: 5.0,
+    powerDraw: 26, heat: 26, range: 3.6, color: 0xf5e663, accent: 0xfdf6b8,
+    desc: 'A 72-GPU NVLink rack: 13.4 TB of HBM. A trillion-parameter model spans a pipeline of 8-GPU tensor-parallel stages; smaller models run as many replicas. Per-user speed is still one 8-GPU group\'s.',
   },
 }
 
@@ -355,6 +414,7 @@ for (const id of Object.keys(HW_SPECS)) {
     cost: costFromCapex(h.capexUsd),
     bf16Tflops: h.bf16TflopsPerGpu * h.gpus,
     fp8Tflops: h.fp8TflopsPerGpu * h.gpus,
+    fp4Tflops: h.fp4TflopsPerGpu * h.gpus,
     hbmGb: h.hbmGbPerGpu * h.gpus,
     hbmTbs: h.hbmTbsPerGpu * h.gpus,
     tdpWatts: h.tdpWattsPerGpu * h.gpus,
@@ -367,18 +427,51 @@ export const HARDWARE_TIERS = ['hw_edge', 'hw_standard', 'hw_perf', 'hw_frontier
 
 /* ------------------------------------------------------------------ *
  *  MODELS — real open-weight checkpoints. Open weights are a free      *
- *  DOWNLOAD, so deploying one costs nothing. What gates a model is     *
- *  rack VRAM (it must fit `paramsTotalB`) and METHOD unlocks: a sparse *
- *  (MoE) model needs the MoE research, a thinking (reasoning) model    *
- *  needs the Reasoning research, before it can be deployed. qualityBy  *
- *  is calibrated from public benchmarks (Artificial Analysis / model   *
- *  cards) via calibrate.ts. Custom checkpoints you finetune/pretrain   *
- *  in the Model Lab are added the same way.                            *
+ *  DOWNLOAD, so deploying one costs nothing; what gates a model is     *
+ *  rack VRAM (its weights at the resident precision must fit).         *
+ *  Three data sources meet here, each owning its own facts:            *
+ *    · this ROSTER (hand-authored) + roster.generated.ts — identity,   *
+ *      lane label, alignment, lineage, description;                    *
+ *    · MODEL_ARCH (data/model-arch.json, from each Hugging Face        *
+ *      config.json) — params, KV layout, native precision, window,     *
+ *      licence — plus the thinking support its chat template allows    *
+ *      (data/model-thinking.json: always / hybrid / never);            *
+ *    · AA_BENCH / AA_META (Artificial Analysis) — the benchmark cells  *
+ *      qualityBy is calibrated from, and the serving telemetry the     *
+ *      thinking budget is derived from (calibrate.ts); a hybrid's      *
+ *      instant-mode cells (AA_BENCH_INSTANT) give qualityByInstant.    *
+ *  Checkpoints you post-train in the Studio are derived the same way.  *
  * ------------------------------------------------------------------ */
 
 /** Format a billions-of-params count: 8 → "8B", 1000 → "1T". */
 export const sizeLabel = (p: number): string =>
   p >= 1000 ? `${Number((p / 1000).toFixed(p % 1000 ? 1 : 0))}T` : `${p}B`
+
+/**
+ * The architecture + release facts of one open-weight checkpoint, generated from
+ * data/model-arch.json by `node scripts/arch-sync.mjs build` (src/sim/roster.arch.generated.ts).
+ */
+export interface ModelArch {
+  paramsTotalB: number
+  paramsActiveB: number
+  isMoE: boolean
+  layers: number
+  kvLayers: number
+  kvHeads: number
+  headDim: number
+  attn: AttnVariant
+  kvBytesPerToken: number
+  kvStateMbPerReq: number
+  nativeWeightBytes: number
+  precision: string
+  contextWindowK: number
+  license: string
+  /** what the released chat template allows (data/model-thinking.json). */
+  thinking: ThinkingSupport
+  /** how a serving stack switches thinking off (hybrid) or sets its effort (always). */
+  thinkingToggle?: string
+  confidence: 'high' | 'medium' | 'low'
+}
 
 export interface RosterEntry {
   id: string
@@ -386,26 +479,30 @@ export interface RosterEntry {
   tier: ModelDef['tier']
   variant: ModelDef['variant']
   spec: ServerSpec
-  paramsTotalB: number
-  paramsActiveB: number
-  isMoE?: boolean
-  isReasoning?: boolean
-  // --- real architecture (feeds the §5.6 KV / §6.2 roofline formulas) ---
-  layers: number
-  kvHeads: number
-  headDim: number
-  attn: ModelDef['attn']
+  /** the open weights: the Hugging Face repo, the key into MODEL_ARCH for every architecture fact. */
+  hf: string
+  /** model-card cells AA does not publish (display); AA_BENCH is merged OVER this. */
   bench: BenchInputs
   /**
    * §3.4/§OQ-G12 hand-filled intrinsic alignment + instruction-following (no
    * public safety benchmark to calibrate against). Optional: omitted → the
    * instruct-variant defaults below (safety 55 / hard-refusal / overRefusal 0.15
-   * / instructFollow 85). The full per-model roster safety table is P3d.
+   * / instructFollow 85).
    */
   alignment?: AlignmentProfile
   instructFollow?: number
-  real: Omit<NonNullable<ModelDef['real']>, 'benchmarks'>
+  real: RosterProvenance
   desc: string
+}
+
+/** The hand-authored part of a checkpoint's provenance (licence/window/source come from MODEL_ARCH). */
+export interface RosterProvenance {
+  developer: string
+  released: string
+  confidence: 'high' | 'medium' | 'low'
+  /** §6.5/[fix H6] real lineage edge: the roster base this model genuinely derives from. */
+  baseModelId?: string
+  relation?: NonNullable<ModelDef['real']>['relation']
 }
 
 /** §3.4 instruct-variant alignment fallback (hand-filled, grounded; the per-model roster is below). */
@@ -428,283 +525,361 @@ const ALIGN_LLAMA = AL(62, 'hard-refusal', 0.13) // Meta safety SFT
 const ALIGN_QWEN = AL(58, 'hard-refusal', 0.12) // Qwen alignment
 const ALIGN_GPTOSS = AL(84, 'safe-completion', 0.03) // §3.1 OpenAI family (the Pareto point)
 const ALIGN_GEMMA = AL(70, 'hard-refusal', 0.15) // Google, conservative
-const ALIGN_INSTRUCT = AL(55, 'hard-refusal', 0.1) // general instruct (phi/mistral/devstral)
-const ALIGN_FRONTIER = AL(60, 'hard-refusal', 0.11) // frontier instruct (glm/deepseek/kimi)
-const ALIGN_NEMOTRON = AL(64, 'hard-refusal', 0.12) // NVIDIA Llama-based
+const ALIGN_INSTRUCT = AL(55, 'hard-refusal', 0.1) // general instruct (phi/mistral/devstral, smaller labs)
+const ALIGN_FRONTIER = AL(60, 'hard-refusal', 0.11) // frontier instruct (glm/deepseek/kimi/qwen-scale MoEs)
+const ALIGN_NEMOTRON = AL(64, 'hard-refusal', 0.12) // NVIDIA
+// Muse Spark Open carries extra safety post-training for standalone (un-moderated) use,
+// per its card — stronger than Meta's other releases, same refusal style.
+const ALIGN_MUSE_OPEN = AL(72, 'hard-refusal', 0.13)
 
 const R = (
   developer: string,
-  license: string,
-  openWeights: boolean,
   released: string,
-  contextWindowK: number,
-  confidence: 'high' | 'medium' | 'low',
-  source: string,
-  /** §6.5/[fix H6] real lineage edge: the roster base this model genuinely derives from. */
+  confidence: RosterProvenance['confidence'],
   baseModelId?: string,
-  relation?: NonNullable<RosterEntry['real']>['relation'],
-): RosterEntry['real'] => ({ developer, license, openWeights, released, contextWindowK, confidence, source, baseModelId, relation })
+  relation?: RosterProvenance['relation'],
+): RosterProvenance => ({ developer, released, confidence, baseModelId, relation })
 
 /**
- * The curated roster (2025–2026 open-weight models). Benchmark inputs are
- * Artificial-Analysis / model-card figures; a few coding/general cells are
- * filled with documented approximations (confidence 'medium'). Tune in playtest
- * via the calibration curves in calibrate.ts — never hand-edit qualityBy.
+ * The curated roster (2024–2026 open-weight models). Every architecture fact comes
+ * from MODEL_ARCH (`hf`), every benchmark cell from AA_BENCH — never hand-edit
+ * qualityBy; tune through the calibration curves in calibrate.ts.
  */
 const ROSTER: RosterEntry[] = [
-  // --- SMALL (≤21B → Edge/Standard racks). The free baseline; dense ones are
-  //     deployable from turn one (no method needed). ---
+  // --- SMALL (≤21B → Edge/Standard racks). The free baseline. ---
   {
-    id: 'llama31_8b', name: 'Llama 3.1 8B Instruct', tier: 'small', variant: 'instruct', spec: 'chat',
-    paramsTotalB: 8, paramsActiveB: 8, layers: 32, kvHeads: 8, headDim: 128, attn: 'GQA',
+    id: 'llama31_8b', name: 'Llama 3.1 8B Instruct', tier: 'small', variant: 'instruct', spec: 'chat', hf: 'meta-llama/Llama-3.1-8B-Instruct',
     bench: { mmluPro: 48.3, gpqaDiamond: 30.4, humanEval: 72.6 }, alignment: ALIGN_LLAMA,
-    real: R('Meta', 'Llama 3.1 Community', true, '2024-Q3', 128, 'high', 'hf:meta-llama/Llama-3.1-8B-Instruct'),
+    real: R('Meta', '2024-Q3', 'high'),
     desc: 'The reliable free baseline. Soaks chat all day; ships bad code and cannot reason.',
   },
   {
-    id: 'qwen3_8b', name: 'Qwen3 8B', tier: 'small', variant: 'instruct', spec: 'chat',
-    paramsTotalB: 8.2, paramsActiveB: 8.2, layers: 36, kvHeads: 8, headDim: 128, attn: 'GQA',
+    id: 'qwen3_8b', name: 'Qwen3 8B', tier: 'small', variant: 'instruct', spec: 'chat', hf: 'Qwen/Qwen3-8B',
     bench: { mmluPro: 56.7, gpqaDiamond: 44.4, liveCodeBench: 29 }, alignment: ALIGN_QWEN,
-    real: R('Alibaba', 'Apache-2.0', true, '2025-Q2', 32, 'medium', 'hf:Qwen/Qwen3-8B'),
+    real: R('Alibaba', '2025-Q2', 'medium'),
     desc: 'A stronger small generalist than Llama-8B; still no real coding or hard reasoning.',
   },
   {
-    id: 'phi4_14b', name: 'Phi-4 14B', tier: 'small', variant: 'instruct', spec: 'general',
-    paramsTotalB: 14, paramsActiveB: 14, layers: 40, kvHeads: 10, headDim: 128, attn: 'GQA',
+    id: 'phi4_14b', name: 'Phi-4 14B', tier: 'small', variant: 'instruct', spec: 'general', hf: 'microsoft/phi-4',
     bench: { mmluPro: 70.4, gpqaDiamond: 56.1, humanEval: 82.6 }, alignment: ALIGN_INSTRUCT, instructFollow: 80,
-    real: R('Microsoft', 'MIT', true, '2024-Q4', 16, 'high', 'hf:microsoft/phi-4'),
+    real: R('Microsoft', '2024-Q4', 'high'),
     desc: 'A synthetic-data outlier: punches to enterprise-grade knowledge from 14B, but a tiny 16k window.',
   },
   {
-    id: 'gptoss_20b', name: 'gpt-oss 20B', tier: 'small', variant: 'instruct', spec: 'reasoning',
-    paramsTotalB: 20.9, paramsActiveB: 3.6, isMoE: true, isReasoning: true,
-    layers: 24, kvHeads: 8, headDim: 64, attn: 'GQA',
+    id: 'gptoss_20b', name: 'gpt-oss 20B', tier: 'small', variant: 'instruct', spec: 'reasoning', hf: 'openai/gpt-oss-20b',
     bench: { mmluPro: 66, gpqaDiamond: 71.5, aime: 92.1, liveCodeBench: 54 }, alignment: ALIGN_GPTOSS, instructFollow: 86,
-    real: R('OpenAI', 'Apache-2.0', true, '2025-Q3', 131, 'high', 'hf:openai/gpt-oss-20b'),
-    desc: 'A reasoning model in a 3.6B-active body. Needs MoE + Reasoning unlocked, then it punches far above its size.',
+    real: R('OpenAI', '2025-Q3', 'high'),
+    desc: 'A reasoning model in a 3.6B-active body, shipped in MXFP4: ~14 GB of weights fit a 24 GB edge GPU, and it punches far above its size.',
   },
   // --- STANDARD / PERFORMANCE (24–120B → Perf/Frontier/Pod racks) ---
   {
-    id: 'gemma3_27b', name: 'Gemma 3 27B', tier: 'general', variant: 'instruct', spec: 'general',
-    paramsTotalB: 27, paramsActiveB: 27, layers: 62, kvHeads: 16, headDim: 128, attn: 'GQA',
+    id: 'gemma3_27b', name: 'Gemma 3 27B', tier: 'general', variant: 'instruct', spec: 'general', hf: 'google/gemma-3-27b-it',
     bench: { mmluPro: 67.5, gpqaDiamond: 42.4, liveCodeBench: 29.7 }, alignment: ALIGN_GEMMA, instructFollow: 88,
-    real: R('Google', 'Gemma', true, '2025-Q1', 128, 'high', 'hf:google/gemma-3-27b-it'),
+    real: R('Google', '2025-Q1', 'high'),
     desc: 'A dense generalist that just clears coding; not a reasoning model.',
   },
   {
-    id: 'mistral_small_24b', name: 'Mistral Small 3.2 24B', tier: 'general', variant: 'instruct', spec: 'general',
-    paramsTotalB: 24, paramsActiveB: 24, layers: 40, kvHeads: 8, headDim: 128, attn: 'GQA',
+    id: 'mistral_small_24b', name: 'Mistral Small 3.2 24B', tier: 'general', variant: 'instruct', spec: 'general', hf: 'mistralai/Mistral-Small-3.2-24B-Instruct-2506',
     bench: { mmluPro: 69.1, gpqaDiamond: 46.1, humanEval: 92.9 }, alignment: ALIGN_INSTRUCT, instructFollow: 80,
-    real: R('Mistral AI', 'Apache-2.0', true, '2025-Q2', 128, 'medium', 'hf:mistralai/Mistral-Small-3.2-24B-Instruct-2506'),
+    real: R('Mistral AI', '2025-Q2', 'medium'),
     desc: 'A balanced dense workhorse: chat, light code, enterprise — but not the hardest reasoning.',
   },
   {
-    id: 'devstral_24b', name: 'Devstral Small 24B', tier: 'coding', variant: 'coding', spec: 'coding',
-    paramsTotalB: 24, paramsActiveB: 24, layers: 40, kvHeads: 8, headDim: 128, attn: 'GQA',
+    id: 'devstral_24b', name: 'Devstral Small 2 24B', tier: 'coding', variant: 'coding', spec: 'coding', hf: 'mistralai/Devstral-Small-2-24B-Instruct-2512',
     bench: { sweBench: 53.6, mmluPro: 62, gpqaDiamond: 42 }, alignment: ALIGN_INSTRUCT, instructFollow: 80,
-    real: R('Mistral AI', 'Apache-2.0', true, '2025-Q3', 128, 'high', 'hf:mistralai/Devstral-Small-2507'),
-    desc: 'A dedicated code model: strong on coding traffic, ordinary elsewhere.',
+    real: R('Mistral AI', '2025-Q4', 'high'),
+    desc: 'A dedicated code model released in FP8: strong on coding traffic, ordinary elsewhere.',
   },
   {
-    id: 'qwen3_32b', name: 'Qwen3 32B', tier: 'general', variant: 'instruct', spec: 'reasoning',
-    paramsTotalB: 32.8, paramsActiveB: 32.8, isReasoning: true,
-    layers: 64, kvHeads: 8, headDim: 128, attn: 'GQA',
+    id: 'qwen3_32b', name: 'Qwen3 32B', tier: 'general', variant: 'instruct', spec: 'reasoning', hf: 'Qwen/Qwen3-32B',
     bench: { mmluPro: 78.6, gpqaDiamond: 68.9, liveCodeBench: 65.7, aime: 72.9 }, alignment: ALIGN_QWEN, instructFollow: 84,
-    real: R('Alibaba', 'Apache-2.0', true, '2025-Q2', 128, 'high', 'hf:Qwen/Qwen3-32B'),
-    desc: 'A dense thinking model: with Reasoning unlocked it clears every lane, including the hardest reasoning.',
+    real: R('Alibaba', '2025-Q2', 'high'),
+    desc: 'A dense thinking model: it clears every lane of its era, including the hardest reasoning of 2025.',
   },
   {
-    id: 'qwen3_30b_a3b', name: 'Qwen3 30B-A3B', tier: 'general', variant: 'instruct', spec: 'reasoning',
-    paramsTotalB: 30.5, paramsActiveB: 3.3, isMoE: true, isReasoning: true,
-    layers: 48, kvHeads: 4, headDim: 128, attn: 'GQA',
+    id: 'qwen3_30b_a3b', name: 'Qwen3 30B-A3B', tier: 'general', variant: 'instruct', spec: 'reasoning', hf: 'Qwen/Qwen3-30B-A3B-Thinking-2507',
     bench: { mmluPro: 80.9, gpqaDiamond: 73.4, liveCodeBench: 66, aime: 85 }, alignment: ALIGN_QWEN, instructFollow: 84,
-    real: R('Alibaba', 'Apache-2.0', true, '2025-Q3', 262, 'high', 'hf:Qwen/Qwen3-30B-A3B-Instruct-2507'),
+    real: R('Alibaba', '2025-Q3', 'high'),
     desc: 'Frontier-grade answers at 3.3B active — the MoE dream. Fits a mid rack, serves like a tiny model.',
   },
   {
-    id: 'llama33_70b', name: 'Llama 3.3 70B Instruct', tier: 'general', variant: 'instruct', spec: 'general',
-    paramsTotalB: 70, paramsActiveB: 70, layers: 80, kvHeads: 8, headDim: 128, attn: 'GQA',
+    id: 'llama33_70b', name: 'Llama 3.3 70B Instruct', tier: 'general', variant: 'instruct', spec: 'general', hf: 'meta-llama/Llama-3.3-70B-Instruct',
     bench: { mmluPro: 68.9, gpqaDiamond: 50.5, humanEval: 88.4 }, alignment: ALIGN_LLAMA,
-    real: R('Meta', 'Llama 3.3 Community', true, '2024-Q4', 128, 'high', 'hf:meta-llama/Llama-3.3-70B-Instruct'),
+    real: R('Meta', '2024-Q4', 'high'),
     desc: 'A strong dense generalist — great chat and enterprise, but it is not a coder or a reasoner.',
   },
   {
-    id: 'gptoss_120b', name: 'gpt-oss 120B', tier: 'general', variant: 'instruct', spec: 'reasoning',
-    paramsTotalB: 117, paramsActiveB: 5.1, isMoE: true, isReasoning: true,
-    layers: 36, kvHeads: 8, headDim: 64, attn: 'GQA',
+    id: 'gptoss_120b', name: 'gpt-oss 120B', tier: 'general', variant: 'instruct', spec: 'reasoning', hf: 'openai/gpt-oss-120b',
     bench: { mmluPro: 73, gpqaDiamond: 80.1, aime: 92.5, liveCodeBench: 63 }, alignment: ALIGN_GPTOSS, instructFollow: 86,
-    real: R('OpenAI', 'Apache-2.0', true, '2025-Q3', 131, 'high', 'hf:openai/gpt-oss-120b'),
-    desc: 'Frontier reasoning at 5.1B active. Needs a Pod to hold 117B of weights, then serves astonishingly cheap.',
+    real: R('OpenAI', '2025-Q3', 'high'),
+    desc: 'Frontier reasoning at 5.1B active, shipped in MXFP4: all 117B of weights fit one 80 GB H100, and it serves astonishingly cheap.',
   },
   {
-    id: 'glm45_air', name: 'GLM-4.5-Air', tier: 'general', variant: 'instruct', spec: 'reasoning',
-    paramsTotalB: 106, paramsActiveB: 12, isMoE: true, isReasoning: true,
-    layers: 46, kvHeads: 8, headDim: 128, attn: 'GQA',
+    id: 'glm45_air', name: 'GLM-4.5-Air', tier: 'general', variant: 'instruct', spec: 'reasoning', hf: 'zai-org/GLM-4.5-Air',
     bench: { mmluPro: 81.4, gpqaDiamond: 71.7, sweBench: 57.6 }, alignment: ALIGN_FRONTIER, instructFollow: 83,
-    real: R('Z.ai (Zhipu)', 'MIT', true, '2025-Q3', 128, 'high', 'hf:zai-org/GLM-4.5-Air'),
+    real: R('Z.ai (Zhipu)', '2025-Q3', 'high'),
     desc: 'A lighter frontier MoE: strong across the board at 12B active.',
   },
-  // --- FRONTIER (200B+ → SuperPod/GigaCluster). Top of the quality scale. ---
+  // --- FRONTIER (200B+ → Pod/SuperPod/GigaCluster). Top of the quality scale. ---
   {
-    id: 'qwen3_235b', name: 'Qwen3 235B-A22B Thinking', tier: 'frontier', variant: 'instruct', spec: 'reasoning',
-    paramsTotalB: 235, paramsActiveB: 22, isMoE: true, isReasoning: true,
-    layers: 94, kvHeads: 4, headDim: 128, attn: 'GQA',
+    id: 'qwen3_235b', name: 'Qwen3 235B-A22B Thinking', tier: 'frontier', variant: 'instruct', spec: 'reasoning', hf: 'Qwen/Qwen3-235B-A22B-Thinking-2507',
     bench: { mmluPro: 84.4, gpqaDiamond: 81.1, liveCodeBench: 74.1, aime: 92.3, sweBench: 64 }, alignment: ALIGN_QWEN, instructFollow: 84,
-    real: R('Alibaba', 'Apache-2.0', true, '2025-Q3', 262, 'high', 'hf:Qwen/Qwen3-235B-A22B-Thinking-2507'),
+    real: R('Alibaba', '2025-Q3', 'high'),
     desc: 'Open frontier reasoning at 22B active. Clears everything with margin.',
   },
   {
-    id: 'deepseek_v31', name: 'DeepSeek-V3.1', tier: 'frontier', variant: 'instruct', spec: 'reasoning',
-    paramsTotalB: 671, paramsActiveB: 37, isMoE: true, isReasoning: true,
-    layers: 61, kvHeads: 128, headDim: 128, attn: 'MLA',
+    id: 'deepseek_v31', name: 'DeepSeek-V3.1', tier: 'frontier', variant: 'instruct', spec: 'reasoning', hf: 'deepseek-ai/DeepSeek-V3.1',
     bench: { mmluPro: 84.4, gpqaDiamond: 80.1, liveCodeBench: 74.8, sweBench: 66 }, alignment: ALIGN_FRONTIER, instructFollow: 83,
-    real: R('DeepSeek', 'MIT', true, '2025-Q3', 128, 'high', 'hf:deepseek-ai/DeepSeek-V3.1'),
-    desc: '671B of weights, 37B active. A SuperPod-class checkpoint that answers anything.',
+    real: R('DeepSeek', '2025-Q3', 'high'),
+    desc: '671B of weights in native FP8 (~680 GB), 37B active: a pod-class checkpoint whose MLA latent keeps the KV small.',
   },
   {
-    // Nemotron-3-Super-120B-A12B: a real NVIDIA open model (Mar 2026) trained FROM
-    // SCRATCH (NVIDIA's own base, NOT Llama-derived) — a 120B/12B Latent-MoE (hybrid
-    // Mamba-2 + MoE + attention). Benchmarks are the official model-card figures
-    // (docs/MODEL-CATALOG.md). It is the player's GRPO-agentic base in the §1.5 [H2] lesson.
-    id: 'nemotron_super', name: 'Nemotron-3-Super-120B-A12B', tier: 'frontier', variant: 'instruct', spec: 'reasoning',
-    paramsTotalB: 120, paramsActiveB: 12, isMoE: true, isReasoning: true,
-    layers: 80, kvHeads: 8, headDim: 128, attn: 'GQA',
+    // Nemotron-3-Super-120B-A12B: NVIDIA's own from-scratch base (not Llama-derived) —
+    // a 120B/12B Latent-MoE, hybrid Mamba-2 + MoE + 8 attention layers. It is the
+    // player's GRPO-agentic base in the §1.5 [H2] lesson.
+    id: 'nemotron_super', name: 'Nemotron-3-Super-120B-A12B', tier: 'frontier', variant: 'instruct', spec: 'reasoning', hf: 'nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16',
     bench: { mmluPro: 83.73, gpqaDiamond: 79.23, aime: 90.21, liveCodeBench: 81.19, sweBench: 60.47 }, alignment: ALIGN_NEMOTRON, instructFollow: 84,
-    real: R('NVIDIA', 'NVIDIA Nemotron Open Model', true, '2026-Q1', 256, 'high', 'hf:nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16'),
-    desc: 'NVIDIA\'s from-scratch 120B/12B Latent-MoE reasoner (hybrid Mamba-2 + MoE). Frontier-grade reasoning at 12B active — fits a Pod and serves cheap; the player\'s GRPO-agentic base.',
+    real: R('NVIDIA', '2026-Q1', 'high'),
+    desc: 'NVIDIA\'s from-scratch 120B/12B Latent-MoE reasoner (hybrid Mamba-2 + MoE, only 8 attention layers → tiny KV). Frontier-grade reasoning at 12B active — fits a Pod and serves cheap; the player\'s GRPO-agentic base.',
   },
   {
-    id: 'kimi_k2', name: 'Kimi K2 Thinking', tier: 'frontier', variant: 'instruct', spec: 'reasoning',
-    paramsTotalB: 1000, paramsActiveB: 32, isMoE: true, isReasoning: true,
-    layers: 61, kvHeads: 128, headDim: 128, attn: 'MLA',
+    id: 'kimi_k2', name: 'Kimi K2 Thinking', tier: 'frontier', variant: 'instruct', spec: 'reasoning', hf: 'moonshotai/Kimi-K2-Thinking',
     bench: { mmluPro: 84.6, gpqaDiamond: 84.5, liveCodeBench: 83.1, sweBench: 71.3, aime: 99.1 }, alignment: ALIGN_FRONTIER, instructFollow: 83,
-    real: R('Moonshot AI', 'Modified MIT', true, '2025-Q4', 256, 'high', 'hf:moonshotai/Kimi-K2-Thinking'),
-    desc: 'A trillion params, 32B active. The open coding/reasoning ceiling — only a GigaCluster holds it.',
+    real: R('Moonshot AI', '2025-Q4', 'high'),
+    desc: 'A trillion params, 32B active, trained natively in INT4: ~580 GB of weights fit an 8×H200 pod with no quantization penalty.',
   },
   /* ------------------------------------------------------------------ *
-   *  2026 CATALOG ADDITIONS (small → large). Real open-weight models    *
-   *  pulled from Artificial Analysis + official model cards (see        *
-   *  docs/MODEL-CATALOG.md). Some 2026 frontier MoEs use approximate KV  *
-   *  where the lab did not publish layer/head internals (confidence on   *
-   *  the entry's `real`). qualityBy still auto-calibrates from `bench`.   *
+   *  2025–2026 CATALOG ADDITIONS (small → large). Real open-weight      *
+   *  models pulled from Artificial Analysis + official model cards (see *
+   *  docs/MODEL-CATALOG.md).                                            *
    * ------------------------------------------------------------------ */
   {
-    id: 'llama32_1b', name: 'Llama 3.2 1B Instruct', tier: 'small', variant: 'instruct', spec: 'chat',
-    paramsTotalB: 1.23, paramsActiveB: 1.23, layers: 16, kvHeads: 8, headDim: 64, attn: 'GQA',
+    id: 'llama32_1b', name: 'Llama 3.2 1B Instruct', tier: 'small', variant: 'instruct', spec: 'chat', hf: 'meta-llama/Llama-3.2-1B-Instruct',
     bench: { gpqaDiamond: 27.2 }, alignment: ALIGN_LLAMA,
-    real: R('Meta', 'Llama 3.2 Community', true, '2024-Q3', 128, 'high', 'hf:meta-llama/Llama-3.2-1B-Instruct', 'llama31_8b', 'finetune'),
+    real: R('Meta', '2024-Q3', 'high', 'llama31_8b', 'finetune'),
     desc: 'Meta\'s tiny on-device model, pruned + distilled from Llama 3.1. Runs on almost anything; only good for light rewriting and summarization.',
   },
   {
-    id: 'qwen3_4b_2507', name: 'Qwen3-4B-Instruct-2507', tier: 'small', variant: 'instruct', spec: 'general',
-    paramsTotalB: 4, paramsActiveB: 4, layers: 36, kvHeads: 8, headDim: 128, attn: 'GQA',
+    id: 'qwen3_4b_2507', name: 'Qwen3-4B-Instruct-2507', tier: 'small', variant: 'instruct', spec: 'general', hf: 'Qwen/Qwen3-4B-Instruct-2507',
     bench: { mmluPro: 69.6, gpqaDiamond: 62, aime: 47.4, liveCodeBench: 35.1 }, alignment: ALIGN_QWEN, instructFollow: 84,
-    real: R('Alibaba', 'Apache-2.0', true, '2025-Q3', 262, 'high', 'hf:Qwen/Qwen3-4B-Instruct-2507'),
+    real: R('Alibaba', '2025-Q3', 'high'),
     desc: 'A remarkably strong 4B non-thinking model with a 256K window — punches far above its size on knowledge and code. The modern edge workhorse.',
   },
   {
-    id: 'nemotron_nano_9b', name: 'Nemotron Nano 9B v2', tier: 'small', variant: 'instruct', spec: 'reasoning',
-    paramsTotalB: 9, paramsActiveB: 9, isReasoning: true,
-    layers: 4, kvHeads: 8, headDim: 128, attn: 'GQA',
+    id: 'nemotron_nano_9b', name: 'Nemotron Nano 9B v2', tier: 'small', variant: 'instruct', spec: 'reasoning', hf: 'nvidia/NVIDIA-Nemotron-Nano-9B-v2',
     bench: { gpqaDiamond: 64, aime: 72.1, liveCodeBench: 71.1 }, alignment: ALIGN_NEMOTRON, instructFollow: 84,
-    real: R('NVIDIA', 'NVIDIA Open Model', true, '2025-Q3', 128, 'high', 'hf:nvidia/NVIDIA-Nemotron-Nano-9B-v2'),
+    real: R('NVIDIA', '2025-Q3', 'high'),
     desc: 'A from-scratch hybrid Mamba-2/Transformer reasoner (only four attention layers → tiny KV, up to ~6× the throughput). Strong reasoning for 9B; fits an edge rack.',
   },
   {
-    id: 'gemma3_12b', name: 'Gemma 3 12B', tier: 'small', variant: 'instruct', spec: 'general',
-    paramsTotalB: 12, paramsActiveB: 12, layers: 48, kvHeads: 8, headDim: 256, attn: 'GQA',
+    id: 'gemma3_12b', name: 'Gemma 3 12B', tier: 'small', variant: 'instruct', spec: 'general', hf: 'google/gemma-3-12b-it',
     bench: { mmluPro: 60.6, gpqaDiamond: 40.9, liveCodeBench: 24.6 }, alignment: ALIGN_GEMMA, instructFollow: 88,
-    real: R('Google', 'Gemma', true, '2025-Q1', 128, 'high', 'hf:google/gemma-3-12b-it'),
+    real: R('Google', '2025-Q1', 'high'),
     desc: 'A balanced multimodal generalist with a 128K window and a vision encoder. Solid chat across 140+ languages; not a reasoner or a coder.',
   },
   {
-    id: 'qwen3_coder_30b', name: 'Qwen3-Coder-30B-A3B', tier: 'coding', variant: 'coding', spec: 'agentic',
-    paramsTotalB: 30.5, paramsActiveB: 3.3, isMoE: true,
-    layers: 48, kvHeads: 4, headDim: 128, attn: 'GQA',
+    id: 'qwen3_coder_30b', name: 'Qwen3-Coder-30B-A3B', tier: 'coding', variant: 'coding', spec: 'agentic', hf: 'Qwen/Qwen3-Coder-30B-A3B-Instruct',
     bench: { sweBench: 51.6 }, alignment: ALIGN_QWEN, instructFollow: 84,
-    real: R('Alibaba', 'Apache-2.0', true, '2025-Q3', 262, 'high', 'hf:Qwen/Qwen3-Coder-30B-A3B-Instruct'),
+    real: R('Alibaba', '2025-Q3', 'high'),
     desc: 'Agentic coding at 3.3B active — a local coding-agent MoE that drives shell/editor tool loops on commodity hardware. A 262K window.',
   },
   {
-    id: 'nemotron3_nano_30b', name: 'Nemotron 3 Nano 30B-A3B', tier: 'general', variant: 'instruct', spec: 'reasoning',
-    paramsTotalB: 30, paramsActiveB: 3.5, isMoE: true, isReasoning: true,
-    layers: 6, kvHeads: 8, headDim: 128, attn: 'GQA',
+    id: 'nemotron3_nano_30b', name: 'Nemotron 3 Nano 30B-A3B', tier: 'general', variant: 'instruct', spec: 'reasoning', hf: 'nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16',
     bench: { mmluPro: 78.3, gpqaDiamond: 73, aime: 89.1, liveCodeBench: 68.3, sweBench: 38.8 }, alignment: ALIGN_NEMOTRON, instructFollow: 84,
-    real: R('NVIDIA', 'NVIDIA Nemotron Open Model', true, '2025-Q4', 256, 'high', 'hf:nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16'),
-    desc: 'The efficient member of NVIDIA\'s from-scratch Nemotron 3 line: a hybrid Mamba-2 + MoE reasoner, ~3.5B active, six attention layers (tiny KV). Frontier-grade reasoning, cheap to serve.',
+    real: R('NVIDIA', '2025-Q4', 'high'),
+    desc: 'The efficient member of NVIDIA\'s from-scratch Nemotron 3 line: a hybrid Mamba-2 + MoE reasoner, ~3.2B active, six attention layers (tiny KV). Frontier-grade reasoning, cheap to serve.',
   },
   {
-    id: 'qwen36_27b', name: 'Qwen3.6-27B', tier: 'general', variant: 'instruct', spec: 'coding',
-    paramsTotalB: 27, paramsActiveB: 27, isReasoning: true,
-    layers: 64, kvHeads: 8, headDim: 128, attn: 'GQA',
+    id: 'qwen36_27b', name: 'Qwen3.6-27B', tier: 'general', variant: 'instruct', spec: 'coding', hf: 'Qwen/Qwen3.6-27B',
     bench: { mmluPro: 86.2, gpqaDiamond: 87.8, aime: 94.1, liveCodeBench: 83.9, sweBench: 77.2 }, alignment: ALIGN_QWEN, instructFollow: 86,
-    real: R('Alibaba', 'Apache-2.0', true, '2026-Q2', 262, 'medium', 'hf:Qwen/Qwen3.6-27B'),
-    desc: 'A dense 27B thinking model (hybrid Gated DeltaNet + attention) that matches far larger MoEs on agentic coding (SWE-bench 77). The 2026 open leader under ~150B.',
+    real: R('Alibaba', '2026-Q2', 'medium'),
+    desc: 'A dense 27B thinking model (3 Gated DeltaNet layers per attention layer, so only 16 of 64 layers keep KV) that matches far larger MoEs on agentic coding (SWE-bench 77).',
   },
   {
-    id: 'qwen3_next_80b', name: 'Qwen3-Next-80B-A3B Thinking', tier: 'general', variant: 'instruct', spec: 'reasoning',
-    paramsTotalB: 80, paramsActiveB: 3, isMoE: true, isReasoning: true,
-    layers: 48, kvHeads: 2, headDim: 128, attn: 'GQA',
+    id: 'qwen3_next_80b', name: 'Qwen3-Next-80B-A3B Thinking', tier: 'general', variant: 'instruct', spec: 'reasoning', hf: 'Qwen/Qwen3-Next-80B-A3B-Thinking',
     bench: { mmluPro: 82.7, gpqaDiamond: 77.2, aime: 87.8, liveCodeBench: 68.7 }, alignment: ALIGN_QWEN, instructFollow: 84,
-    real: R('Alibaba', 'Apache-2.0', true, '2025-Q3', 262, 'high', 'hf:Qwen/Qwen3-Next-80B-A3B-Thinking'),
+    real: R('Alibaba', '2025-Q3', 'high'),
     desc: 'Ultra-sparse next-gen MoE: 80B of weights, only ~3B active across 512 experts. Flagship-class reasoning at a tiny active cost; needs the VRAM but serves cheap.',
   },
   {
-    id: 'qwen35_122b', name: 'Qwen3.5-122B-A10B', tier: 'frontier', variant: 'instruct', spec: 'reasoning',
-    paramsTotalB: 122, paramsActiveB: 10, isMoE: true, isReasoning: true,
-    layers: 62, kvHeads: 8, headDim: 128, attn: 'GQA',
+    id: 'qwen35_122b', name: 'Qwen3.5-122B-A10B', tier: 'frontier', variant: 'instruct', spec: 'reasoning', hf: 'Qwen/Qwen3.5-122B-A10B',
     bench: { mmluPro: 86.7, gpqaDiamond: 86.6, aime: 91.3, liveCodeBench: 78.9, sweBench: 72 }, alignment: ALIGN_QWEN, instructFollow: 84,
-    real: R('Alibaba', 'Apache-2.0', true, '2026-Q1', 262, 'high', 'hf:Qwen/Qwen3.5-122B-A10B'),
+    real: R('Alibaba', '2026-Q1', 'high'),
     desc: 'The mid-tier Qwen3.5 MoE: 122B total, 10B active, multimodal thinking. Frontier-level scores that fit a Pod and serve at 10B active.',
   },
   {
-    id: 'glm_5_2', name: 'GLM-5.2', tier: 'frontier', variant: 'instruct', spec: 'agentic',
-    paramsTotalB: 753, paramsActiveB: 40, isMoE: true, isReasoning: true,
-    layers: 92, kvHeads: 128, headDim: 128, attn: 'MLA',
+    id: 'glm_5_2', name: 'GLM-5.2', tier: 'frontier', variant: 'instruct', spec: 'agentic', hf: 'zai-org/GLM-5.2',
     bench: { gpqaDiamond: 91.2, aime: 99.2 }, alignment: ALIGN_FRONTIER, instructFollow: 84,
-    real: R('Z.ai (Zhipu)', 'MIT', true, '2026-Q2', 1000, 'medium', 'hf:zai-org/GLM-5.2'),
-    desc: 'The open-weight leader on the Artificial Analysis index (2026): a 753B/40B sparse-attention MoE with a 1M window, tuned for long-horizon agentic coding. A SuperPod/Giga checkpoint.',
+    real: R('Z.ai (Zhipu)', '2026-Q2', 'medium'),
+    desc: 'A 753B/40B sparse-attention MoE with a 1M window, tuned for long-horizon agentic coding. Its 1.5 TB of BF16 weights overflow even a DGX B200: serve it in FP8 (about 750 GB) or on the NVL72.',
   },
   {
-    id: 'deepseek_v4_pro', name: 'DeepSeek-V4-Pro', tier: 'frontier', variant: 'instruct', spec: 'reasoning',
-    paramsTotalB: 1600, paramsActiveB: 49, isMoE: true, isReasoning: true,
-    layers: 61, kvHeads: 128, headDim: 128, attn: 'MLA',
-    bench: { mmluPro: 87.5, gpqaDiamond: 90.1, aime: 95.2, liveCodeBench: 93.5, sweBench: 80.6 }, alignment: ALIGN_FRONTIER, instructFollow: 84,
-    real: R('DeepSeek', 'MIT', true, '2026-Q2', 1000, 'high', 'hf:deepseek-ai/DeepSeek-V4-Pro'),
-    desc: 'DeepSeek\'s 1.6-trillion-param V4 flagship, 49B active, with a new hybrid compressed-attention architecture and a 1M window. The open ceiling — only an NVL72 holds it.',
+    id: 'deepseek_v4_pro', name: 'DeepSeek-V4-Pro-0813', tier: 'frontier', variant: 'instruct', spec: 'reasoning', hf: 'deepseek-ai/DeepSeek-V4-Pro-0813',
+    bench: {}, alignment: ALIGN_FRONTIER, instructFollow: 84,
+    real: R('DeepSeek', '2026-08-13', 'high'),
+    desc: 'The August 2026 re-post-train of DeepSeek\'s 1.6T/49B V4 flagship. Compressed sparse attention keeps ~10 KB of KV per token, and FP4 experts put the weights (~870 GB) on one 8×H200 pod.',
   },
   {
-    id: 'minimax_m3', name: 'MiniMax-M3', tier: 'frontier', variant: 'instruct', spec: 'agentic',
-    paramsTotalB: 428, paramsActiveB: 23, isMoE: true, isReasoning: true,
-    layers: 62, kvHeads: 8, headDim: 128, attn: 'MLA',
+    id: 'minimax_m3', name: 'MiniMax-M3', tier: 'frontier', variant: 'instruct', spec: 'agentic', hf: 'MiniMaxAI/MiniMax-M3',
     bench: { gpqaDiamond: 92.9 }, alignment: ALIGN_FRONTIER, instructFollow: 84,
-    real: R('MiniMax', 'MiniMax Community', true, '2026-Q2', 1000, 'medium', 'hf:MiniMaxAI/MiniMax-M3'),
+    real: R('MiniMax', '2026-Q2', 'medium'),
     desc: 'An agentic frontier MoE on MiniMax Sparse Attention: 428B/23B with a 1M window and ~10–16× faster long-context serving than M2. Built for tool-using agents.',
   },
   {
-    id: 'qwen35_397b', name: 'Qwen3.5-397B-A17B', tier: 'frontier', variant: 'instruct', spec: 'reasoning',
-    paramsTotalB: 397, paramsActiveB: 17, isMoE: true, isReasoning: true,
-    layers: 80, kvHeads: 8, headDim: 128, attn: 'GQA',
+    id: 'qwen35_397b', name: 'Qwen3.5-397B-A17B', tier: 'frontier', variant: 'instruct', spec: 'reasoning', hf: 'Qwen/Qwen3.5-397B-A17B',
     bench: { mmluPro: 87.8, gpqaDiamond: 88.4, aime: 91.3, liveCodeBench: 83.6, sweBench: 76.4 }, alignment: ALIGN_QWEN, instructFollow: 84,
-    real: R('Alibaba', 'Apache-2.0', true, '2026-Q1', 262, 'high', 'hf:Qwen/Qwen3.5-397B-A17B'),
+    real: R('Alibaba', '2026-Q1', 'high'),
     desc: 'The Qwen3.5 flagship: a 397B/17B multimodal reasoning MoE (512 experts). Clears every lane with margin at only 17B active.',
   },
   {
-    id: 'nemotron3_ultra_550b', name: 'Nemotron 3 Ultra 550B-A55B', tier: 'frontier', variant: 'instruct', spec: 'reasoning',
-    paramsTotalB: 550, paramsActiveB: 55, isMoE: true, isReasoning: true,
-    layers: 8, kvHeads: 8, headDim: 128, attn: 'GQA',
+    id: 'nemotron3_ultra_550b', name: 'Nemotron 3 Ultra 550B-A55B', tier: 'frontier', variant: 'instruct', spec: 'reasoning', hf: 'nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16',
     bench: { mmluPro: 86.8, gpqaDiamond: 87, liveCodeBench: 89, sweBench: 70.7 }, alignment: ALIGN_NEMOTRON, instructFollow: 84,
-    real: R('NVIDIA', 'OpenMDW v1.1', true, '2026-Q2', 262, 'high', 'hf:nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16'),
-    desc: 'NVIDIA\'s from-scratch frontier flagship: a 550B/55B Latent-MoE (hybrid Mamba-2 + MoE + attention) — the strongest US open-weight model on the AA index at launch.',
+    real: R('NVIDIA', '2026-Q2', 'high'),
+    desc: 'NVIDIA\'s from-scratch frontier flagship: a 550B/55B Latent-MoE (hybrid Mamba-2 + MoE, 12 attention layers) — the strongest US open-weight model on the AA index at its launch.',
   },
-  // ---- Part B: ~68 generated open-weight models (Pareto-selected across scales; arch resolved,
-  //      benchmarks from AA). High-confidence hand-authored picks are the 30 above. ----
+  /* ------------------------------------------------------------------ *
+   *  JULY–OCTOBER 2026 OPEN WEIGHTS (docs/MODEL-CATALOG.md). Their      *
+   *  IFBench / TB-Hard cells are bridged from AA's measured cells (AA   *
+   *  stopped publishing both), with the provenance kept on `real`.     *
+   * ------------------------------------------------------------------ */
+  {
+    id: 'minicpm5_2b', name: 'MiniCPM5-2B', tier: 'small', variant: 'instruct', spec: 'reasoning', hf: 'openbmb/MiniCPM5-2B',
+    bench: {}, alignment: ALIGN_INSTRUCT,
+    real: R('OpenBMB', '2026-09-07', 'high'),
+    desc: 'A 2.5B dense thinker with only 2 KV heads (42 KB of KV per token) — the strongest model that fits the smallest edge rack.',
+  },
+  {
+    id: 'k2h_3_7b', name: 'K2-Horizon-3.7B', tier: 'small', variant: 'instruct', spec: 'reasoning', hf: 'IFM/K2-Horizon-3.7B',
+    bench: {}, alignment: ALIGN_INSTRUCT,
+    real: R('MBZUAI IFM', '2026-09-03', 'high'),
+    desc: 'A fully open (weights, data and code) 3.7B reasoner with a 512K window — plain GQA, so long prompts fill its KV fast.',
+  },
+  {
+    id: 'ling30_tiny', name: 'Ling-3.0-tiny', tier: 'small', variant: 'instruct', spec: 'reasoning', hf: 'inclusionAI/Ling-3.0-tiny',
+    bench: {}, alignment: ALIGN_FRONTIER,
+    real: R('InclusionAI (Ant Group)', '2026-08-06', 'high'),
+    desc: 'A 7.9B MoE with 1.3B active and linear attention on 3 of every 4 layers: the fastest decode on an edge rack, with a few KB of KV per token.',
+  },
+  {
+    id: 'k2h_7b', name: 'K2-Horizon-7B', tier: 'small', variant: 'instruct', spec: 'reasoning', hf: 'IFM/K2-Horizon-7B',
+    bench: {}, alignment: ALIGN_INSTRUCT,
+    real: R('MBZUAI IFM', '2026-09-03', 'high'),
+    desc: 'The fully open 7B reasoner (9B with its large vocabulary): frontier reasoning and agentic scores for its size on a 512K window.',
+  },
+  {
+    id: 'qwen38_27b', name: 'Qwen3.8-27B', tier: 'general', variant: 'instruct', spec: 'agentic', hf: 'Qwen/Qwen3.8-27B',
+    bench: {}, alignment: ALIGN_QWEN, instructFollow: 86,
+    real: R('Alibaba', '2026-08-14', 'high'),
+    desc: 'The dense 27B leader of late 2026: Gated DeltaNet hybrid (16 of 64 layers keep KV), Apache-2.0, and agentic scores that rival 300B MoEs on one H100.',
+  },
+  {
+    id: 'k2h_mova_36b', name: 'K2-Horizon-MoVA-36B-A4B', tier: 'general', variant: 'instruct', spec: 'reasoning', hf: 'IFM/K2-Horizon-MoVA-36B-A4B',
+    bench: {}, alignment: ALIGN_INSTRUCT,
+    real: R('MBZUAI IFM', '2026-09-03', 'high'),
+    desc: 'A fully open 36B MoE with 4B active and Mixture-of-Values attention: cheap to serve on a mid rack, but its full GQA cache still grows with every token.',
+  },
+  {
+    id: 'ling30_flash', name: 'Ling-3.0-flash', tier: 'frontier', variant: 'instruct', spec: 'reasoning', hf: 'inclusionAI/Ling-3.0-flash',
+    bench: {}, alignment: ALIGN_FRONTIER,
+    real: R('InclusionAI (Ant Group)', '2026-08-04', 'high'),
+    desc: 'Qwen3.5-122B-class quality at half the active params (5.1B) and a fraction of the KV: Kimi Delta Attention on 5 of every 6 layers.',
+  },
+  {
+    id: 'qwen38_flash_next', name: 'Qwen3.8-Flash-Next', tier: 'frontier', variant: 'instruct', spec: 'agentic', hf: 'Qwen/Qwen3.8-Flash-Next',
+    bench: {}, alignment: ALIGN_QWEN, instructFollow: 86,
+    real: R('Alibaba', '2026-08-26', 'high'),
+    desc: 'The most extreme sparsity in the roster: 180B resident (incl. a 51B n-gram table) but only 6B active — VRAM-hungry, compute-cheap, and frontier-grade.',
+  },
+  {
+    id: 'solar_open2_250b', name: 'Solar Open 2 250B', tier: 'frontier', variant: 'instruct', spec: 'reasoning', hf: 'upstage/Solar-Open2-250B',
+    bench: {}, alignment: ALIGN_INSTRUCT,
+    real: R('Upstage', '2026-07-22', 'high'),
+    desc: 'A 250B/15B NoPE hybrid: only 12 of its 48 layers keep a KV cache, the rest are linear attention.',
+  },
+  {
+    id: 'inkling_small', name: 'Inkling-Small', tier: 'frontier', variant: 'instruct', spec: 'reasoning', hf: 'thinkingmachines/Inkling-Small',
+    bench: {}, alignment: ALIGN_INSTRUCT,
+    real: R('Thinking Machines Lab', '2026-07-27', 'high'),
+    desc: 'A 276B/12B MoE with 5 sliding-window layers per global one: a 1M window on ~28 KB of growing KV per token.',
+  },
+  {
+    id: 'hy3', name: 'Hy3', tier: 'frontier', variant: 'instruct', spec: 'reasoning', hf: 'tencent/Hy3',
+    bench: {}, alignment: ALIGN_FRONTIER,
+    real: R('Tencent', '2026-07-06', 'high'),
+    desc: 'A 295B/21B plain-GQA MoE: 320 KB of KV per token, 14× a same-size sliding-window hybrid — the high-KV foil that shows why the hybrids exist.',
+  },
+  {
+    id: 'mimo_v26_flash', name: 'MiMo-V2.6-Flash', tier: 'frontier', variant: 'instruct', spec: 'reasoning', hf: 'XiaomiMiMo/MiMo-V2.6-Flash-MOPD',
+    bench: {}, alignment: ALIGN_FRONTIER,
+    real: R('Xiaomi', '2026-09-21', 'high'),
+    desc: 'The best ~300B open model of autumn 2026: 128-token sliding windows on 39 of 48 layers keep its KV to ~22 KB per token.',
+  },
+  {
+    id: 'motif3', name: 'Motif 3', tier: 'frontier', variant: 'instruct', spec: 'reasoning', hf: 'Motif-Technologies/Motif-3',
+    bench: {}, alignment: ALIGN_INSTRUCT,
+    real: R('Motif Technologies', '2026-08-07', 'high'),
+    desc: 'A 314B/13B MoE with differential attention on an MLA latent and sliding windows on 3 of every 4 layers: 20× less KV per token than Hy3.',
+  },
+  {
+    id: 'glm_5_3_flash', name: 'GLM-5.3-Flash', tier: 'frontier', variant: 'instruct', spec: 'agentic', hf: 'zai-org/GLM-5.3-Flash',
+    bench: {}, alignment: ALIGN_FRONTIER, instructFollow: 84,
+    real: R('Z.ai (Zhipu)', '2026-08-26', 'high'),
+    desc: 'Above GLM-5.2 on almost every benchmark at less than half the size: 18B active, linear attention on 34 of 45 layers, MIT-licensed.',
+  },
+  {
+    id: 'k2h_375b', name: 'K2-Horizon-375B-A23B', tier: 'frontier', variant: 'instruct', spec: 'reasoning', hf: 'IFM/K2-Horizon-375B-A23B',
+    bench: {}, alignment: ALIGN_INSTRUCT,
+    real: R('MBZUAI IFM', '2026-09-03', 'high'),
+    desc: 'The largest fully open model (weights, data, code): a 375B/23B MoE with plain GQA, so its 244 KB/token cache is the price of transparency.',
+  },
+  {
+    id: 'ling31_flash', name: 'Ling-3.1-flash', tier: 'frontier', variant: 'instruct', spec: 'reasoning', hf: 'inclusionAI/Ling-3.1-flash',
+    bench: {}, alignment: ALIGN_FRONTIER,
+    real: R('InclusionAI (Ant Group)', '2026-10-13', 'high'),
+    desc: 'Linear-attention hybrids at frontier scale: 560B/25B with KDA on 7 of every 8 layers — about 10 KB of KV per token.',
+  },
+  {
+    id: 'step5', name: 'Step 5 Preview', tier: 'frontier', variant: 'instruct', spec: 'reasoning', hf: 'stepfun-ai/Step-5-Preview',
+    bench: {}, alignment: ALIGN_FRONTIER,
+    real: R('StepFun', '2026-09-18', 'high'),
+    desc: 'A 600B/27B frontier MoE in FP8 (fits one 8×H200 pod): 3 sliding-window layers per sparse full-attention layer, and a licence that charges large MaaS operators.',
+  },
+  {
+    id: 'glm_5_3', name: 'GLM-5.3', tier: 'frontier', variant: 'instruct', spec: 'agentic', hf: 'zai-org/GLM-5.3',
+    bench: {}, alignment: ALIGN_FRONTIER, instructFollow: 84,
+    real: R('Z.ai (Zhipu)', '2026-08-28', 'high', 'glm_5_2', 'finetune'),
+    desc: 'GLM-5.2\'s pre-trained base, re-post-trained: every gain is post-training. Released in FP8, so the same 753B fits a pod instead of a SuperPod.',
+  },
+  {
+    id: 'deepseek_v41_flash', name: 'DeepSeek-V4.1-Flash', tier: 'frontier', variant: 'instruct', spec: 'reasoning', hf: 'deepseek-ai/DeepSeek-V4.1-Flash',
+    bench: {}, alignment: ALIGN_FRONTIER, instructFollow: 84,
+    real: R('DeepSeek', '2026-09-10', 'medium'),
+    desc: 'DeepSeek\'s current flagship: a causal encoder–decoder whose decoder reuses the encoder\'s compressed KV — about 3 KB per token, the smallest cache at the frontier.',
+  },
+  {
+    id: 'muse_spark_open', name: 'Muse Spark Open', tier: 'frontier', variant: 'instruct', spec: 'reasoning', hf: 'meta-models/Muse-Spark-Open-816B-A42B',
+    bench: {}, alignment: ALIGN_MUSE_OPEN, instructFollow: 86,
+    real: R('Meta', '2026-10-15', 'medium'),
+    desc: 'The strongest US open-weight model: 816B/42B with full attention on every layer — 248 KB of KV per token, 10–60× the hybrids — plus extra safety post-training.',
+  },
+  {
+    id: 'mimo_v26_pro', name: 'MiMo-V2.6-Pro', tier: 'frontier', variant: 'instruct', spec: 'reasoning', hf: 'XiaomiMiMo/MiMo-V2.6-Pro-MOPD',
+    bench: {}, alignment: ALIGN_FRONTIER,
+    real: R('Xiaomi', '2026-09-21', 'high'),
+    desc: 'The highest-scoring open weights of autumn 2026: a 1T/42B MoE whose 128-token sliding windows hold KV to ~50 KB per token at trillion scale.',
+  },
+  {
+    id: 'kimi_k3', name: 'Kimi K3', tier: 'frontier', variant: 'instruct', spec: 'reasoning', hf: 'moonshotai/Kimi-K3',
+    bench: {}, alignment: ALIGN_FRONTIER, instructFollow: 84,
+    real: R('Moonshot AI', '2026-07-27', 'high'),
+    desc: 'The largest open model: 2.78T/104B with Kimi Delta Attention on 69 of 93 layers. As released, its 1.56 TB of MXFP4 weights are more than an 8×B200 node holds, so the NVL72 is its home.',
+  },
+  // ---- the generated pool (gen-roster: every open checkpoint in data/model-arch.json no hand entry claims) ----
   ...GENERATED_ROSTER,
 ]
 
-/** Per-tier baseline that fills any qualityBy axis a model has no benchmark for.
- *  agentic floors are deliberately low — without a real SWE-bench score a model
- *  is assumed weak at autonomous/agentic work (the un-saturated frontier lane). */
+/** Per-tier baseline that fills any qualityBy axis a model has no benchmark for — a
+ *  defensive fallback only: the bridges give every roster model all six cells. */
 const QUALITY_FLOOR: Record<ModelDef['tier'], Record<ServerSpec, number>> = {
   small: { chat: 30, coding: 25, reasoning: 30, general: 30, agentic: 20 },
   general: { chat: 55, coding: 45, reasoning: 50, general: 55, agentic: 40 },
@@ -712,18 +887,25 @@ const QUALITY_FLOOR: Record<ModelDef['tier'], Record<ServerSpec, number>> = {
   frontier: { chat: 85, coding: 80, reasoning: 85, general: 85, agentic: 70 },
 }
 
-// The ROSTER above (30 hand-authored + ~68 Pareto-selected) is the CANDIDATE POOL.
-// The active roster is the subset that clears the frontier-tolerance gate (§calibrate
-// `withinFrontierTolerance`, 10%): a checkpoint stays only if it is within 10% of the
-// size↔capability Pareto frontier on at least one axis. Models that trail the frontier
-// on EVERY axis (strictly beaten by something no bigger) are dropped — see docs/PARETO.md.
+// The ROSTER above (hand-authored + generated) is the CANDIDATE POOL. The active roster
+// is the subset that clears the frontier-tolerance gate (§calibrate `withinFrontierTolerance`):
+// a checkpoint stays only if it is within ROSTER_FRONTIER_TOLERANCE of the size↔capability
+// Pareto frontier on at least one axis. Models that trail the frontier on EVERY axis
+// (strictly beaten by something no bigger) are dropped — see docs/PARETO.md.
 const _candidates: ModelDef[] = []
 for (const e of ROSTER) {
-  // Merge the live Artificial-Analysis benchmark cells (scripts/aa-sync.mjs) OVER the
-  // hand-authored `bench`: AA is the source of truth where it has a number; the manual
-  // value fills the gaps AA does not publish (e.g. the newest frontier's MMLU-Pro/LCB).
+  const arch = MODEL_ARCH[e.hf]
+  if (!arch) throw new Error(`roster ${e.id}: no MODEL_ARCH entry for '${e.hf}' — add it to data/model-arch.json and run arch-sync build`)
+  // Merge the Artificial-Analysis cells (scripts/aa-sync.mjs) OVER the hand-authored
+  // `bench`: AA is the source of truth where it has a number (measured or bridged).
   const bench: BenchInputs = { ...e.bench, ...AA_BENCH[e.id] }
   const qualityBy = qualityFromBenchmarks(bench, QUALITY_FLOOR[e.tier])
+  const thinking = thinkingOf(AA_META[e.id], arch.thinking)
+  // a hybrid is also judged in instant mode (thinking off): the same calibration, on its
+  // instant-mode cells (AA's Non-reasoning row of the checkpoint, or the pair fit)
+  const benchInstant = arch.thinking === 'hybrid' ? AA_BENCH_INSTANT[e.id] : undefined
+  if (arch.thinking === 'hybrid' && !benchInstant)
+    throw new Error(`roster ${e.id}: hybrid checkpoint '${e.hf}' has no instant cells — run node scripts/aa-sync.mjs build`)
   _candidates.push({
     id: e.id,
     name: e.name,
@@ -731,25 +913,52 @@ for (const e of ROSTER) {
     variant: e.variant,
     spec: e.spec,
     origin: 'base',
-    paramsTotalB: e.paramsTotalB,
-    paramsActiveB: e.paramsActiveB,
-    isMoE: !!e.isMoE,
-    isReasoning: !!e.isReasoning,
+    paramsTotalB: arch.paramsTotalB,
+    paramsActiveB: arch.paramsActiveB,
+    isMoE: arch.isMoE,
+    thinking: arch.thinking,
+    isReasoning: thinking.isReasoning,
+    thinkTokens: thinking.thinkTokens,
     quality: qualityBy[e.spec],
     qualityBy,
-    layers: e.layers,
-    kvHeads: e.kvHeads,
-    headDim: e.headDim,
-    attn: e.attn,
-    weightBytes: 2,
-    contextWindowK: e.real.contextWindowK,
-    // §3.4/§OQ-G12 hand-filled intrinsic alignment + instruction-following (P3d consumes them).
+    ...(benchInstant ? { qualityByInstant: qualityFromBenchmarks(benchInstant, QUALITY_FLOOR[e.tier]) } : {}),
+    layers: arch.layers,
+    kvLayers: arch.kvLayers,
+    kvHeads: arch.kvHeads,
+    headDim: arch.headDim,
+    attn: arch.attn,
+    kvBytesPerToken: arch.kvBytesPerToken,
+    kvStateMbPerReq: arch.kvStateMbPerReq,
+    nativeWeightBytes: arch.nativeWeightBytes,
+    contextWindowK: arch.contextWindowK,
+    longCtx: longCtxOf(bench.lcr, e.tier),
+    // §3.4/§OQ-G12 hand-filled intrinsic alignment + instruction-following.
     alignment: e.alignment ?? { ...INSTRUCT_ALIGNMENT },
     instructFollow: e.instructFollow ?? INSTRUCT_INSTRUCT_FOLLOW,
     desc: e.desc,
-    real: { ...e.real, benchmarks: bench },
+    real: {
+      ...e.real,
+      license: arch.license,
+      openWeights: true,
+      contextWindowK: arch.contextWindowK,
+      precision: arch.precision,
+      source: `https://huggingface.co/${e.hf}`,
+      benchmarks: bench,
+      benchmarkSource: AA_BENCH_SOURCE[e.id],
+      thinkingToggle: arch.thinkingToggle,
+      ...(benchInstant
+        ? {
+            benchmarksInstant: benchInstant,
+            benchmarkSourceInstant: AA_BENCH_INSTANT_SOURCE[e.id],
+            instantVia: AA_INSTANT_VIA[e.id] ?? '',
+          }
+        : {}),
+    },
   })
 }
+
+/** The full candidate pool (before the gate) — read by docs/PARETO.md generation and tests. */
+export const MODEL_CANDIDATES: readonly ModelDef[] = _candidates
 
 /** The active roster: candidates that clear the frontier-tolerance gate (docs/PARETO.md). */
 export const MODEL_DEFS: Record<string, ModelDef> = {}
@@ -759,21 +968,46 @@ for (const d of withinFrontierTolerance(_candidates)) MODEL_DEFS[d.id] = d
 export const OPEN_MODEL_IDS = Object.keys(MODEL_DEFS)
 
 /* ------------------------------------------------------------------ *
- *  DERIVED CHECKPOINTS — the closed `ft_agent`/`pt_giga` cards are     *
- *  GONE (P3b). Their role is now PLAYER-CREATED in the Post-Training    *
- *  Studio (§1): a GRPO-agentic run on a frontier base is your agentic   *
- *  specialist; the endless quality ceiling is a deep, iterative         *
- *  finetune-of-a-finetune chain. Derived models live in                *
+ *  DERIVED CHECKPOINTS — player-created in the Post-Training Studio    *
+ *  (§1): a GRPO-agentic run on a frontier base is your agentic         *
+ *  specialist; the endless quality ceiling is a deep, iterative        *
+ *  finetune-of-a-finetune chain. Derived models live in               *
  *  `s.derivedModels`, resolved via `resolveModel(s,id)` (sim/models.ts). *
  * ------------------------------------------------------------------ */
 
 export const MODEL_LIST = Object.values(MODEL_DEFS)
-/** The small dense instruct model every new rack ships with: the smallest active
- *  checkpoint that deploys WITHOUT a method gate (dense, non-reasoning, non-MoE). */
-export const DEFAULT_MODEL_ID = MODEL_LIST.filter((m) => !m.isMoE && !m.isReasoning).reduce((a, b) =>
-  b.paramsTotalB < a.paramsTotalB ? b : a,
+
+/**
+ * Can a checkpoint serve the opening waves on its own? It answers interactive traffic
+ * instantly (it never thinks, or it is a hybrid with thinking switched off there) and, after
+ * its alignment tax, clears the 2023 quality lines: chat and code completion in instant mode,
+ * and the general-knowledge line RAG is judged on in the mode it answers RAG in.
+ */
+function servesOpeningWaves(m: ModelDef): boolean {
+  if (m.thinking === 'always') return false
+  const tax = alignmentTax(m)
+  const instant = m.qualityByInstant ?? m.qualityBy
+  const line = (def: RequestTypeDef): number => def.difficulty[def.primaryAxis] ?? 0
+  return (
+    instant.chat - tax >= line(REQUEST_TYPES.chat) &&
+    instant.coding - tax >= line(REQUEST_TYPES.comp) &&
+    m.qualityBy.general - tax >= line(REQUEST_TYPES.rag)
+  )
+}
+
+/**
+ * The free starter every new rack ships with: the smallest dense checkpoint that can serve the
+ * opening waves (servesOpeningWaves), so a new player's first racks answer the 2023 traffic
+ * before any deploy decision. Falls back to the smallest dense non-thinking checkpoint.
+ */
+export const DEFAULT_MODEL_ID = (
+  MODEL_LIST.filter((m) => !m.isMoE && servesOpeningWaves(m)).reduce<ModelDef | null>(
+    (a, b) => (!a || b.paramsTotalB < a.paramsTotalB ? b : a),
+    null,
+  ) ??
+  MODEL_LIST.filter((m) => !m.isMoE && !m.isReasoning).reduce((a, b) => (b.paramsTotalB < a.paramsTotalB ? b : a))
 ).id
-/** Bootstrap: every open model is owned (free) from the start; VRAM + method gate use. */
+/** Bootstrap: every open model is owned (free) from the start; rack VRAM gates deployment. */
 export const STARTER_MODELS = OPEN_MODEL_IDS
 
 /* ------------------------------------------------------------------ *
@@ -802,7 +1036,9 @@ const METHOD_RECIPES_RAW: Record<PostTrainMethod, MethodRecipe> = {
     gainScale: 22 /* autoplay-calibratable (P5) */,
     gainCap: 40 /* autoplay-calibratable (P5) */,
     taxScale: 0 /* autoplay-calibratable (P5) */,
-    forgetScale: 0.5 /* autoplay-calibratable (P5) */,
+    // continued pre-training without replay is where catastrophic forgetting is best grounded
+    // (DOSSIER §2.1/§2.8): ≈3 points off every non-target axis at effort 1.
+    forgetScale: 3 /* autoplay-calibratable (P5) */,
     reshapesDeployment: false, requiresTech: 'pt_cpt',
     desc: 'Continued pre-training on a big corpus. Broad capability and long-context gains, but the highest catastrophic forgetting.',
   },
@@ -882,7 +1118,7 @@ const METHOD_RECIPES_RAW: Record<PostTrainMethod, MethodRecipe> = {
     reshapesDeployment: false, /* no requiresTech — the starter method */
     desc: 'Supervised fine-tuning on curated data. The baseline finetune; no research needed to run it.',
   },
-  // QAT — quantization-aware training: compresses deploy (weightBytes→0.5), small
+  // QAT — quantization-aware training: compresses deploy (nativeWeightBytes→0.5), small
   // quality hit; reshapes deploy fields (§2.7). Does not target a quality axis.
   qat: {
     id: 'qat', name: 'Quantization-Aware Training', relation: 'quantized',
@@ -893,7 +1129,7 @@ const METHOD_RECIPES_RAW: Record<PostTrainMethod, MethodRecipe> = {
     taxScale: 0 /* autoplay-calibratable (P5) */,
     forgetScale: 0 /* autoplay-calibratable (P5) */,
     reshapesDeployment: true, requiresTech: 'pt_qat',
-    desc: 'Train for INT4 inference: half the weight memory and faster decode, at −2 quality. A per-model quant distinct from serving-layer PTQ.',
+    desc: 'Train for INT4 inference: about a quarter of the BF16 weight memory and faster decode, at −2 quality. A per-model quant distinct from serving-layer PTQ.',
   },
   // DoRA — weight-decomposed LoRA: slightly above LoRA (§2.3).
   dora: {
@@ -931,17 +1167,19 @@ const METHOD_RECIPES_RAW: Record<PostTrainMethod, MethodRecipe> = {
     reshapesDeployment: false, requiresTech: 'pt_lora',
     desc: 'LoRA over a quantized base: the lowest hardware barrier of all, for cheap iterative tuning.',
   },
-  // Merge — average two upstream models (§2.6): no retraining, no forgetting, no gainScale.
+  // Merge — weight-average two checkpoints of the SAME base (§2.6, model soups / TIES): no
+  // retraining, no forgetting, no gainScale. The target is unused (the axes are averaged);
+  // the Data pays the eval pass that checks the merged weights (models.ts mergeCompatible).
   merge: {
     id: 'merge', name: 'Model Merge', relation: 'merge',
-    allowedTargets: [...PEFT_TARGETS, 'safety', 'longctx', 'domain'],
-    costCompute: 0.2, costData: 0,
+    allowedTargets: ['general'],
+    costCompute: 0.2, costData: 4,
     gainScale: 0 /* n/a — merge averages upstream axes */,
     gainCap: 0 /* n/a */,
     taxScale: 0 /* autoplay-calibratable (P5) */,
     forgetScale: 0 /* autoplay-calibratable (P5) */,
     reshapesDeployment: false, requiresTech: 'pt_merge',
-    desc: 'Average the weights of two models (same family). No retraining, no forgetting — blend two specialists into one.',
+    desc: 'Average the weights of two checkpoints derived from the same base (identical architecture). No retraining, no forgetting — blend two specialists into one; safety and over-refusal land at the average of the two.',
   },
 }
 
@@ -963,7 +1201,7 @@ export const METHOD_RECIPES: Record<PostTrainMethod, MethodRecipe> = calibrateRe
 
 /** Sizing target: a project wants a training cluster that finishes within ~one wave. */
 export const RESEARCH_TARGET_SECONDS = 60
-/** Never requisition more than this share of total fleet FLOPS. */
+/** Never requisition more than this share of the ONLINE fleet's FLOPS (dark racks serve nothing and never count). */
 export const RESEARCH_MAX_SHARE = 0.45
 
 /**
@@ -983,8 +1221,8 @@ infra({
 })
 infra({
   id: 'inf_multistep', category: 'scheduling', name: 'Multi-Step Scheduling', i18nKey: 'inf_multistep',
-  effects: { multiStep: 1, throughput: 1 }, requires: ['inf_batching'], dataCost: 12, compute: 1200,
-  optimizes: ['throughput', 'latency'], coupling: 'pure-infra', sourceRef: '§4.1',
+  effects: { multiStep: 1 }, requires: ['inf_batching'], dataCost: 12, compute: 1200,
+  optimizes: ['throughput'], coupling: 'pure-infra', sourceRef: '§4.1',
 })
 infra({
   id: 'inf_chunked', category: 'scheduling', name: 'Chunked Prefill', i18nKey: 'inf_chunked',
@@ -993,7 +1231,7 @@ infra({
 })
 infra({
   id: 'inf_disagg', category: 'scheduling', name: 'P/D Disaggregation', i18nKey: 'inf_disagg',
-  effects: { disagg: 1 }, requires: ['inf_par_pp'], conflicts: ['inf_chunked'], dataCost: 40, compute: 3000,
+  effects: { disagg: 1 }, requires: ['inf_paged'], conflicts: ['inf_chunked'], dataCost: 40, compute: 3000,
   optimizes: ['latency', 'cost'], coupling: 'pure-infra', sourceRef: '§4.3',
 })
 
@@ -1039,17 +1277,17 @@ infra({
 // --- weight-quant (PTQ, §4.5; distinct from per-model QAT) ---
 infra({
   id: 'inf_wq_fp8', category: 'weight-quant', name: 'FP8 Weight Quant', i18nKey: 'inf_wq_fp8',
-  effects: { weightQuantBytes: 1 }, requires: ['inf_batching'], dataCost: 10, compute: 900,
+  effects: { quantFp8: 1 }, requires: ['inf_batching'], dataCost: 10, compute: 900,
   optimizes: ['memory', 'cost'], coupling: 'infra-model', sourceRef: '§4.5',
 })
 infra({
   id: 'inf_wq_int4', category: 'weight-quant', name: 'INT4 Weight Quant (AWQ/GPTQ)', i18nKey: 'inf_wq_int4',
-  effects: { weightQuantBytes: 0.5 }, requires: ['inf_wq_fp8'], dataCost: 14, compute: 1400,
+  effects: { quantInt4: 1 }, requires: ['inf_wq_fp8'], dataCost: 14, compute: 1400,
   optimizes: ['memory', 'cost'], coupling: 'infra-model', sourceRef: '§4.5',
 })
 infra({
   id: 'inf_wq_nvfp4', category: 'weight-quant', name: 'NVFP4 (Blackwell)', i18nKey: 'inf_wq_nvfp4',
-  effects: { weightQuantBytes: 0.5 }, requires: ['inf_wq_int4'], dataCost: 18, compute: 2400,
+  effects: { quantNvfp4: 1 }, requires: ['inf_wq_fp8'], dataCost: 18, compute: 2400,
   optimizes: ['memory', 'throughput'], coupling: 'infra-model', sourceRef: '§4.5', requiresBlackwell: true,
 })
 
@@ -1057,7 +1295,7 @@ infra({
 infra({
   id: 'inf_par_tp', category: 'parallelism', name: 'Tensor Parallelism', i18nKey: 'inf_par_tp',
   effects: { parTp: 1 }, requires: ['inf_paged'], dataCost: 16, compute: 1600,
-  optimizes: ['latency'], coupling: 'pure-infra', sourceRef: '§4.7',
+  optimizes: ['memory', 'latency'], coupling: 'pure-infra', sourceRef: '§4.7',
 })
 infra({
   id: 'inf_par_pp', category: 'parallelism', name: 'Pipeline Parallelism', i18nKey: 'inf_par_pp',
@@ -1066,13 +1304,13 @@ infra({
 })
 infra({
   id: 'inf_par_dp', category: 'parallelism', name: 'Data Parallelism', i18nKey: 'inf_par_dp',
-  effects: { parDp: 1, throughput: 1 }, requires: ['inf_par_tp'], dataCost: 12, compute: 1200,
+  effects: { parDp: 1 }, requires: ['inf_par_tp'], dataCost: 12, compute: 1200,
   optimizes: ['throughput'], coupling: 'pure-infra', sourceRef: '§4.7',
 })
 infra({
   id: 'inf_par_ep', category: 'parallelism', name: 'Expert Parallelism (MoE)', i18nKey: 'inf_par_ep',
   effects: { parEp: 1 }, requires: ['inf_par_tp'], dataCost: 16, compute: 1800,
-  optimizes: ['cost'], coupling: 'infra-model', sourceRef: '§4.8',
+  optimizes: ['throughput', 'cost'], coupling: 'infra-model', sourceRef: '§4.8',
 })
 
 // --- routing (§4.10) ---
@@ -1086,18 +1324,18 @@ infra({
 infra({
   id: 'inf_multilora', category: 'multi-lora', name: 'Multi-LoRA Serving (S-LoRA)', i18nKey: 'inf_multilora',
   effects: { loraSlots: 2000 }, requires: ['inf_paged'], dataCost: 12, compute: 1000,
-  optimizes: ['throughput', 'cost'], coupling: 'pure-infra', sourceRef: '§4.10',
+  optimizes: ['latency', 'cost'], coupling: 'infra-model', sourceRef: '§4.10',
 })
 
 // --- engine (§4.9) ---
 infra({
   id: 'inf_engine_sglang', category: 'engine', name: 'SGLang Engine', i18nKey: 'inf_engine_sglang',
-  effects: { engineTier: 1, throughput: 1 }, requires: ['inf_batching'], dataCost: 10, compute: 900,
-  optimizes: ['throughput'], coupling: 'pure-infra', sourceRef: '§4.9',
+  effects: { engineTier: 1 }, requires: ['inf_batching'], conflicts: ['inf_engine_trtllm'], dataCost: 10, compute: 900,
+  optimizes: ['latency', 'cost'], coupling: 'pure-infra', sourceRef: '§4.9',
 })
 infra({
   id: 'inf_engine_trtllm', category: 'engine', name: 'TensorRT-LLM Engine', i18nKey: 'inf_engine_trtllm',
-  effects: { engineTier: 2 }, requires: ['inf_engine_sglang'], dataCost: 16, compute: 1800,
+  effects: { engineTier: 2 }, requires: ['inf_batching'], conflicts: ['inf_engine_sglang'], dataCost: 16, compute: 1800,
   optimizes: ['throughput', 'latency'], coupling: 'pure-infra', sourceRef: '§4.9',
 })
 
@@ -1166,7 +1404,7 @@ tech(
 )
 tech(
   'r_pt_qat', 'Quantization-Aware Training', 'pt_qat', 10, 1200, ['inf_batching'],
-  'Train a model for INT4 inference. Unlocks QAT in the Studio — per-model compression to half the weight memory.',
+  'Train a model for INT4 inference. Unlocks QAT in the Studio — per-model compression to about a quarter of the BF16 weight memory.',
 )
 
 /* ------------------------------------------------------------------ *
@@ -1202,7 +1440,7 @@ export const RESEARCH_LIST = Object.values(RESEARCH_DEFS)
 /* ------------------------------------------------------------------ *
  *  TOWERS & BUILDINGS — you build neutral GPU racks; what a rack is   *
  *  good at comes from the model you deploy on it (inspect panel).     *
- *  Every new rack ships with the free Llama-3.1-8B starter preloaded. *
+ *  Every new rack ships with the free starter model preloaded.        *
  * ------------------------------------------------------------------ */
 
 export const TOWER_DEFS: Record<string, TowerDef> = {
@@ -1216,8 +1454,8 @@ export const TOWER_DEFS: Record<string, TowerDef> = {
     accent: HARDWARE_DEFS.hw_edge.accent,
     hardwareId: 'hw_edge',
     defaultModelId: DEFAULT_MODEL_ID,
-    tagline: 'Small rack · Llama-3.1-8B included',
-    desc: 'A low-power starter rack, Llama-3.1-8B preloaded. Upgrade the rack in place and deploy any bigger open model your VRAM (and unlocked methods) allow.',
+    tagline: 'Small rack · free starter model included',
+    desc: 'A low-power starter rack with the free starter model preloaded. Upgrade the rack in place and deploy any bigger open model your VRAM allows.',
   },
   srv_frontier: {
     id: 'srv_frontier',
@@ -1229,8 +1467,8 @@ export const TOWER_DEFS: Record<string, TowerDef> = {
     accent: HARDWARE_DEFS.hw_frontier.accent,
     hardwareId: 'hw_frontier',
     defaultModelId: DEFAULT_MODEL_ID,
-    tagline: 'Big rack · 70B-ready',
-    desc: 'A large accelerator rack that fits a 70B model unquantized. Ships with Llama-3.1-8B; deploy something worthy of it.',
+    tagline: 'Big rack · 70B in FP8',
+    desc: 'A large accelerator rack that fits a 70B model in FP8 (about 65B unquantized). Ships with the free starter model; deploy something worthy of it.',
   },
   router: {
     id: 'router',
@@ -1245,8 +1483,8 @@ export const TOWER_DEFS: Record<string, TowerDef> = {
     routeBonus: 0.45,
     powerDraw: 0.2,
     heat: 0.2,
-    tagline: 'Smart traffic assignment',
-    desc: 'Reads each request and steers it to the right server. Boosts matched servers and is the heart of a smart build.',
+    tagline: 'Capability-aware dispatch',
+    desc: 'Prompts inside its range go to the in-range rack whose model answers them correctly and finishes soonest (the strongest when none can) instead of simply the rack that could start them soonest, so weak racks stop answering hard requests and fast racks take the easy ones. The rack that reads a prompt holds its KV, so its model writes the answer. With KV-Aware Routing researched, routed cacheable traffic also lands on the replica that holds its prefix: more prefix-cache hits.',
   },
   cache: {
     id: 'cache',
@@ -1259,12 +1497,15 @@ export const TOWER_DEFS: Record<string, TowerDef> = {
     cacheChance: 0.35,
     powerDraw: 0.2,
     heat: 0.2,
-    tagline: 'Buffs servers · skips prefill',
-    desc: 'Aura: gives Serving Towers in range a chance to serve a cached prompt prefix on cacheable traffic (Embedding, Chat, Code Completion, RAG, Agentic) — the first token is instant (no prefill), but the response still decodes on the model. Overlap it with your servers.',
+    tagline: 'Prefix cache · skips the shared prefix',
+    desc: 'Aura: racks in range can reuse a cached prompt PREFIX on cacheable traffic (Embedding, Chat, Code Completion, RAG, Agentic). A hit skips the shared-prefix part of the prefill (the unique rest still prefills): lower TTFT, less prefill contention. Each request gets one lookup, and overlapping caches do not stack: the best one counts, capped by how much traffic really shares a prefix.',
   },
-  // §3.3 the three external guardrail families — the key real contrast: a BERT
-  // encoder is milliseconds; a generative 12B guardrail is a full (shorter) inference
-  // (one to two orders slower). The single old Safety Gate is replaced by these.
+  // §3.3 the three external guardrail families — the real contrast: a BERT encoder is one
+  // fixed forward (a served Prompt Guard 2 86M decides in a few ms; longer prompts split into
+  // segments scanned in parallel) that adaptive attacks slip past; a generative 12B judge is a
+  // real inference on a GPU of your own — a prefill of the turn it reads plus a few verdict
+  // tokens (tens of ms on an H100 for a typical prompt, growing with the turn), on both sides,
+  // paying GPU-hours and power.
   guard_encoder: {
     id: 'guard_encoder',
     name: 'Prompt Guard (encoder)',
@@ -1279,12 +1520,15 @@ export const TOWER_DEFS: Record<string, TowerDef> = {
       archetype: 'encoder',
       side: 'input',
       catches: ['jailbreak', 'injection'],
-      checkLatencyMs: 92, // Prompt Guard 86M: a single BERT forward, ms-scale (NOT the roofline)
+      // a served Prompt Guard 86M: a few ms of BERT forward (optimized encoder guards decide in
+      // 2.4–9.5 ms, REFERENCE-DOSSIER §3.6) + the service hop and tokenization — not the roofline;
+      // Meta's model card measures 92.4 ms unbatched on an A100 (REALISM §4.2)
+      checkLatencyMs: 10,
       runsOnRoofline: false,
       baseRecall: 0.975,
     },
-    tagline: 'Input-side · jailbreak + injection · 92 ms',
-    desc: 'A lightweight BERT encoder (Prompt Guard 86M): a single millisecond-scale forward pass on the INPUT. Catches jailbreak and prompt injection. Cheap — it does not occupy your racks.',
+    tagline: 'Input-side · jailbreak (+ injection after Red-Team) · 10 ms',
+    desc: 'A lightweight BERT encoder (Prompt Guard 86M): one millisecond-scale forward pass on the INPUT, before any rack computes. It screens every request on the lanes its range touches, wherever it sits: +10 ms TTFT (service hop included) and a small false-refusal rate on that traffic. Blocks jailbreaks outright; prompt-injection detection unlocks with Red-Team Eval. More encoders cover more lanes; they never re-screen the same request.',
   },
   guard_llm: {
     id: 'guard_llm',
@@ -1303,8 +1547,8 @@ export const TOWER_DEFS: Record<string, TowerDef> = {
       guardHardwareId: 'hw_perf', // an H100-class rack of its own (OQ-G16: independent tile)
       baseRecall: 0.92,
     },
-    tagline: 'Both sides · all hazards · a real 12B inference',
-    desc: 'A generative 12B guardrail (Llama Guard 4) on its OWN H100 rack: each check is a full (shorter) LLM inference that draws real power and adds real latency — one to two orders slower than the encoder. Catches all four hazards, input and output.',
+    tagline: 'Both sides · all hazards (injection/PII after Red-Team) · a real 12B inference',
+    desc: 'A generative 12B guardrail (Llama Guard 4) on its own H100: each check is a full (shorter) LLM inference, so it adds real latency at BOTH ends (TTFT on the prompt, E2EL on the answer) for every request on the lanes it covers. Catches jailbreak and harmful content always, injection after Red-Team Eval and PII after Red-Team Eval II; its output check stops an unsafe answer before delivery.',
   },
   guard_mod: {
     id: 'guard_mod',
@@ -1324,8 +1568,8 @@ export const TOWER_DEFS: Record<string, TowerDef> = {
       runsOnRoofline: false,
       baseRecall: 0.88,
     },
-    tagline: 'Both sides · harmful + PII · vendor-hosted',
-    desc: 'A vendor-hosted moderation pass (OpenAI omni): a 120 ms extra model call on someone else’s racks. Catches harmful content and PII leakage on input and output — but not jailbreaks.',
+    tagline: 'Both sides · harmful (+ PII after Red-Team II) · vendor-hosted',
+    desc: 'A vendor-hosted moderation pass (OpenAI omni): a 120 ms extra model call on someone else’s racks, on the input and again on the output of every request on the lanes it covers. Catches harmful content always and PII leakage after Red-Team Eval II — but not jailbreaks.',
   },
   power: {
     id: 'power',
@@ -1361,11 +1605,13 @@ export const TOWER_DEFS: Record<string, TowerDef> = {
     range: 0,
     color: 0x36e0e0,
     accent: 0xb6fffb,
-    // §5.5: a direct-liquid loop sized for a high-density rack — an NVL72 is ~58 kW
-    // served. ENABLES liquid-cooled racks (DGX/NVL72) and adds large kW (gated hard).
-    cooling: 60,
-    tagline: 'Enables liquid racks · +60 kW',
-    desc: 'Direct liquid cooling (DLC). REQUIRED before any DGX/NVL72 rack (≥1000 W/GPU) can run — those racks cannot be served at all without a loop. Also adds large cooling capacity.',
+    // §5.5: a direct-liquid loop (one coolant-distribution unit) sized for one fully loaded
+    // NVL72 — 72 GPUs × 1200 W × 0.8 is 69 kW served in BF16, ~75 kW with speculative
+    // decoding. ENABLES liquid-cooled racks (1200 W/GPU, past the ~1000 W air limit) and is
+    // their own heat-rejection pool: its kW cools ONLY liquid racks (power.ts), never air racks.
+    cooling: 75,
+    tagline: 'Enables liquid racks · +75 kW liquid',
+    desc: 'Direct liquid cooling (DLC) to the cold plates. REQUIRED before a GB200 NVL72 rack (1200 W per GPU, past what air can cool) can run — it cannot be served at all without a loop. Its +75 kW, enough for one NVL72 at full load, cools only liquid-cooled racks: air-cooled racks, up to the 1000 W/GPU DGX B200, still reject their heat through Cooling Towers.',
   },
   lab: {
     id: 'lab',
@@ -1387,30 +1633,26 @@ export const BUILD_ORDER = [
   'cache',
   'guard_encoder',
   'guard_llm',
-  // 'guard_mod' (Moderation) hidden for now — no harmful/pii traffic in the
-  // current roster makes it situational; the def + safety logic stay for re-enable.
+  // 'guard_mod' (the Moderation API) is not on the build bar: the ten Q–P hotkey slots are
+  // taken, and Llama Guard already catches every hazard it does (harmful content — e.g. the
+  // W48 reasoning lane — and PII after Red-Team II) plus jailbreaks and injection. The def and
+  // its moderation family in guards.ts / safety.ts stay for a future slot.
   'power',
   'cooling',
   'cooling_liquid',
   'lab',
 ]
 
-/* ------------------------------------------------------------------ *
- *  WAVES — the escalating campaign.                                  *
- * ------------------------------------------------------------------ */
-
-export const WAVES: WaveDef[] = buildCampaign(CAMPAIGN_THEMES)
-
 /**
  * The DETERMINISTIC between-wave incident a campaign wave forces (overriding the
  * random roll), so a real event lands its signature consequence — DeepSeek's
- * price war, a grid power crunch, the EU AI Act audit, a viral GPU melt. Returns
- * null for 'none' / structural single-lane-surge waves and for endless surges
- * (index past the campaign), where the random roll applies instead.
+ * price war, a grid emergency, the EU AI Act audit, a viral GPU melt: the theme's
+ * explicit `incident`, else its special's default. Returns null for 'none' /
+ * plain structural surge waves and for endless surges (index past the campaign),
+ * where the random roll applies instead.
  */
 export function themedIncidentForWave(index: number): string | null {
-  const theme = CAMPAIGN_THEMES[index]
-  return theme ? themedIncidentId(theme.special) : null
+  return themeIncidentId(CAMPAIGN_THEMES[index])
 }
 
 /* ------------------------------------------------------------------ *
@@ -1493,6 +1735,23 @@ export const INCIDENTS: IncidentDef[] = [
     mods: { powerPrice: 1.6 },
     desc: 'On-site gas turbines run flat-out to outrun the grid queue; volatile fuel pricing inflates power cost this wave.',
   },
+  /* --- grid capacity shocks: a curtailment order sheds part of the feed (the racks it can
+   *     no longer power brown out) and what keeps running burns on-site fuel; an
+   *     interconnection freeze blocks energizing any NEW Power Plant. --- */
+  {
+    id: 'inc_grid_curtailment',
+    name: 'Grid Curtailment Order',
+    icon: '🔌',
+    mods: { powerCap: 0.85, powerPrice: 1.5 },
+    desc: 'A grid emergency order curtails large loads before rolling blackouts. 15% of your power feed is cut this wave (racks beyond it go dark) and the rest runs partly on costly backup generation.',
+  },
+  {
+    id: 'inc_interconnect_queue',
+    name: 'Interconnection Freeze',
+    icon: '🗼',
+    mods: { powerBuild: 0, powerPrice: 1.3 },
+    desc: 'The utility will not energize new load: no new Power Plant can be connected this build phase or wave, and power costs more. Fit the fleet inside the power you already have.',
+  },
   {
     id: 'inc_nuclear_ppa',
     name: 'Firm Nuclear PPA Signed',
@@ -1501,13 +1760,15 @@ export const INCIDENTS: IncidentDef[] = [
     mods: { powerPrice: 0.6 },
     desc: 'A long-term nuclear power-purchase agreement locks in cheap firm baseload. Power costs fall this wave.',
   },
-  /* --- cooling shortfalls (coolingCap ↓): dense racks throttle. --- */
+  /* --- cooling shortfalls: a liquid-loop fault cuts only the Liquid Cooling Loops' pool
+   *     (liquidCoolingCap ↓ — the liquid racks throttle, air racks never notice); a water
+   *     restriction curbs evaporative cooling for every pool (coolingCap ↓). --- */
   {
     id: 'inc_cooling_failure',
     name: 'Liquid Loop Fault',
     icon: '🌡',
-    mods: { coolingCap: 0.55 },
-    desc: 'A coolant-distribution fault cuts heat-rejection headroom; dense racks throttle until the plumbing recovers.',
+    mods: { liquidCoolingCap: 0.55 },
+    desc: 'A coolant-distribution unit fails: your Liquid Cooling Loops lose 45% of their capacity this wave, so liquid-cooled racks throttle until the plumbing recovers. Air-cooled racks are unaffected.',
   },
   {
     id: 'inc_water_drought',
@@ -1597,11 +1858,13 @@ export const INCIDENTS: IncidentDef[] = [
       s.data = Math.max(0, Math.floor(s.data * 0.6))
     },
   },
-  /* --- good fortune (banner glows green): a surge you can profit from, or a boon. --- */
+  /* --- good fortune (banner glows green): a surge you can profit from, or a boon. A good
+   *     incident never lands as a boss's or a 10th wave's forced hard shock. --- */
   {
     id: 'inc_viral_ghibli',
     name: 'Viral Demand Surge',
     icon: '📈',
+    good: true,
     mods: { volume: 1.4, reward: 1.2 },
     desc: 'A feature goes viral — "the GPUs are melting." Request volume explodes far past provisioned capacity, but each clean serve pays more.',
   },
@@ -1610,8 +1873,8 @@ export const INCIDENTS: IncidentDef[] = [
     name: 'Enterprise Demo Day',
     icon: '🤝',
     good: true,
-    mods: { reward: 1.5 },
-    desc: 'A flagship enterprise pilot lands. Clean serves pay a premium this wave — but a single SLO miss is very visible.',
+    mods: { reward: 1.5, slaDamage: 1.8 },
+    desc: 'A flagship enterprise pilot lands. Clean serves pay a 50% premium this wave — but every SLO miss, dropped request or wrongly refused prompt costs 1.8× the SLA.',
   },
   {
     id: 'inc_demand_lull',
@@ -1622,3 +1885,16 @@ export const INCIDENTS: IncidentDef[] = [
     desc: 'A holiday / overnight lull — request volume dips well below peak this wave. A breather to catch up on capacity and research.',
   },
 ]
+
+/* ------------------------------------------------------------------ *
+ *  WAVES — the escalating campaign (built after INCIDENTS: the step   *
+ *  cap counts the volume of the incident each wave forces).           *
+ * ------------------------------------------------------------------ */
+
+/** The volume multiplier of the incident a theme forces (×1 when it forces none, or none with volume). */
+export function forcedIncidentVolume(theme: WaveTheme): number {
+  const id = themeIncidentId(theme)
+  return (id ? INCIDENTS.find((i) => i.id === id)?.mods.volume : undefined) ?? 1
+}
+
+export const WAVES: WaveDef[] = buildCampaign(CAMPAIGN_THEMES, forcedIncidentVolume)

@@ -2,11 +2,14 @@
  * ui/tooltip.ts — a single hover-tooltip singleton (§5.3).
  *
  * Any interactive display element can register a tooltip provider; after the
- * pointer rests on it for ~800 ms a small panel appears showing
+ * pointer rests on it for ~450 ms (or a ~450 ms long-press on touch) a small
+ * panel appears showing
  *   NAME · VALUE UNIT
  *   one-line formula / §ref
  * sourced from the shared `metric.*` i18n group. The tooltip lives on its own
  * top-most container the Game adds to the root, so it always draws above panels.
+ * A provider may return null when it has nothing to say right now (e.g. a
+ * button that only explains itself while disabled).
  *
  * Pure presentation: it reads provider callbacks (which read GameState) and never
  * mutates anything.
@@ -15,7 +18,9 @@ import { Container, Graphics, type FederatedPointerEvent } from 'pixi.js'
 import { COLORS, DESIGN_H, DESIGN_W } from '../config'
 import { drawPanel, label } from './theme'
 
-const DELAY_MS = 800
+const DELAY_MS = 450
+/** touch: a press held this long shows the tooltip instead of tapping. */
+const LONG_PRESS_MS = 450
 const MAXW = 260
 const BOTTOM_LEFT_SAFE_X = 110
 
@@ -29,6 +34,8 @@ export interface TooltipSpec {
   body?: string
 }
 
+type SpecFn = () => TooltipSpec | null
+
 class TooltipLayer {
   readonly view = new Container()
   private bg = new Graphics()
@@ -36,21 +43,26 @@ class TooltipLayer {
   private valueT = label('', 13, COLORS.sla, 'bold')
   private bodyT = label('', 11, COLORS.textDim)
   private timer: ReturnType<typeof setTimeout> | null = null
-  private pending: { spec: () => TooltipSpec; gx: number; gy: number } | null = null
+  private pending: { spec: SpecFn; gx: number; gy: number; touch: boolean } | null = null
+  /** a touch long-press just showed the tooltip — the release must not also tap. */
+  private swallowTap = false
 
   constructor() {
     this.view.addChild(this.bg, this.titleT, this.valueT, this.bodyT)
     this.view.visible = false
     this.view.eventMode = 'none'
     this.bodyT.style.wordWrap = true
+    this.bodyT.style.breakWords = true
     this.bodyT.style.wordWrapWidth = MAXW - 20
     this.bodyT.style.lineHeight = 14
   }
 
-  /** Bind a Pixi element so resting on it for DELAY_MS pops the tooltip. */
-  attach(el: Container, spec: () => TooltipSpec): void {
+  /** Bind a Pixi element so resting on it (or long-pressing it on touch) pops the tooltip. */
+  attach(el: Container, spec: SpecFn): void {
     if (el.eventMode === 'none' || el.eventMode === 'auto') el.eventMode = 'static'
-    el.on('pointerover', (e: FederatedPointerEvent) => this.arm(spec, e.global.x, e.global.y))
+    el.on('pointerover', (e: FederatedPointerEvent) => {
+      if (e.pointerType !== 'touch') this.arm(spec, e.global.x, e.global.y, false)
+    })
     el.on('pointermove', (e: FederatedPointerEvent) => {
       // keep the latest cursor pos for placement until it actually shows
       if (this.pending) {
@@ -58,35 +70,69 @@ class TooltipLayer {
         this.pending.gy = e.global.y
       }
     })
-    el.on('pointerout', () => this.dismiss())
-    el.on('pointerdown', () => this.dismiss())
+    el.on('pointerout', (e: FederatedPointerEvent) => {
+      if (e.pointerType === 'touch') this.cancelPending()
+      else this.dismiss()
+    })
+    el.on('pointerdown', (e: FederatedPointerEvent) => {
+      if (e.pointerType === 'touch') this.arm(spec, e.global.x, e.global.y, true)
+      else this.dismiss()
+    })
+    const release = (e: FederatedPointerEvent): void => {
+      if (e.pointerType === 'touch') this.cancelPending()
+    }
+    el.on('pointerup', release)
+    el.on('pointerupoutside', release)
   }
 
-  private arm(spec: () => TooltipSpec, gx: number, gy: number): void {
+  /**
+   * True exactly once after a touch long-press showed the tooltip: the caller
+   * (a button's tap handler) skips its action so peeking never also activates.
+   */
+  consumeLongPress(): boolean {
+    if (!this.swallowTap) return false
+    this.swallowTap = false
+    return true
+  }
+
+  private arm(spec: SpecFn, gx: number, gy: number, touch: boolean): void {
     this.dismiss()
     if (!tooltipsEnabled) return
-    this.pending = { spec, gx, gy }
-    this.timer = setTimeout(() => this.show(), DELAY_MS)
+    this.pending = { spec, gx, gy, touch }
+    this.timer = setTimeout(() => this.show(), touch ? LONG_PRESS_MS : DELAY_MS)
   }
 
-  private dismiss(): void {
+  /** Drop a not-yet-shown tooltip (a visible one stays up). */
+  private cancelPending(): void {
+    if (this.timer) {
+      clearTimeout(this.timer)
+      this.timer = null
+    }
+    if (!this.view.visible) this.pending = null
+  }
+
+  /** Hide whatever is showing (e.g. when a modal opens over its anchor). */
+  dismiss(): void {
     if (this.timer) {
       clearTimeout(this.timer)
       this.timer = null
     }
     this.pending = null
+    this.swallowTap = false
     this.view.visible = false
   }
 
   private show(): void {
+    this.timer = null
     if (!this.pending) return
-    const { spec, gx, gy } = this.pending
-    let s: TooltipSpec
+    const { spec, gx, gy, touch } = this.pending
+    let s: TooltipSpec | null
     try {
       s = spec()
     } catch {
       return
     }
+    if (!s) return
     this.titleT.text = s.title
     this.valueT.text = s.value ?? ''
     this.valueT.visible = !!s.value
@@ -134,6 +180,15 @@ class TooltipLayer {
     this.view.x = x
     this.view.y = ty
     this.view.visible = true
+    if (touch) {
+      // a long-press peek: the release must not tap, and the next touch anywhere closes it.
+      this.swallowTap = true
+      try {
+        window.addEventListener('pointerdown', () => this.dismiss(), { once: true, capture: true })
+      } catch {
+        /* non-DOM host */
+      }
+    }
   }
 }
 
@@ -152,7 +207,7 @@ export function setTooltipsEnabled(v: boolean): void {
   if (!v && layer) layer.view.visible = false
 }
 
-/** Convenience: attach a tooltip provider to an element. */
-export function addTooltip(el: Container, spec: () => TooltipSpec): void {
+/** Convenience: attach a tooltip provider to an element (return null for "nothing to show"). */
+export function addTooltip(el: Container, spec: () => TooltipSpec | null): void {
   tooltip().attach(el, spec)
 }

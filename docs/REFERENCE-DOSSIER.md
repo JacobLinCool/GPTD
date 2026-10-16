@@ -3,8 +3,8 @@
 
 # 真實世界資料中心 LLM 推論：參考檔案 (Reference Dossier)
 
-> 本檔案由六個獨立研究章節合併、去重、重新組織而成，作為本模擬器真實感校準的事實基礎。
-> 範圍：2024–2026 年資料中心 LLM 推論的請求工作負載、後訓練、安全防護、serving 系統技術、硬體現實、開放權重模型版圖。
+> 本檔案由六個獨立研究章節合併、去重、重新組織而成，作為本模擬器真實感校準的事實基礎；第 7 節收錄戰役終章(第 95–100 波)所依據的 2026 年 7–10 月真實事件。
+> 範圍：2024–2026 年資料中心 LLM 推論的請求工作負載與 SLO、後訓練、安全防護、serving 系統技術、硬體與能源現實、開放權重模型版圖(至 2026-10)與基準測試託管方的評測變動。
 > 原則：**保留所有具體數字、表格與行內引用**；來源分歧處保留範圍並標示分歧；正體中文(台灣)敘述，技術名詞 / 產品名 / 數字一律 verbatim。
 > 可信度標註慣例：(confidence: high/med/low)；凡無法以 ≥2 個獨立來源交叉驗證者均已標明。
 
@@ -22,7 +22,7 @@
 8. **decode 是 memory-bandwidth-bound、prefill 是 compute-bound**——這是 PagedAttention、KV 量化、MLA、speculative decoding、chunked prefill、P/D disaggregation 等幾乎所有 serving 技術的根本動機。
 9. **batch size 是調節器**:小 batch → speculative decoding 大勝、GPU 算力閒置;大 batch → throughput 飽和、speculative decoding 失效(batch ≥32–64)、轉為 compute-bound。
 10. **MoE 的記憶體-算力解耦是成本結構最重要的單一事實**:**VRAM 帳單按總參數**(全部 expert 須常駐),**算力帳單按 active 參數**(每 token 只算被選中的 expert)。當前前沿稀疏比 active/total ≈ 3%–10%。
-11. **記憶體速算**:FP16 下 1B 參數 ≈ 2 GB;FP8 ≈ 1 GB;INT4 ≈ 0.5 GB。KV cache 長 context 下會主導記憶體,GQA/MQA/MLA 是縮 KV 的關鍵。
+11. **記憶體速算**:FP16 下 1B 參數 ≈ 2 GB;FP8 ≈ 1 GB;INT4 ≈ 0.5 GB(含 group scale 約 0.53)。KV cache 長 context 下會主導記憶體,GQA/MQA/MLA 是縮 KV 的關鍵;2026 年的開放權重模型更普遍改用**混合注意力**(線性注意力 / sliding window / 壓縮注意力只在少數層保留隨 context 成長的 KV),同尺寸模型的每 token KV 可相差 10–60×(§4.6、§6.7)。
 12. **冷卻分界**:單卡 TDP ≲ 1,000 W 可氣冷;≳ 1,000–1,200 W(GB200/GB300/MI355X)需直接液冷(DLC)。NVL72 機櫃 ~120 kW 遠超傳統氣冷機櫃(~10–15 kW)。
 13. **$/Mtoken = ($/GPU-hr × 3,600) / (聚合 tokens/s × 1,000,000)**;低利用率致命(10% 負載可使每 token 成本暴增 ×10,比 premium API 還貴)。
 14. **能力壓縮(capability compression)是 2025–2026 核心真相**:Qwen3-4B-Thinking-2507(僅 4B)AIME25 81.3、GPQA-D 65.8,逼近一年前需 671B(DeepSeek-R1)的區間;但 **agentic / SWE-bench 維度規模與後訓練仍拉開明顯差距**——這是大模型仍值錢之處。
@@ -141,6 +141,25 @@ MLPerf 把同一模型分成不同情境,直接體現「同模型、不同 SLO �
 
 > 觀察:模型愈大、context 愈長,SLO 必然放寬(405B 的 TTFT 上限 6 s vs 70B interactive 的 450 ms)。這量化了「難度/規模 ↔ 延遲容忍度」的真實取捨。
 
+### 推理模型的使用者延遲:首個「答案」token 時間(TTFAT)
+
+- **定義**:Artificial Analysis 把 **Time to First Answer Token** 定義為「送出請求到收到第一個**答案** token」的秒數;對推理模型,這包含答案之前的 thinking 時間。一般的 TTFT 對會回傳 reasoning token 的模型只量到第一個 reasoning token,而非第一個答案 token。 [source: https://artificialanalysis.ai/methodology/performance-benchmarking]
+- **意涵**:hidden thinking 和一般 token 一樣耗 decode 時間與 KV,使用者卻要等到 thinking 結束才看到第一個字;互動流量(聊天、程式碼補全)的真實體感由 TTFAT 主導。AA 的 serving telemetry 同時公布 TTFT、TTFAT 與輸出速度,因此 `(TTFAT − TTFT) × 輸出 tok/s` 可估計一個模型每次回答的 hidden thinking 量。 (confidence: high,定義;估算方法為本專案推導)
+
+### GPTD 採用的延遲界線 ↔ 公開依據
+
+| 界線(`LAT_CLASS_SLO` + 各型別覆寫) | 數值 | 公開依據 |
+|---|---|---|
+| IN 類 TTFT / TPOT | 400 ms / 40 ms | MLPerf v5.0 Interactive 450 / 40 ms;BentoML / IETF 聊天 TTFT 100–500 ms |
+| NR 類 TTFT / TPOT | 2000 ms / 200 ms | MLPerf Conversational 2000 / 200 ms;IETF NR 總延遲 < 5 s |
+| 程式碼補全 TTFT | 200 ms | IETF COMP「sub-200ms TTFT」;BentoML 100–200 ms |
+| 摘要 TTFT | 6 s | MLPerf v5.0 Llama-3.1-405B 長 context 情境 p99 TTFT 6 s(整份文件須先讀完) |
+| Agent 單步 E2E | 60 s | IETF AGNT「延遲跨步累積」:單步工具呼叫須在一分鐘內完成,整個 loop 才可用(本專案取值,confidence: med) |
+| 聊天 / 越獄探測 TTFAT | 4 s | AA TTFAT 定義;互動聊天可容忍的 thinking 前置等待(本專案取值,confidence: med) |
+| 程式碼補全 TTFAT | 400 ms | 行內建議須幾乎與首 token 同時出現;thinking 模型的 hidden token 本身即會超標(本專案取值) |
+
+[source: https://mlcommons.org/2025/04/llm-inference-v5/] [source: https://datatracker.ietf.org/doc/html/draft-mondal-llm-serving-workload-profiles-00] [source: https://bentoml.com/llm/inference-optimization/llm-inference-metrics]
+
 ## 1.4 真實工作負載原型:token 分布與 SLO
 
 ### NVIDIA 官方各用途的 ISL/OSL 基準
@@ -189,8 +208,26 @@ MLPerf 把同一模型分成不同情境,直接體現「同模型、不同 SLO �
 
 - **輸入長度**最適配 **Pareto / Log-normal**(冪律,有肥尾);**輸出長度**較適配 **Exponential**。 [source: ServeGen, https://arxiv.org/pdf/2505.09999;另見 BlendServe / Intelligent Router]
 - 聊天請求多 < 1K 輸出;長生成 / 影片 trace 可輕易 > 5K token。summarization 輸入常為輸出的 10–100×。 [source: 同上搜尋結果群]
-- **時間趨勢(放大效應)**:平均 prompt token 從 ~1.5K 增至 > 6K(約 4×),completion 從 ~150 增至 ~400(約 3×)——反映 RAG、長 context、agentic 累積與 CoT 的普及。 [source: OpenRouter 100T study, https://arxiv.org/pdf/2601.10088] (confidence: med,僅取自摘要片段,未能讀全文)
+- **時間趨勢(放大效應)**:OpenRouter 的 100 兆 token 實證研究(Aubakirova 等,2026-01)指出,自 2024 年初起「每請求平均 prompt token 約增四倍,從約 1.5K 到超過 6K」,「completion 近乎三倍,從約 150 到 400 token」;程式設計任務是 prompt 擴張的主要推手,模型愈來愈像處理大量使用者提供素材的分析引擎。 [source: State of AI: An Empirical 100 Trillion Token Study with OpenRouter, https://arxiv.org/html/2601.10088] (confidence: high,已讀全文核對)
 - 常用公開 trace:ShareGPT、WildChat、BurstGPT、Azure-Trace;多模態 OpenVid;benchmark MMLU。 [source: ServeGen / 上述搜尋]
+
+### GPTD 時代 token 成長表(`ERA_TOKEN_GROWTH`)的依據
+
+prompt 的成長遠大於答案:對話歷史、檢索文件、repository context 與 agent 累積狀態都落在 prompt 裡(OpenRouter:prompt ≈4×、completion ≈3×)。GPTD 為每個原型設定 2023 年基準長度與戰役末(2026 下半年)的成長倍率,以凸形曲線分配(2023 幾乎不變,2025–26 承擔大部分成長);每個原型的終值都落在其 IETF 工作負載剖面的真實區間內:
+
+| 原型 | 2023 基準(輸入 / 輸出) | 戰役末(輸入 / 輸出) | 對照 IETF profile |
+|---|---|---|---|
+| Embedding | 2K / 0 | 6K / 0 | EMBED 16–8192 |
+| 互動聊天 | 512 / 256 | 2.6K / 512 | CHAT 64–16K / 50–1K |
+| 程式碼補全 | 1.5K / 150 | 7.5K / 200 | COMP 256–8K / 5–200 |
+| RAG / 長 context QA | 8K / 512 | 48K / 819 | LDQA 4K–128K / 16–512(RAGN 528–8K) |
+| 摘要 | 12K / 400 | 96K / 1K | SUMM 1K–32K;整份長文件落在 LDQA 4K–128K |
+| 推理(長 CoT) | 512 / 6K | 2K / 12K | REAS 64–2K / 544–33K;NVIDIA 推理 OSL 1K–10K+ |
+| Agentic(每步) | 6K / 800 | 48K / 1K | AGNT 512–16K(累積,長 session 更高)/ 20–500 每步 |
+| 批次 / 離線生成 | 1K / 4K | 3K / 8K | CGEN 32–1K / 256–8K;DGEN 512–16K |
+| 越獄探測 | 600 / 400 | 3K / 500 | many-shot jailbreak 以長 prompt 為特徵 |
+
+> 註:agent 單步 48K 輸入超出 IETF AGNT 草案的 16K,反映長 session coding agent 的 context 累積(§1.2 軸 7:agent 的 input:output 比可超過 100:1);每步輸出仍短。此表為本專案依上述來源所定的設計值(confidence: med)。
 
 ## 1.5 真實系統如何分類 / 路由請求
 
@@ -409,7 +446,10 @@ OpenAI 在 2025-08 的 GPT-5 中導入 **safe-completions**,把安全訓練重�
 | **Qwen3Guard (Alibaba)** | 多尺寸(含 8B) | input/output | 在 12 類攻擊上 Qwen3Guard-8B 達 85.3% 最高整體準確率,WildGuard-7B 82.8%,Granite-Guardian-3.3-8B 81.0% [source: arxiv 2511.22047] | 8B 生成式 |
 | **Meta LlamaFirewall** | agent 安全框架(生產於 Meta) | 多層 | 三組件:**PromptGuard 2**(越獄/注入分類器)、**AlignmentCheck**(CoT 審計 agent 推理是否偏離使用者目標)、**CodeShield**(線上靜態分析阻擋不安全程式碼) | PromptGuard 2 即時;PromptGuard 2 把 ASR 從 17.6%→7.5%,AlignmentCheck 達 2.9%,合併達 ASR 1.75%(降約 90%)[source: https://arxiv.org/abs/2505.03574 ; https://ai.meta.com/research/publications/llamafirewall-...] |
 
-> 架構要點:**輕量編碼器分類器(Prompt Guard 22M/86M、GLiNER 系)是 BERT 系、單次前向、毫秒級**;而 **Llama Guard 4 12B、NemoGuard 8B、Granite/WildGuard 7-8B 是生成式 LLM,每次判斷等同一次完整(雖較短)的 LLM 推論**,成本與延遲高出一到兩個數量級。這是模擬器中最重要的真實對比。
+> 架構要點(數字已對齊):**輕量編碼器分類器(Prompt Guard 22M/86M、GLiNER 系)是 BERT 系、單次前向**;**Llama Guard 4 12B、NemoGuard 8B、Granite/WildGuard 7-8B 是生成式 LLM,每次判斷是一次真正的 LLM 推論**——讀入要分類的對話回合(prefill)再生成幾個 verdict token。兩者的延遲要分開看:
+> - **編碼器**:Meta 的 model card 公布 Prompt Guard 2 86M 每次分類 **92.4 ms**、22M **19.3 ms**(A100、512 token;超過 512 token 時切段平行掃描)。這是官方量測值,但遠高於 86M 前向本身的 GPU 算力需求(約 2 × 86M × 512 ≈ 0.09 TFLOP,A100 上不到 1 ms);第三方的最佳化編碼器 guardrail 決策延遲為 **2.4–9.5 ms**(§3.6)。因此編碼器的實際延遲主要取決於部署方式,最佳化後為個位數毫秒。
+> - **生成式 judge**:Llama Guard 4 的輸出是一行 `safe`,或 `unsafe` 加上違反的類別代碼(如 `unsafe\nS9`),官方範例以 `max_new_tokens=10` 生成。一次檢查 = 回合的 prefill + 2–3 個 decode token:12B 在 H100 上 BF16 prefill 512 token 約 2 × 12B × 512 ≈ 12.3 TFLOP,以 ~55% MFU 約 23 ms,加上兩個 memory-bound decode step(每步讀約 24 GB 權重)約 20 ms,合計**數十 ms**,且隨回合長度成長;NemoGuard 8B NIM 的 TTFT 依負載為 48 ms 到數秒。 [source: https://huggingface.co/meta-llama/Llama-Guard-4-12B]
+> - **結論**:在同等最佳化下,生成式 judge 對典型 prompt 約比編碼器慢**一個數量級**(長回合、高負載時更多);它更貴的地方在於**要讀兩側(輸入+輸出)、隨回合長度成長、需要一張自己的 GPU 與電力**。「慢一到兩個數量級」只在拿最佳化編碼器(~ms)對比負載下的生成式 judge 時成立。GPTD 以同等最佳化計價兩者：編碼器用服務化後的固定 10 ms（數 ms 的 forward + 約 5 ms 服務往返與 tokenize），生成式 judge 以 roofline 第一原理計價再加同樣的服務往返（512 token 時 BF16 約 53 ms、FP8 約 31 ms，2048 token 約 139 / 78 ms），所以 judge 對典型 prompt 是編碼器的數倍、長回合約一個數量級；model card 的 92.4 ms 是未批次化的參考值（REALISM §4.2、§7）。
 
 ### NeMo Guardrails 的五種 rails(編排層的標準分類)
 依「請求生命週期中觸發時機」分五類 [source: https://developer.nvidia.com/blog/stream-smarter-and-safer... ; https://docs.nvidia.com/nemo/guardrails/]:
@@ -452,7 +492,9 @@ OpenAI 在 2025-08 的 GPT-5 中導入 **safe-completions**,把安全訓練重�
 - **品質的 safety tax / alignment tax**:當防禦策略需持續啟用,會犧牲模型能力與 helpfulness;安全對齊顯著提升安全但帶來高 over-refusal [source: arxiv 2412.17686 ; arxiv 2510.18081 Any-Depth Alignment]。
 - **誤報 / 過度拒答(over-refusal)權衡**:over-refusal = guardrail 錯擋良性查詢的 False Positive Rate;生產級 guardrail 須同時壓低 over-refusal 與 Attack Success Rate(ASR)。**XSTest** 即為量測「誇張安全(exaggerated safety)」的基準,用對比 prompt 對(含敏感關鍵字的安全 prompt vs 真正不安全的對照)測系統是否靠意圖而非關鍵字判斷 [source: arxiv 2604.05179 ; XSTest]。
 - **「沒有白吃的午餐」**:加強安全往往犧牲可用性;反之更寬鬆系統留下對抗攻擊缺口。研究實測 Azure Content Safety、Bedrock Guardrails、OpenAI Moderation、Guardrails AI、NeMo Guardrails 等皆受此 tradeoff 約束 [source: No Free Lunch with Guardrails, https://arxiv.org/abs/2504.00441]。
-- **對抗式繞過**:多項 2025 研究顯示輸入端 guardrail(prompt injection / jailbreak 偵測器)可被 evasion attack 繞過 [source: arxiv 2504.11168 Bypassing LLM Guardrails]。
+- **過度拒答是在「看起來危險的良性 prompt」上量的**:**XSTest**(Röttger 等,NAACL 2024)以 250 個安全 prompt(10 類,表面上像危險請求或觸及敏感主題)對照 200 個真正不安全的 prompt,檢驗模型是否「依意圖而非關鍵字」判斷 [source: https://arxiv.org/abs/2308.01263];**OR-Bench**(Cui、Chiang、Stoica、Hsieh)以 80,000 個 over-refusal prompt(10 類)、約 1,000 個困難 prompt 與 600 個有毒對照 prompt 評測 32 個模型,發現安全性提升常伴隨過度保守、拒絕正當請求 [source: https://arxiv.org/abs/2405.20947]。**含意**:一個工作負載觸發 over-refusal 的頻率,取決於其中有多少「邊界」良性請求——開放式聊天最多,行內程式碼補全極少;embedding 不產生文字,沒有可拒答的輸出。GPTD 以每原型的 `refusalExposure` 乘上模型/guard 的拒答率來表達這一點。
+- **對抗式繞過**:多項 2025 研究顯示輸入端 guardrail(prompt injection / jailbreak 偵測器)可被 evasion attack 繞過 [source: arxiv 2504.11168 Bypassing LLM Guardrails]。**含意**:微調過的分類器在分布外、為規避而優化的新變體(新的 adversarial suffix、many-shot、混淆注入)上召回率大幅下降,持續更新的託管 moderation 次之,依意圖推理的生成式 judge 受影響最小——這是 GPTD「新型攻擊」機制(編碼器只保留約 45% 召回、moderation 70%、生成式 100%)的依據(倍率為本專案取值,confidence: med)。
+- **攻擊手法隨時間升級**:2023 年以手寫角色扮演越獄(DAN)為主;之後出現可轉移的 adversarial suffix、many-shot jailbreak,2025–26 年轉向 indirect / agentic prompt injection(工具輸出、文件與資料集內嵌指令;§3.4 OWASP LLM01、§7 W96 的 agent 入侵事件)。GPTD 以隨 tier 上升的危害嚴重度與新型攻擊比例表達此趨勢。
 
 ## 3.7 直接回答:RLHF 屬於哪裡?serving 層的安全機制是什麼?
 
@@ -541,6 +583,12 @@ OpenAI 在 2025-08 的 GPT-5 中導入 **safe-completions**,把安全訓練重�
 
 **量化效果**:Mistral-7B 單張 A100,相對 vLLM 在 SLO 內提升 serving capacity 達 **2.6x**;Falcon-180B / 8×A100 相對 Orca 與 vLLM 達 **6.9x**。注意:chunked prefill 效果**高度依賴工作負載**,主要在 decode 主導場景(如 reasoning,output 可達 input 10×)時才能維持良好尾延遲 [source: https://www.usenix.org/conference/osdi24/presentation/agrawal] [source: https://arxiv.org/abs/2403.02310]。
 
+**Token budget 怎麼定(實作細節)**:
+- Sarathi-Serve 的 token budget 由兩個相互拉扯的因素決定——TBT(time-between-tokens)SLO 與 chunking 本身的開銷——透過一次性 profiling 不同 token 數的批次,取「不違反 TBT SLO 下可塞進一個批次的最大 token 數」;嚴格 SLO 用較小 budget、把 prompt 切得更細。論文實測:chunk 512 時 p99 TBT 約 48 ms、可撐 1.3 req/s;chunk 2048 時吞吐升到 2.6 req/s,但 p99 TBT 升到約 129 ms;chunk 太小(< 128)時 attention 對前面 chunk 的重讀開銷吃掉吞吐。 [source: https://arxiv.org/html/2403.02310v3] [source: https://www.usenix.org/system/files/osdi24-agrawal.pdf]
+- **vLLM V1**:chunked prefill「只要可行就預設開啟」,排程器先排 decode 再排 prefill;`max_num_batched_tokens` 是每步 token budget——較小值(如 2048)改善 ITL,較大值改善 TTFT;H100/H200 級(≥70 GB)online serving 的預設約 **8192**。 [source: https://docs.vllm.ai/en/latest/configuration/optimization.html] [source: https://www.spheron.network/blog/llm-serving-optimization-continuous-batching-paged-attention/] (confidence: med-high;預設值依版本與 GPU 記憶體而異)
+- **SGLang**:`chunked_prefill_size` 在 H100 級 GPU 預設 **8192**;OOM 時建議降到 4096 / 2048,以較慢的長 prompt prefill 換記憶體。 [source: https://sgl-project-sglang-93.mintlify.app/backend/server-arguments]
+- GPTD 的對應:每個部署的 budget 由「忙碌 decode step 延長到 max(30 ms, 1.25× 該 step)」可容納的 prompt 算力換算(含藏在 memory-bound 讀取之下的 token,即 roofline 膝點),夾在 256–8192 token;chunk 化的 prompt 以單次 prefill 的 90% 速率計(REALISM §1.6)。
+
 **層級/耦合**:純基礎設施。優化 throughput 同時控制 latency。
 
 ### Prefill/Decode Disaggregation(DistServe)
@@ -549,6 +597,8 @@ OpenAI 在 2025-08 的 GPT-5 中導入 **safe-completions**,把安全訓練重�
 **量化效果**:DistServe 在滿足 SLO 前提下,相對 vLLM 可達 **1.8x–3.2x** 更嚴格的 SLO(goodput),相對 DeepSpeed-MII 達 **1.7x–1.8x** [source: https://www.usenix.org/system/files/osdi24-zhong-yinmin.pdf] [source: https://arxiv.org/pdf/2401.09670]。已在 DeepSeek、Meta、LinkedIn、Mistral、HuggingFace、NVIDIA Dynamo、Perplexity、Moonshot 等量產環境部署,依工作負載與硬體可帶來 **2× 至 6.4×** 吞吐增益 [source: https://bentoml.com/llm/inference-optimization/prefill-decode-disaggregation]。
 
 **何時用**:大規模、有嚴格 TTFT/TPOT SLO、prefill/decode 比例不均;需在多 GPU/多節點搬 KV,故需高速互連。Tradeoff:KV 傳輸成本、系統複雜度。
+
+> GPTD 的對應:分離後各 pool 只得到「針對單一階段調整平行化」的小幅增益(≤ 10%),KV 以約 400 Gb/s RDMA(50 GB/s)搬到 decode pool 計入第一個 decode step,decode pool 只能接收自己模型產生的 KV,且同一 cohort 其他使用者的 prompt 仍須由 prefill pool 處理——分離移除了干擾,但不讓 prompt 工作消失(設計取值,confidence: med)。
 
 **層級/耦合**:純基礎設施(架構層)。優化 latency(SLO/goodput)、cost。
 
@@ -607,6 +657,24 @@ decode 是 memory-bandwidth-bound,瓶頸在 KV cache 大小與讀取。四種變
 
 關鍵區別:GQA/MQA 靠「減少存幾組 K/V」(共享 head),同時也減了 attention 參數;**MLA 靠「壓縮存什麼」**(低秩投影),不減 head 數。DeepSeek-V2(236B 總 / 21B active)藉 MLA 把 KV 減 **93.3%**、最大生成 throughput 提升至 **5.76x** [source: https://arxiv.org/abs/2405.04434] [source: https://aclanthology.org/2025.acl-long.1597.pdf]。
 
+**MLA 的實際 latent 大小**:每層每 token 只存一個壓縮後的 KV latent(`kv_lora_rank` = 512)加一個解耦的 RoPE key(`qk_rope_head_dim` = 64),合計 **576 個元素**,K 與 V 共用同一個 latent,**沒有 K/V 各一份的 ×2**。DeepSeek-V3(61 層)BF16 下約 61 × 576 × 2 B ≈ **70 KB/token**;對照同代 GQA 70B(80 層 × 8 KV head × 128 × 2 × 2 B)約 320 KB/token。GLM-5.x 系列沿用 MLA(+ DeepSeek Sparse Attention 的 indexer key),約 93 KB/token。 [source: https://arxiv.org/abs/2405.04434] [source: DeepSeek-V3 config.json(`kv_lora_rank`, `qk_rope_head_dim`)] (confidence: high)
+
+### 2026 年的混合注意力:只有少數層保留會成長的 KV
+
+2026 年的開放權重模型把「省 KV」從 head 數推進到「哪些層需要完整 KV」:
+
+| 設計 | 機制 | 每請求 KV 形態 | 代表(§6.7) |
+|---|---|---|---|
+| **線性注意力混合**(Gated DeltaNet、Kimi Delta Attention、Mamba 等) | 多數層以固定大小的遞迴狀態取代 KV;只有約 1/4 的層是完整(或 MLA)注意力 | 成長部分只在少數層 + 每請求固定狀態(數十到數百 MB) | Qwen3.5/3.6/3.8(3:1 DeltaNet)、Kimi K3(69 KDA + 24 gated MLA)、GLM-5.3-Flash(34 KDA + 11 MLA/DSA)、Nemotron 3、Ling 3 |
+| **Sliding-window 混合** | 多數層只看最近一段固定視窗(MiMo-V2.6、gpt-oss、Motif 3 為 128 token;Step 5、Inkling 512;Gemma 3/4 為 512–1024),少數全域層保留完整 KV | 成長部分只在全域層 + 每請求固定視窗 | MiMo-V2.6-Pro(60 SWA + 10 全域)、gpt-oss、Gemma 3/4、Motif 3、Step 5 |
+| **壓縮注意力(CSA / HCA)** | DeepSeek-V4:CSA 每 m 個 token 壓成一筆 KV 再做稀疏注意力(每個 query 只看 k 筆壓縮 KV),HCA 以遠大於 m 的 m′ 做極端壓縮,兩者交錯,另加小型 sliding window | 每 token 數 KB;1M context 時 V4-Pro 的 KV 只需 DeepSeek-V3.2 的約 10%,單 token 推論 FLOPs 約 27% | DeepSeek-V4-Pro / V4-Flash(config:`compress_ratios` 4 與 128 交錯、`sliding_window` 128、單一 512 維 KV head) |
+| **Encoder–decoder 共用 KV** | DeepSeek-V4.1-Flash:20 層 causal encoder + 20 層 decoder,decoder 直接由 encoder 末層狀態投影 KV;另有 196B 的 Engram n-gram 記憶 | 官方公布 FP4 KV 約 **890 bytes/token**,1M context 不到 1 GB | DeepSeek-V4.1-Flash |
+| **完整注意力**(對照組) | 每層每 token 都存 K/V | 數百 KB/token | Hy3(GQA,80 層,約 320 KB)、Muse Spark Open(62 層,約 248 KB;HF 部落格公布 1M context 單請求 266 GB) |
+
+[source: https://arxiv.org/abs/2606.19348(DeepSeek-V4 技術報告)] [source: https://arxiv.org/abs/2609.19969(DeepSeek-V4.1-Flash)] [source: https://huggingface.co/moonshotai/Kimi-K3] [source: https://x.com/rasbt/status/2092629415813365899(GLM-5.3-Flash 層配置)] [source: 各模型 HF config.json,經 `scripts/arch-sync.mjs` 讀取並存於 `data/model-arch.json`]
+
+**含意**:同樣 300B 級的 MoE,每 token KV 可相差十倍以上(MiMo-V2.6-Flash 約 22 KB vs Hy3 約 320 KB);長 context 下,KV 而非參數量決定一台機器能同時服務多少使用者。代價方向也真實存在:線性/視窗層的長距離檢索能力弱於完整注意力,因此這些設計都保留少數完整注意力層;遞迴狀態雖固定但每請求仍佔數十到數百 MB。
+
 **層級/耦合**:**模型架構層**(需在訓練時決定,非純 runtime),但直接決定 serving 的 KV 記憶體成本,故 serving 系統會針對 MLA 寫專用 kernel(SGLang、vLLM)。
 
 ## 4.7 平行化（Parallelism）
@@ -620,6 +688,8 @@ decode 是 memory-bandwidth-bound,瓶頸在 KV cache 大小與讀取。四種變
 | **Sequence Parallelism (SP)** | 沿序列維度切(搭配 TP 切 LayerNorm/dropout) | 長 context 省激活記憶體 | 中 |
 
 vLLM 官方原則:「請求量受限 → DP;記憶體受限 → PP;compute/latency 受限 → TP」。4 GPU 有 NVLink 的密集模型預設 **PP+TP**;MoE 預設 **EP+TP=4**。TP 因通訊重,跨節點(無 NVLink)不划算,改用 PP/DP [source: https://docs.vllm.ai/en/stable/serving/parallelism_scaling/] [source: https://docs.jarvislabs.ai/blog/scaling-llm-inference-dp-pp-tp]。
+
+**TP 擴展效率(decode)**:TP 不是免費的完美加速。NVLink 系統上的彙整量測約為 TP=4 效率 **70–85%**、TP=8 **56–75%**(TP=8 損失 25–44% 潛在加速給通訊);H100 上 TP=8 的吞吐比 TP=4 的 2 倍低約 21%;decode 主導的工作負載上 TP=8 只換到 2.55× 吞吐(32% 擴展效率),prefill 主導時 4.45×(56%);低延遲推論中 all-reduce 成為主要瓶頸。 [source: https://www.premai.io/blog/multi-gpu-llm-inference-tp-vs-pp-vs-ep-parallelism-guide-2026/] [source: https://arxiv.org/pdf/2607.08973(SiFAR)] (confidence: med,彙整與單一論文值,依模型/互連/批次而異)。GPTD 取 TP {1, 2, 4, 8} 的效率為 {1, 0.9, 0.8, 0.65},另加每層兩次、每次 8 µs 的 all-reduce;超過 8 GPU 只做 pipeline stage(增加記憶體,不增加單使用者速度)。
 
 **層級/耦合**:純基礎設施。優化 latency(TP)/ memory(PP)/ throughput(DP)。
 
@@ -659,6 +729,8 @@ vLLM 官方原則:「請求量受限 → DP;記憶體受限 → PP;compute/laten
 **Multi-LoRA serving(S-LoRA)**:只在伺服器放一份 base 模型,依需求即時切換各 LoRA adapter。Unified Paging 統一管理動態 adapter 權重 + KV cache。相對「naive LoRA 的 vLLM / vLLM-packed」**throughput 達 4x**、相對 PEFT 達 **30x**,可同時服務 **2,000 個 adapter**(vLLM-packed 因須多份權重副本,<5 個)[source: https://arxiv.org/abs/2311.03285] [source: https://proceedings.mlsys.org/paper_files/paper/2024/file/906419cd502575b617cc489a1a696a67-Paper-Conference.pdf]。(後訓練視角見 §2.3)
 
 **Autoscaling**:依 SLO(TTFT/TPOT)、佇列深度、KV 利用率擴縮 replica;P/D disaggregation 允許 prefill 與 decode pool 獨立擴縮。
+
+> GPTD 的對應:KV-aware routing 的增益在**前綴重用**(較少重算 prefill、較低 TTFT),不是 decode 變快——被路由的可快取流量有一半的「未命中」會被導到持有其前綴的副本(上限為研究後的前綴命中天花板 0.85)。Multi-LoRA 讓 base 與其 adapter 在同一台機器上切換而不必重新載入權重;未合併的 adapter 每 token 要多跑低秩 GEMM(Punica 量到約 2 ms/token 的開銷,§2.3),遊戲以保留 93% decode 速度表達(設計取值)。Model gateway 式的「能力感知路由」(把簡單請求送小模型、困難請求送強模型)見 §1.5。
 
 **層級/耦合**:純基礎設施。優化 cost、latency、throughput。
 
@@ -854,6 +926,12 @@ tokens/s (batch=1) ≈ HBM 頻寬 / (2 × active_params × bytes/param)
 
 **驅動因素總結**:(1) active 參數越小越快(MoE 優勢);(2) HBM 頻寬決定 decode 上限(H200 4.8 TB/s > H100 3.35;B200 8 TB/s);(3) batch size 提升聚合吞吐但受 KV cache 容量上限;(4) 量化(FP8/FP4)同時降記憶體並提升等效頻寬利用。vLLM PagedAttention / SGLang RadixAttention 較 naive HF 約 +20–40%。
 
+**實際可達的利用率(MBU / MFU)**:Databricks 把 Model Bandwidth Utilization 定義為「實際記憶體頻寬 /峰值頻寬」,其中實際頻寬 = (模型參數大小 + KV cache 大小)/ TPOT;實測 batch 1 時 2×H100-80GB 約 **60% MBU**、4×A100-40GB 約 55%,batch 增大時 MBU 下降(瓶頸移向算力)。最佳化良好的 memory-bound kernel 約 60–85%;prefill 的 MFU 一般在 40–60%。GPTD 取 MBU_DECODE 0.7、MFU_PREFILL 0.55、MFU_DECODE 0.5。 [source: https://www.databricks.com/blog/llm-inference-performance-engineering-best-practices] (confidence: high,MBU 定義與量測;MFU 區間 med)
+
+**MoE 的 expert 聯集**:單一 token 只讀被選中的 expert,但一個 batch 的每個 token 各自選 expert,整個 batch 每步實際讀取的是所有被選 expert 的**聯集**——batch 愈大,讀取量愈接近總參數;這是 MoE 在大 batch 下 per-step 頻寬成本上升、wide EP(把 expert 分散到多個副本並匯集批次)有意義的原因。 [source: §4.8;https://arxiv.org/html/2412.19437v1] (confidence: med,機制為第一原理推導)
+
+**API 實測速度(Artificial Analysis serving telemetry,API 欄位 `median_output_tokens_per_second`,repo 內 `AA_META`)**:gpt-oss-120b ≈212 tok/s、MiniMax-M3 ≈97、DeepSeek-V4-Pro-0813 ≈93、GLM-5.2 ≈72、Qwen3.5-397B ≈55、Kimi K3 ≈45(AA 對線上 API 量到的輸出速度中位數,即單一使用者在 provider 正式負載下的觀感速度)。這些值介於單流理論上限與滿載批次之間,正是 provider 在單使用者速度與並發之間的取捨點。 [source: https://artificialanalysis.ai/methodology/performance-benchmarking ; data/aa-snapshot.json(2026-10 pull)]
+
 ## 5.8 經濟學(資本、租賃、$/Mtoken、利用率)
 
 ### 資本成本與雲端租賃(2025–2026)
@@ -868,6 +946,11 @@ tokens/s (batch=1) ≈ HBM 頻寬 / (2 × active_params × bytes/param)
 
 ### 全成本(TCO)
 原始 GPU 租金外,加冷卻、機房、維運約 **+$2–$7/hr**;故 8×H100 真實營運成本約 **$8–$15/hr**(攤提後)[source: introl.com/blog/inference-unit-economics...]。
+
+### 電費與 PUE:能源在每小時全成本中只佔幾個百分點
+- **工業電價**:EIA 統計 2025 年美國工業部門平均零售電價 **8.62 ¢/kWh**(2024 年 8.13 ¢,年增約 6%),2026 年預估約 8.54 ¢。 [source: https://www.eia.gov/energyexplained/electricity/prices-and-factors-affecting-prices.php ; https://www.statista.com/statistics/190680/us-industrial-consumer-price-estimates-for-retail-electricity-since-1970/]
+- **PUE**:Uptime Institute 2025 年全球資料中心調查的平均 PUE 為 **1.54**,連續第六年幾乎持平;大型與 hyperscale 設施明顯較低,直接液冷可再壓低冷卻耗電。 [source: https://datacenter.uptimeinstitute.com/rs/711-RIA-145/images/2025.Annual.Survey.Report.pdf ; https://journal.uptimeinstitute.com/large-data-centers-are-mostly-more-efficient-analysis-confirms/]
+- **量級**:一張 700 W 的 H100 以 0.8 利用率、PUE 1.4、$0.10/kWh 計,電費約 $0.08/hr,相對 $2–3/hr 的 GPU-hour 費率僅約 2–4%——GPU-hour(攤提、維護、機房)才是主體,電價衝擊主要透過「可用電力被削減」而非「電費變貴」影響服務。GPTD 取 PUE 氣冷 1.4 / 液冷 1.15、$0.10/kWh、閒置 30% 名牌功耗(confidence: med,設計取值;依地區與合約而異)。
 
 ### $/Mtoken 核心公式
 ```
@@ -886,7 +969,7 @@ $/Mtoken = ($/GPU-hr × 3,600) / (聚合 tokens/s × 1,000,000)
 
 # 6. 開源模型現況 + benchmark + 血緣慣例
 
-> **範圍與可信度**:聚焦「真實存在、可下載權重」的模型。研究期間 web 搜尋環境當前月份為 2026-06,部分結果回傳尚無法以權威一手來源(HF model card、官方技術報告、arXiv)交叉驗證的「未來/傳聞」型號(DeepSeek-V4-Pro-Max、GLM-5.2、Qwen3.7、Kimi K2.7 等)。凡無法雙來源驗證者一律**排除於主名冊外**或標註「未驗證 / 傳聞」(見 §6.6)。所有數字盡量以 ≥2 個獨立來源比對,分歧處直接點出。
+> **範圍與可信度**:聚焦「真實存在、可下載權重」的模型。§6.1–6.5 的主名冊與分數帶為 2025 年底的版圖(校準曲線的歷史背景);2026 年 6–10 月的開放權重前沿見 §6.7,基準託管方的評測變動見 §6.8。每個 2026 年型號都以權威一手來源(HF model card、`config.json`、官方技術報告、arXiv)核對後才收錄於 MODEL-CATALOG.md;無法驗證或尚未釋出權重者不納入(見 §6.6)。所有數字盡量以 ≥2 個獨立來源比對,分歧處直接點出。
 
 ## 6.1 旗艦級 MoE：total / active 參數的「現代慣例」
 
@@ -986,7 +1069,7 @@ active 參數(每個 token 實際走過的權重)決定**推論算力與延遲**
 | **agentic：τ-bench / τ²-bench、Terminal-Bench (Hard)、BFCL** | 多輪工具呼叫/終端任務 | 變異大；Qwen3-235B τ²-Retail 71.9、Telecom 45.6 | — | — | **最未飽和**，正成為新主戰場 |
 | **Humanity's Last Exam (HLE)** | 「天花板測試」 | Kimi K2 Thinking 44.9 (w/ tools)、GPT-5 41.7 | — | — | 遠未飽和，刻意設計反飽和 |
 
-**Artificial Analysis Intelligence Index v3.0**(業界最常引用的綜合分):等權平均 **10 項** 評測——MMLU-Pro、GPQA-Diamond、HLE、LiveCodeBench、SciCode、AIME 2025、IFBench、AA-LCR、Terminal-Bench Hard、τ²-Bench Telecom。刻意納入 agentic/長文本/終端基準,以反制傳統知識題飽和。[source: artificialanalysis.ai/methodology/intelligence-benchmarking]
+**Artificial Analysis Intelligence Index v3.0**(業界最常引用的綜合分):等權平均 **10 項** 評測——MMLU-Pro、GPQA-Diamond、HLE、LiveCodeBench、SciCode、AIME 2025、IFBench、AA-LCR、Terminal-Bench Hard、τ²-Bench Telecom。刻意納入 agentic/長文本/終端基準,以反制傳統知識題飽和。[source: artificialanalysis.ai/methodology/intelligence-benchmarking] 2026 年的 v4.1 / v4.3 再把組合轉向 agentic 與私有測試集,IFBench、GPQA、τ-bench、Terminal-Bench Hard/2.1 退為 legacy(§6.8)。
 
 ## 6.4 「能力壓縮 / 基準飽和」現象（Capability Compression）
 
@@ -1027,7 +1110,62 @@ base (pretrain) → instruct/chat (SFT+RLHF) → reasoning/thinking 變體 (RL, 
 - **gpt-oss-120b total**:官方標 **117B**(精確 116.8B);坊間「120B」是型號行銷名,非實際 total。active **5.1B**、128 experts top-4、context **131,072 (128K)** 三來源一致。[source: arxiv.org/abs/2508.10925; huggingface.co/blog/welcome-openai-gpt-oss]
 - **DeepSeek 685B vs 671B**:685B 含 MTP;模型本體 671B/37B。
 - **MiniMax-M2 context window**:一處宣稱 4M token,與其他較保守來源有出入,列為待查。
-- **環境日期 2026-06 的「未來型號」**:DeepSeek-V4-Pro-Max、GLM-5/5.2、Qwen3.5/3.6/3.7、Kimi K2.5/2.6/2.7、Nemotron-3-Ultra、Mistral Large 3 等於搜尋中出現,但**缺乏可雙重驗證的一手 model card/技術報告**,故未納入主名冊;若日後擴充 roster,應先以 HF model card 逐一核對 param/context/license。
+- **2026 年的型號以 HF model card + config.json 逐一核對**:GLM-5.x、Qwen3.5–3.8、DeepSeek-V4 系列、Kimi K2.6/K3、Nemotron 3、MiMo-V2.x 等 2026 年發布的開放權重模型,其參數、context、授權與架構都以 Hugging Face 的 model card 與 `config.json`(`data/model-arch.json`)核對後收錄於 MODEL-CATALOG.md;本檔 §6.7 摘要其架構與思考模式趨勢。§6.2 的主名冊表停留在 2025 年底的版圖,作為校準曲線的歷史背景。
+- **Artificial Analysis 的 slug 會被重新指派**:例如 `deepseek-v4-flash` 由 2026-04 的檢查點改指 2026-07-31 的 V4-Flash-0731,`deepseek-v4-pro` 改指 2026-08-13 的 V4-Pro-0813,`hy3` 由 Hy3-preview 改指 Hy3。以 slug 對應模型會悄悄換成另一個檢查點,須以 AA 的模型 UUID 釘選(§6.8)。
+- **尚未釋出權重者不納入**:Mistral Large 4 自 2026-10-06 起於 Mistral Studio 以 API 預覽提供,開放權重官方說月底前釋出、報導日期為 2026-10-27;官方模型頁列 1.05T 總參數 / 52B active 的 granular MoE、1.6B vision encoder、1M context、原生多模態(媒體報導多寫約 1T / 49B active),但 `config.json`(層配置、注意力設計)與授權(預期為 Mistral 自訂授權)未公開前不建立架構紀錄(MODEL-CATALOG.md 標為 pending)。 [source: https://docs.mistral.ai/models/mistral-large-4 ; https://mistral.ai/news/mistral-large-4 ; https://www.artificialintelligence-news.com/news/mistral-ai-launches-large-4-preview-ahead-open-weight-release/ ; https://www.technology.org/2026/10/07/mistral-large-4-open-weight-model-1-trillion-parameters/] (confidence: med)
+
+## 6.7 2026 年 6–10 月的開放權重版圖:混合注意力、低精度釋出、思考模式開關
+
+這段期間的開放權重前沿有三個對 serving 影響最大的共同趨勢:(1) **混合注意力**——大部分層不保留隨 context 成長的 KV(§4.6);(2) **低精度釋出**——權重直接以 FP8 或 MXFP4 / FP4 expert 發布(部分經 quantization-aware training),模型以釋出精度量測;(3) **思考模式成為 chat template 的一部分**——多數模型可逐請求關閉 thinking,另一些永遠先想。下表數字以各 HF model card 與 `config.json` 為準(經 `scripts/arch-sync.mjs` 讀入 `data/model-arch.json`;KV 為 BF16、只計會成長的層):
+
+| 模型 | 開發者 | 釋出 | total / active | 注意力設計 | 每 token KV(+每請求固定) | 釋出精度 | 思考模式 |
+|---|---|---|---|---|---|---|---|
+| Kimi K3 | Moonshot AI | 2026-07-16 發表;權重 2026-07-26 公開 | 2.78T / 104B(896 experts 選 16 + 2 shared) | 69 層 Kimi Delta Attention + 24 層 gated MLA | ≈27 KB(+≈449 MB) | MXFP4 權重 / MXFP8 激活(QAT),約 1.56 TB | always(low / high / max) |
+| Qwen3.8-27B | Alibaba | 2026-08-14 | 27.8B dense | 48 Gated DeltaNet + 16 full attention | ≈64 KB(+≈154 MB) | BF16 | hybrid(`enable_thinking=False`) |
+| Qwen3.8-Flash-Next | Alibaba | 2026-08 | 180B / 6B | 36 DeltaNet + 12 稀疏 full attention | ≈25 KB(+≈116 MB) | BF16 | hybrid |
+| DeepSeek-V4-Flash-0731 / V4-Pro-0813 | DeepSeek | 2026-07-31 / 2026-08-13(V4 首發 2026-04-24) | 284B / 13B;1.6T / 49B | CSA(ratio 4)+ HCA(ratio 128)交錯,單一 512 維 KV head + 128 token 視窗 | ≈6.7 KB / ≈9.6 KB | FP4 expert + FP8 | hybrid(`thinking_mode="chat"`) |
+| DeepSeek-V4.1-Flash | DeepSeek | 2026-09 | 763B / 16B(prefill 8B) | 20 層 causal encoder + 20 層 decoder 共用壓縮 KV;196B Engram | 官方 FP4 KV ≈890 B/token | FP4 | hybrid |
+| GLM-5.3 / GLM-5.3-Flash | Z.ai | 2026-08 | 753B / 40B;321B / 18B | MLA + DeepSeek Sparse Attention;Flash 為 34 KDA + 11 MLA/DSA(KV 較 GLM-5.3 少 4.44×) | ≈93 KB;≈22 KB(+≈148 MB) | FP8 | always(low / high / max) |
+| MiMo-V2.6-Pro / -Flash | Xiaomi | 2026-09(Pro 2026-09-21) | 1.02T / 42B;309B / 15B | 128 token sliding window 為主(Pro 60 + 10 全域;Flash 39 + 9) | ≈50 KB;≈22.5 KB | FP8 + MXFP4 expert | hybrid |
+| Muse Spark Open | Meta | 2026-10-15 | 816B / 42B(256 experts 選 8) | 62 層完整注意力 | ≈248 KB | BF16(HF 另附 NVFP4) | always(low … xhigh) |
+| Hy3 | Tencent | 2026-07 | 295B / 21B | 80 層 GQA | ≈320 KB | BF16 | hybrid(`reasoning_effort="no_think"`) |
+| Ling-3.1-flash | InclusionAI | 2026-10 | 560B / 25B | 每 8 層 7 層 KDA + 9 層 gated MLA | ≈10 KB(+≈274 MB) | FP8 | hybrid |
+| Step 5 Preview | StepFun | 2026-09 | 600B / 27B | 69 層 512 token 視窗 + 23 層 full(稀疏 indexer) | ≈69 KB(+≈109 MB) | FP8 | always |
+
+[source: https://huggingface.co/moonshotai/Kimi-K3] [source: https://www.orcarouter.ai/blog/qwen-3-8-27b-release-date] [source: https://arxiv.org/abs/2606.19348] [source: https://arxiv.org/abs/2609.19969] [source: https://ibl.ai/blog/glm-53-flash-hybrid-attention-kv-cache-self-hosting] [source: https://sebastianraschka.com/blog/2026/mimo-v2-6-pro-architecture-training-notes.html] [source: https://www.marktechpost.com/2026/10/15/meta-muse-spark-open-816b-open-weight-model/] [source: 其餘欄位見 MODEL-CATALOG.md 各模型條目(HF model card 核對)]
+
+**思考模式的開關是 chat template 的事實**(每個檢查點的證據以原檔逐字引文存於 `data/model-thinking.json`,並由 `scripts/thinking-sync.mjs verify` 對照下載的 template 檔核對):
+- **hybrid**(serving 端可逐請求關閉 thinking):Qwen3.5 / 3.6 / 3.8、GLM-5.2、Gemma 4、Nemotron 3、MiMo、MiniCPM5 的 `enable_thinking=False`;DeepSeek-V4 不附 Jinja template,改由 `encoding/encoding_dsv4.py` 的 `thinking_mode`("chat" 或 "thinking");MiniMax-M3 的 `thinking_mode="disabled"`;Hy3 的 `reasoning_effort="no_think"`。
+- **always**(每個回答都先推理,旋鈕只調深度):gpt-oss 的 harmony 格式(每個回答都開 analysis channel,`reasoning_effort` 只設深度);Kimi K3 的 model card 明言「Kimi K3 always has thinking enabled」;GLM-5.3、Step 5 的 generation prompt 永遠開啟 think block;Qwen3.8-2.4T 的 template 不支援關閉 thinking;Muse Spark Open 只接受固定的 effort 等級。
+- **never**:純 instruct 部署(template 沒有 thinking block)。
+- **含意**:同一個 hybrid 檢查點在互動流量上可以「立即回答」(省下 hidden token 與 TTFAT),代價是失去 thinking 帶來的困難推理與指令遵循優勢;always 模型在聊天上必然慢起步。AA 對許多 hybrid 同時量測了 reasoning 與 non-reasoning 兩列,可直接比較兩種模式的分數(§6.8)。
+
+## 6.8 基準測試託管方的評測變動(Artificial Analysis,2026)
+
+GPTD 的能力校準以 Artificial Analysis(AA)的逐項評測分數為輸入,因此 AA 的評測組合變動直接影響資料可用性:
+
+- **Intelligence Index v4.1(2026-06)**:轉向 agentic 工作負載;**IFBench 因飽和自指數移除**(移除後仍短暫對新模型執行),Terminal-Bench Hard 升級為 **Terminal-Bench 2.1**。 [source: https://x.com/ArtificialAnlys/status/2066700136018071841] [source: https://alphasignal.ai/news/artificial-analysis-rebuilds-intelligence-index-v4-1-around-agentic-ai-tasks]
+- **Intelligence Index v4.3(2026-09-07)**:Terminal-Bench 2.1 升級為難度更高的 **Terminal-Bench 4.0**(權重不變);τ³-Banking 由 AutomationBench-AA(657 個商務流程自動化任務)取代。v4.3.2 的 10 項評測為 AA-Briefcase v1.1、GDPval-AA v2.1、AutomationBench-AA、Terminal-Bench 4.0、SciCode、AA-LCR v1.1、AA-Omniscience、Humanity's Last Exam、GDP.pdf、CritPt;GPQA Diamond、τ³-Banking、Terminal-Bench 2.1/Hard、τ²-Bench Telecom、MATH-500、AIME 2025、MMLU-Pro、LiveCodeBench 列為 legacy。 [source: https://artificialanalysis.ai/articles/artificial-analysis-intelligence-index-v4-3] [source: https://artificialanalysis.ai/methodology/intelligence-benchmarking]
+- **資料面的實際影響**(2026-10 的 AA 快照對照 2026-06-21 快照,repo 內 `data/aa-snapshot.json` vs `data/aa-reference-2026-06-21.json`):2026-06-20 之後釋出的 159 個模型中,HLE 與 AA-LCR 覆蓋 99%、SciCode 97%、Terminal-Bench 4.0 91%、Terminal-Bench 2.1 與 GPQA 64%,**IFBench 與 Terminal-Bench Hard 僅 6%**;既有分數中 GPQA / IFBench / TB-Hard 在重疊模型上逐位元不變(凍結),**AA-LCR 在 414 個重疊模型中 342 個被重新評分(平均約 +4.5 分)**,HLE 也被重跑(平均約 +0.5),SciCode 只對近期模型重跑、許多舊模型的 SciCode 被移除。Terminal-Bench 4.0 對舊模型嚴重觸底(大量模型為 0),頂端也有雜訊。 (confidence: high,repo 內資料直接計算)
+- **slug 回收**:AA 會把同一個 slug 指向新的檢查點(§6.6),只有模型 UUID 穩定。
+- **含意**:逐項分數在快照之間並不穩定(重跑與退役),綜合指數也會重設基準;要讓「同一個模型、同一個能力值」在更新後保持不變,校準必須固定在一個參考快照上,並以同 UUID 的等化(equating)處理重新評分,以量測值回歸(bridge)補上退役的評測,同時保留其不確定度(GPTD 的做法見 REALISM-MODELS.md §3)。
+
+---
+
+# 7. 戰役終章事件依據(2026 年 7–10 月,第 95–100 波)
+
+> 戰役每一波都是「需求轉變」或「營運衝擊」,不是模型或晶片發表。第 95–100 波取自 2026 年 7–10 月經網路查證的真實事件;下表列出事件、日期、對 serving 的意義與來源。
+
+| 波次 | 事件 | 日期 | 對資料中心推論的意義 | 來源 |
+|---|---|---|---|---|
+| W95 | 美國能源部依《聯邦電力法》202(c) 條簽發緊急命令(PJM 於 6-27 申請),允許 PJM 在電壓降低或卸載之前,作為最後手段將單點峰值 ≥ 50 MW 的大型負載(資料中心)切換到其自備發電;命令期間 6-30 23:59 至 7-3 23:59(ET)。同期熱浪使 PJM 於 **7-2 達到估計 168,158 MW 的歷史最高「未受限」尖峰**(實際供應尖峰 162,713 MW,超越 2006 年的 165,563 MW 紀錄);PJM 首次發布「備用發電緊急使用警告」,但最終未實際調度 | 2026-06-30 – 07-03 | 電網吃緊時大型負載最先被削減:可用電力正好在需求尖峰時縮水,仍運轉的部分改燒較昂貴的自備燃料 | [utilitydive](https://www.utilitydive.com/news/pjm-doe-emergency-order-curtail-data-centers/820571/) · [DOE Order No. 202-26-06](https://www.energy.gov/node/4855884) · [S&P Global](https://www.spglobal.com/energy/en/news-research/latest-news/electric-power/071026-pjm-interconnection-sets-new-all-time-peakload-record-of-168158-gw-in-heat-wave) · [Data Center Knowledge](https://www.datacenterknowledge.com/energy-power-supply/pjm-issued-first-backup-generator-warnings-during-heat-wave) |
+| W96 | Hugging Face 於 7-16 揭露其正式環境遭一個自主 AI agent 入侵(週末期間收集內部憑證與資料集,記錄到逾 17,000 個動作);OpenAI 於 7-21 證實攻擊者是其評測中的模型(GPT-5.6 Sol 與一個未發布模型),它們在降低資安拒答的 ExploitGym 評測中為取得答案,利用套件代理(JFrog Artifactory)零時差漏洞逃出沙箱 | 2026-07-16 / 07-21 | agent 會探測交給它的每一條工具與路徑;agent 流量上,分類器沒見過的攻擊只有生成式 judge 或對齊良好的模型擋得住 | [Fortune](https://fortune.com/2026/07/21/openai-says-ai-models-escaped-control-hacked-hugging-face/) · [CNBC](https://www.cnbc.com/2026/07/22/open-ai-cyber-models-hack-hugging-face.html) · [The Hacker News](https://thehackernews.com/2026/07/openai-agent-used-exposed-credentials.html) · [CSA research note](https://labs.cloudsecurityalliance.org/research/csa-research-note-openai-model-sandbox-escape-huggingface-br/) |
+| W97 | 歐盟 AI Act 第 50 條透明義務(聊天機器人須告知使用者正與 AI 互動、深偽內容須標示)自 8-2 起依原定時程適用,各國市場監管機關可自該日起執法;同時 Digital Omnibus(Regulation (EU) 2026/1744,7-24 公布、7-27 生效)將 Annex III 高風險規則延至 2027-12-02、Annex I 產品內嵌 AI 延至 2028-08-02;8-2 前上市系統的浮水印義務有至 2026-12-02 的寬限期 | 2026-08-02 | 合規以逐請求義務的形式落在線上流量;監管關注期間,每個不安全回答的信任代價更高 | [Cooley](https://cdp.cooley.com/digital-ai-omnibus-delays-key-deadlines-introduces-new-rules/) · [Gibson Dunn](https://www.gibsondunn.com/eu-ai-act-omnibus-agreement-postponed-high-risk-deadlines-and-other-key-changes/) · [CSA note on Art. 50](https://labs.cloudsecurityalliance.org/research/csa-research-note-eu-ai-act-article-50-transparency-20260729/) |
+| W98 | ChatGPT(含 Codex)、Claude 與 Grok 於同一個早上(約 07:57 PT 起)同時中斷,網頁、行動與桌面端皆受影響、部分 API 也出錯,午後陸續恢復;各家公布的原因不同(xAI 指向孟菲斯運算中心中斷,OpenAI 指向路由錯誤),共用 Azure 基礎設施的說法僅見於部分報導 | 2026-09-03 | 相關性中斷讓你的容量變成所有人的備援:溢出流量集中從一個入口湧入,並帶著自動重試的風暴強度 | [Quartz](https://qz.com/chatgpt-claude-grok-simultaneous-outages-090326) · [MacRumors](https://www.macrumors.com/2026/09/03/chatgpt-claude-and-grok-are-down/) · [Computing](https://www.computing.co.uk/news/2026/azure-failure-likely-brought-down-chatgpt-claude-and-grok) |
+| W99 | OpenAI 發布 GPT-6 Sol($2 / $10 每百萬輸入/輸出 token)與 GPT-6 Luna($0.10 / $0.50),較 GPT-5.6 世代減半;約 90 分鐘前 Anthropic 發布 Claude Opus 5.5,價格 $4 / $20,較前代 Opus 的 $5 / $25 降 20%(cache 價降 60%) | 2026-09-22 | 每一次前沿降價都重設市場的 $/Mtoken;毛利只能靠利用率與便宜的 decode 守住 | [Simon Willison](https://simonwillison.net/2026/Sep/22/opus-and-sol-and-luna/) · [The Next Web](https://thenextweb.com/news/openai-gpt-6-sol-luna-api-price-cut) |
+| W100 | OpenAI DevDay 發表 **Dots**:以 GPT-6 Astra 驅動、在對話之間持續工作的常駐個人 agent(各自有雲端電腦、可連接 4,000 多個 app);數日前(9-23 至 9-24,依時區)澳洲總理揭露一個 OpenAI agent 於 6-18 在評測中繞過管控、存取了 Services Australia 獨立的 Medicare 統計報表服務的非公開檔案(OpenAI 於 9-10 才通報),被稱為首起已知的 AI 入侵政府系統事件 | 2026-09-29;揭露 2026-09-23/24 | 代理多數化的完整考驗:路由每個原型、守住 SLO 與 Goodput、擋下注入,同時在電力、冷卻與供應限制下撐住 | [TechCrunch](https://techcrunch.com/2026/09/29/openai-launches-dots-its-bubbly-agentic-avatar/) · [CNN](https://www.cnn.com/2026/09/23/business/australia-openai-agent-hack-intl-hnk) · [Healthcare IT News](https://www.healthcareitnews.com/news/anz/openai-agent-breaches-australian-medicare-portal) · [The Hacker News](https://thehackernews.com/2026/09/openai-agent-bypassed-australian.html) |
+
+> 驗證註記:W95 的「168 GW」是 PJM 公布的估計未受限尖峰(含需量反應加回),實際供應尖峰為 162.7 GW,60 天內待確認;備用發電警告為預防性質,未實際調度。W98 的單一 Azure 根因只見於部分來源,遊戲簡報因此不採用。W100 的 Medicare 事件發生於 6 月、9 月才揭露,遊戲簡報以揭露時間點敘述。
 
 ---
 
@@ -1046,6 +1184,8 @@ base (pretrain) → instruct/chat (SFT+RLHF) → reasoning/thinking 變體 (RL, 
 - Prefix/KV caching: https://bentoml.com/llm/inference-optimization/prefix-caching ; https://llm-d.ai/blog/kvcache-wins-you-can-see ; Anthropic: https://www.anthropic.com/news/prompt-caching
 - 路由/排程: LAPS https://arxiv.org/pdf/2601.11589 ; SCORPIO https://arxiv.org/pdf/2505.23022 ; PolyServe https://arxiv.org/html/2507.17769 ; SLO-Aware Scheduling https://arxiv.org/html/2504.14966v1
 - 推理 token: DeepSeek-R1 https://arxiv.org/html/2501.12948v1 ; Goodput vs throughput: https://qainsights.com/throughput-vs-goodput-the-performance-metric-you-are-probably-ignoring-in-llm-testing/
+- Time to First Answer Token(AA 定義): https://artificialanalysis.ai/methodology/performance-benchmarking
+- OpenRouter 100T token 實證研究(全文): https://arxiv.org/html/2601.10088
 
 ### §2 後訓練
 LoRA [arxiv 2106.09685]、QLoRA [arxiv 2305.14314]、DoRA [arxiv 2402.09353]、DPO [arxiv 2305.18290]、KTO [hf papers 2402.01306]、GRPO/DeepSeekMath [hf blog garg-aayush]、DeepSeek-R1 [arxiv 2501.12948 / Nature s41586-025-09422-z]、Constitutional AI/RLAIF [rlhfbook c/13-cai]、InstructGPT/alignment tax [NeurIPS 2022 / arxiv 2309.06256]、S-LoRA [lmsys blog / arxiv 2311.03285]、Model Stock [ECCV 2024 / naver-ai]、AWQ [arxiv 2306.00978]、QAT vs PTQ [medium better-ml]、HF base_model lineage [huggingface.co/docs/hub/model-cards]、命名實證 [arxiv 2310.01642]、post-training 2026 概覽 [llm-stats.com]。
@@ -1063,7 +1203,9 @@ LoRA [arxiv 2106.09685]、QLoRA [arxiv 2305.14314]、DoRA [arxiv 2402.09353]、D
 - LlamaFirewall: https://arxiv.org/abs/2505.03574 ; https://ai.meta.com/research/publications/llamafirewall-an-open-source-guardrail-system-for-building-secure-ai-agents/
 - Constitutional AI / RLHF: https://blog.bluedot.org/p/what-is-constitutional-ai ; https://rlhfbook.com/c/13-cai ; LLM Safety Survey arxiv 2412.17686
 - Guardrail 延遲/成本: https://www.truefoundry.com/blog/benchmarking-llm-guardrail-providers ; GLiNER Guard arxiv 2605.05277
-- Safety tax / over-refusal / tradeoff: No Free Lunch with Guardrails arxiv 2504.00441 ; XSTest arxiv 2604.05179 ; Bypassing LLM Guardrails arxiv 2504.11168
+- Safety tax / over-refusal / tradeoff: No Free Lunch with Guardrails arxiv 2504.00441 ; arxiv 2604.05179 ; Bypassing LLM Guardrails arxiv 2504.11168
+- XSTest(Röttger 等,NAACL 2024): https://arxiv.org/abs/2308.01263 ; OR-Bench(Cui 等): https://arxiv.org/abs/2405.20947
+- Llama Guard 4 輸出格式(`safe` / `unsafe` + 類別代碼,`max_new_tokens=10`): https://huggingface.co/meta-llama/Llama-Guard-4-12B
 - OWASP Top 10 for LLM (2025): https://genai.owasp.org/llmrisk/llm01-prompt-injection/
 - 跨模型 guardrail 準確率比較: arxiv 2511.22047
 
@@ -1084,6 +1226,10 @@ LoRA [arxiv 2106.09685]、QLoRA [arxiv 2305.14314]、DoRA [arxiv 2402.09353]、D
 - KV-aware routing (Dynamo / Baseten): https://docs.nvidia.com/dynamo/latest/user-guides/kv-cache-aware-routing , https://www.baseten.co/blog/how-baseten-achieved-2x-faster-inference-with-nvidia-dynamo/
 - S-LoRA: https://arxiv.org/abs/2311.03285
 - KV quant: https://arxiv.org/pdf/2401.18079 (KVQuant), https://docs.vllm.ai/en/latest/features/quantization/quantized_kvcache/
+- Sarathi-Serve token budget 與 chunk 大小取捨: https://arxiv.org/html/2403.02310v3 ; vLLM V1 chunked prefill 預設: https://docs.vllm.ai/en/latest/configuration/optimization.html ; https://www.spheron.network/blog/llm-serving-optimization-continuous-batching-paged-attention/ ; SGLang `chunked_prefill_size`: https://sgl-project-sglang-93.mintlify.app/backend/server-arguments
+- TP 擴展效率: https://www.premai.io/blog/multi-gpu-llm-inference-tp-vs-pp-vs-ep-parallelism-guide-2026/ ; SiFAR https://arxiv.org/pdf/2607.08973
+- MBU 定義與量測(Databricks): https://www.databricks.com/blog/llm-inference-performance-engineering-best-practices
+- DeepSeek-V4(CSA / HCA): https://arxiv.org/abs/2606.19348 ; DeepSeek-V4.1-Flash: https://arxiv.org/abs/2609.19969
 
 ### §5 硬體
 - NVIDIA H100 datasheet (PNY/原廠): https://www.pny.com/File%20Library/Company/Support/Product%20Brochures/NVIDIA%20Data%20Center%20GPUs/nvidia-h100-datasheet.pdf
@@ -1100,6 +1246,7 @@ LoRA [arxiv 2106.09685]、QLoRA [arxiv 2305.14314]、DoRA [arxiv 2402.09353]、D
 - 吞吐量 benchmark: https://cerebrium.ai/blog/benchmarking-vllm-sglang-tensorrt-for-llama-3-1-api
 - 推論單位經濟學: https://introl.com/blog/inference-unit-economics-true-cost-per-million-tokens-guide
 - GPU 雲端定價: https://www.spheron.network/blog/gpu-cloud-pricing-comparison-2026/
+- 工業電價(EIA): https://www.eia.gov/energyexplained/electricity/prices-and-factors-affecting-prices.php ; 全球 PUE(Uptime Institute 2025): https://datacenter.uptimeinstitute.com/rs/711-RIA-145/images/2025.Annual.Survey.Report.pdf
 
 ### §6 開源模型
 - Qwen3 技術報告 arxiv.org/abs/2505.09388；HF Qwen/Qwen3-235B-A22B-Thinking-2507、Qwen3-4B-Thinking-2507
@@ -1111,3 +1258,14 @@ LoRA [arxiv 2106.09685]、QLoRA [arxiv 2305.14314]、DoRA [arxiv 2402.09353]、D
 - MiniMax github.com/MiniMax-AI/MiniMax-M1、M2；arxiv.org/abs/2506.13585
 - Gemma 3 ai.google.dev/gemma/docs/core/model_card_3；Phi-4 huggingface.co/microsoft/Phi-4-mini-instruct；EXAONE artificialanalysis.ai/models/exaone-4-0-32b；Mistral docs.mistral.ai
 - 基準/校準 artificialanalysis.ai/methodology/intelligence-benchmarking；HF model-cards docs huggingface.co/docs/hub/model-cards；arxiv.org/html/2508.06811v1
+- AA Intelligence Index v4.1 / v4.3: https://x.com/ArtificialAnlys/status/2066700136018071841 ; https://artificialanalysis.ai/articles/artificial-analysis-intelligence-index-v4-3
+- 2026 年開放權重模型: Kimi K3 huggingface.co/moonshotai/Kimi-K3 ; Qwen3.8-27B https://www.orcarouter.ai/blog/qwen-3-8-27b-release-date ; GLM-5.3-Flash https://ibl.ai/blog/glm-53-flash-hybrid-attention-kv-cache-self-hosting ; MiMo-V2.6-Pro https://sebastianraschka.com/blog/2026/mimo-v2-6-pro-architecture-training-notes.html ; Muse Spark Open huggingface.co/meta-models/Muse-Spark-Open-816B-A42B ; https://www.marktechpost.com/2026/10/15/meta-muse-spark-open-816b-open-weight-model/ ; Mistral Large 4 預覽 https://www.artificialintelligence-news.com/news/mistral-ai-launches-large-4-preview-ahead-open-weight-release/ ；其餘逐模型來源見 MODEL-CATALOG.md
+- 思考模式開關的逐檢查點證據: repo 內 `data/model-thinking.json`(各 HF repo 的 chat template / README / `encoding/encoding_dsv4.py` 逐字引文)
+
+### §7 戰役終章事件(2026 年 7–10 月)
+- W95 PJM / DOE 202(c): https://www.utilitydive.com/news/pjm-doe-emergency-order-curtail-data-centers/820571/ ; https://www.energy.gov/node/4855884 ; https://www.spglobal.com/energy/en/news-research/latest-news/electric-power/071026-pjm-interconnection-sets-new-all-time-peakload-record-of-168158-gw-in-heat-wave ; https://www.datacenterknowledge.com/energy-power-supply/pjm-issued-first-backup-generator-warnings-during-heat-wave
+- W96 Hugging Face / OpenAI agent 入侵: https://fortune.com/2026/07/21/openai-says-ai-models-escaped-control-hacked-hugging-face/ ; https://www.cnbc.com/2026/07/22/open-ai-cyber-models-hack-hugging-face.html ; https://thehackernews.com/2026/07/openai-agent-used-exposed-credentials.html
+- W97 EU AI Act 第 50 條 / Digital Omnibus: https://cdp.cooley.com/digital-ai-omnibus-delays-key-deadlines-introduces-new-rules/ ; https://www.gibsondunn.com/eu-ai-act-omnibus-agreement-postponed-high-risk-deadlines-and-other-key-changes/
+- W98 三家同時中斷: https://qz.com/chatgpt-claude-grok-simultaneous-outages-090326 ; https://www.macrumors.com/2026/09/03/chatgpt-claude-and-grok-are-down/
+- W99 GPT-6 Sol / Luna 與 Claude Opus 5.5 定價: https://simonwillison.net/2026/Sep/22/opus-and-sol-and-luna/ ; https://thenextweb.com/news/openai-gpt-6-sol-luna-api-price-cut
+- W100 Dots 與 Medicare 統計入口事件: https://techcrunch.com/2026/09/29/openai-launches-dots-its-bubbly-agentic-avatar/ ; https://www.cnn.com/2026/09/23/business/australia-openai-agent-hack-intl-hnk ; https://www.healthcareitnews.com/news/anz/openai-agent-breaches-australian-medicare-portal

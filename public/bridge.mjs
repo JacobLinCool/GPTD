@@ -23,7 +23,7 @@
 //
 // Action vocab (fn / args): build [defId,col,row] · sell [towerId] ·
 //   deploy [towerId,modelId] · upgradeHardware [towerId] · cycleRackRole [towerId] ·
-//   buyUpgrade [upgradeId] · research [researchId] · postTrain [baseIds[],method,target,effort] ·
+//   setRackPrecision [towerId,format|auto] · buyUpgrade [upgradeId] · research [researchId] · postTrain [baseIds[],method,target,effort] ·
 //   startWave · continueEndless · select [towerId] · startGame
 import http from 'node:http'
 
@@ -149,14 +149,15 @@ const HELP = {
     'Do not hardcode ids: read defIds+costs from state.catalog, tiles from state.board.freeTiles, towerId from state.towers[].id, modelId from state.models[].id, upgrade/research ids from state.upgrades[]/state.research.options[].',
   ],
   actions: {
-    build: '[defId, col, row]  — place a tower on a free integer tile (state.board.freeTiles)',
+    build: '[defId, col, row]  — place a tower on a free integer tile (state.board.freeTiles); allowed mid-wave',
     sell: '[towerId]',
-    deploy: '[towerId, modelId]  — deploy a checkpoint onto a rack (only models in its deployableModelIds fit)',
-    upgradeHardware: '[towerId]  — upgrade a rack one GPU tier',
+    deploy: '[towerId, modelId]  — deploy a checkpoint onto a rack (only models in its deployableModelIds fit); build phase only',
+    upgradeHardware: '[towerId]  — upgrade a rack one GPU tier; build phase only',
     cycleRackRole: '[towerId]  — cycle P/D disaggregation role (needs inf_disagg research)',
+    setRackPrecision: '[towerId, format]  — set a rack\'s weight format: one of its towers[].formats (bf16 | fp8 | int4 | nvfp4), or "auto" (the fastest format that costs no quality and fits). A 4-bit format below the model\'s release precision fits bigger models but costs some quality; build phase only (it reloads the weights)',
     buyUpgrade: '[upgradeId]  — needs a Lab',
     research: '[researchId]  — from state.research.options',
-    postTrain: '[baseIds[], method, target, effort]  — derive a checkpoint in the Studio (see state.studio). Over GET, args=baseId,method,target,effort works for a SINGLE base; merge (2 bases) needs the POST JSON form with a nested array.',
+    postTrain: '[baseIds[], method, target, effort]  — derive a checkpoint in the Studio (see state.studio); effort must be one of state.studio.effortNotches. Over GET, args=baseId,method,target,effort works for a SINGLE base; merge (2 bases) needs the POST JSON form with a nested array, and two DIFFERENT checkpoints of the same base with one shared architecture.',
     startWave: '[]  — build phase only',
     continueEndless: '[]  — after a win',
     select: '[towerId]  — highlight a rack in the inspect panel',
@@ -165,12 +166,21 @@ const HELP = {
   onReject: 'A rejected /do returns {ok:false, error:"<why>"} — read error; it explains the exact gate that failed (cash, VRAM fit, phase, liquid loop, lab, prereqs, …).',
   stateKeys: [
     'phase, wave, totalWaves, isLastWave, waveActive, endless',
-    'meters{cash,trust,sla,data}, power{used,cap}, cooling{used,cap}, flags{hasLab,hasLiquidLoop}, modifiers{buildCost,powerPrice,coolingCap,safetyDamage,volume,reward}',
-    'incident{id,name,desc} | null, nextWave{name,brief,clearBonus,totalRequests,mix[]} | null (build phase)',
-    'board{cols,rows,core,freeTiles[{col,row,nearLane}]}, towers[{id,defId,col,row,hwId,modelId,role,sellValue,nextHwId,upgradeCost,deployableModelIds}]',
-    'catalog[], hardware[{id,name,hbmGb,cooling,deployableModelIds}], models[], upgrades[], research{infra,posttrain,eval,options[{id,name,desc,dataCost,requires}]}',
+    'meters{cash,trust,sla,data}, power{used,cap}, cooling{used,cap}, coolingLiquid{used,cap} (live kW in every phase), flags{hasLab,hasLiquidLoop}, modifiers{buildCost,powerPrice,coolingCap,safetyDamage,volume,reward,powerCap,powerBuild,slaDamage,liquidCoolingCap}',
+    'incident{id,name,desc,good} | null, nextWave{wave,name,brief,clearBonus (SLA contract at 100% Goodput),totalRequests,mix[{typeId,count,latClass,axis,difficulty,inputTokens,outputTokens,hazards}],volumeMul,estDurationSec,projectedBill,boss,surgeLane,incidentId} | null (build phase)',
+    'lastReport{wave,served,sloMiss,bad,unservable,unsafe,overRefused,leaked,total,goodputPct,sloAttainPct,trustLostBy,slaLostBy,sloCauses,overRefusedBy,guardCaught,selfHandled,byType,cashIn,clearBonus (the SLA contract paid),powerCost (= gpuCost GPU-hours + energyCost),…} | null',
+    'board{cols,rows,core,freeTiles[{col,row,nearLane}]}, towers[{id,defId,name,kind,col,row,level,online,range,coversLanes(guards),hwId,modelId,role,format,formatSetting,formats (servers),training,load,sellValue,nextHwId,upgradeCost,deployableModelIds}]',
+    'catalog[{defId,name,kind,cost,range,affordable,blockedReason,guardrail{archetype,side,latencyMs (quoted at a 512-token prompt; the generative guard reads the real turn, so a longer prompt costs it more),recall,falsePositiveRate,catches[{hazard,locked,unlockedBy}]}}], hardware[{id,name,hbmGb,gpus,cooling,tier,deployableModelIds}]',
+    'models[{id,name,tier (a display band from capability and size, not a size class),qualityBy,contextWindowK,paramsTotalB,paramsActiveB,isMoE,isReasoning,thinking(always|hybrid|never),qualityByInstant (hybrids),thinkTokens,alignment{safety,refusalStyle,overRefusal},alignmentTax}], upgrades[], research{infra,posttrain,eval,options[{id,name,desc,dataCost,requires}],requisition{rackIds,lentTflops,capTflops,servingLossPct,blocked}}',
     'studio{available,baseModelIds,targets,effortNotches,methods[{id,name,allowedTargets,dataCost,unlocked,requiresTech}],activeRun}',
-    'stats{served,sloMiss,bad,unservable,unsafe,overRefused,leaked,cashEarned,peakConcurrent,lastReportWave}',
+    'stats{served,sloMiss,bad,unservable,unsafe,overRefused,leaked,cashEarned,peakConcurrent,lastReportWave,trustLostBy,slaLostBy}',
+  ],
+  rules: [
+    'Seven outcomes: served (paid in full) · sloMiss (correct but late, paid 50%, costs SLA) · bad (wrong, refunded, costs Trust) · unsafe (an unsafe answer delivered, costs Trust) · overRefused (a benign request refused by the model or a guard) · unservable (too long for the window / KV of every rack that saw it) · leaked (a 504).',
+    'A blocked or refused jailbreak counts as served; an unanswered one costs SLA only. Read lastReport.trustLostBy / slaLostBy / sloCauses / overRefusedBy to find the real cause of a meter drop.',
+    'Guardrails screen every request on the lanes their range touches (towers[].coversLanes), wherever they sit: each guard family adds its latency once and one false-positive roll; extra copies of the same guard add coverage, not recall.',
+    'A Router dispatches requests in its range to the in-range rack whose model is best at them. Several racks working one request blend its answer quality by tokens generated.',
+    'Thinking: a hybrid model answers interactive traffic (chat, code completion) with thinking off — no hidden tokens, judged on qualityByInstant — and thinks about everything else (hidden tokens first, judged on qualityBy). An always-thinking model thinks on chat too and misses its time-to-first-answer bound (sloCauses.ttfat) on a slow rack.',
   ],
   examples: [
     `curl -s http://${HOST}:${PORT}/state`,

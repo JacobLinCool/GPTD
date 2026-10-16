@@ -2,13 +2,19 @@
  * System menu (pause hub) + Settings panel — docs/SYSTEM-MENU.md §2/§5.
  *
  * SystemMenu is the navigation hub (Resume / Settings / content browsers /
- * Restart / Quit) shown over a dim backdrop while the sim is paused. SettingsPanel
- * is the tabbed preferences view (Audio / Display / Accessibility / Gameplay). Both
- * write through the SettingsStore; the Game subscribes and applies side-effects.
+ * Restart / Quit) shown over a dim backdrop while the sim is paused. Restart and
+ * Quit are two-step: the first tap arms "tap again — this run will be lost".
+ * SettingsPanel is the tabbed preferences view (Audio / Display / Accessibility /
+ * Gameplay) covering every SettingsStore field. Both write through the
+ * SettingsStore; the Game subscribes and applies side-effects. Arrow keys + Enter
+ * drive the hub; [ and ] switch settings tabs.
  */
-import { Container, Graphics } from 'pixi.js'
+import { Container, Graphics, Text } from 'pixi.js'
+import type { AudioBus } from '../audio/engine'
 import { COLORS, DESIGN_H, DESIGN_W } from '../config'
+import { OUTCOMES, type Outcome } from '../core/types'
 import { t } from '../i18n'
+import { OUTCOME_STYLE, outcomeColor } from '../outcomes'
 import {
   getLang,
   setLang,
@@ -16,6 +22,7 @@ import {
   LANGS,
   getMode,
   setMode,
+  type FxLevel,
   type GameMode,
   type Lang,
   getSettings,
@@ -27,8 +34,11 @@ import {
   setDefaultSpeed,
   setTooltips,
   resetToDefaults,
+  updateSettings,
 } from '../settings'
-import { drawPanel, label, UIButton } from './theme'
+import { drawOutcomeGlyph } from './hud'
+import { getPref, setPref } from './prefs'
+import { drawPanel, FocusList, label, UIButton } from './theme'
 import { Slider, SegmentedControl, Toggle } from './widgets'
 
 // ---------------------------------------------------------------- System menu --
@@ -50,6 +60,7 @@ export class SystemMenu {
   private panel = new Graphics()
   private title = label('', 26, COLORS.textBright, 'bold')
   private rows: { btn: UIButton; key: string; fallback: string; soon?: boolean }[] = []
+  private focus = new FocusList(() => this.rows.map((r) => r.btn))
   private PW = 360
   private PH = 470
 
@@ -63,6 +74,18 @@ export class SystemMenu {
     this.title.x = px + 24
     this.title.y = py + 22
 
+    // destructive rows confirm with a second tap (no modal): the first tap arms them
+    const twoStep = (key: string, run: () => void) => (): void => {
+      const row = this.rows.find((r) => r.key === key)
+      if (!row) return
+      if (row.btn.isArmed) {
+        row.btn.disarm()
+        run()
+      } else {
+        for (const r of this.rows) if (r !== row) r.btn.disarm()
+        row.btn.arm(t(key === 'sys.restart' ? 'sys.confirmRestart' : 'sys.confirmQuit'), 2500)
+      }
+    }
     const defs: { key: string; fallback: string; onTap: () => void; accent?: number; soon?: boolean }[] = [
       { key: 'sys.resume', fallback: 'Resume', onTap: cb.onResume, accent: COLORS.trust },
       { key: 'sys.settings', fallback: 'Settings', onTap: cb.onSettings, accent: COLORS.sla },
@@ -70,8 +93,8 @@ export class SystemMenu {
       { key: 'sys.codex', fallback: 'Codex', onTap: cb.onCodex, accent: COLORS.data },
       { key: 'sys.about', fallback: 'About', onTap: cb.onAbout, accent: COLORS.data },
       { key: 'sys.ach', fallback: 'Achievements', onTap: cb.onAchievements, accent: COLORS.trust },
-      { key: 'sys.restart', fallback: 'Restart Run', onTap: cb.onRestart, accent: COLORS.warn },
-      { key: 'sys.quit', fallback: 'Quit to Title', onTap: cb.onQuit, accent: COLORS.danger },
+      { key: 'sys.restart', fallback: 'Restart Run', onTap: twoStep('sys.restart', cb.onRestart), accent: COLORS.warn },
+      { key: 'sys.quit', fallback: 'Quit to Title', onTap: twoStep('sys.quit', cb.onQuit), accent: COLORS.danger },
     ]
     let y = py + 70
     for (const d of defs) {
@@ -92,9 +115,20 @@ export class SystemMenu {
   }
   hide(): void {
     this.view.visible = false
+    this.focus.clear()
+    for (const r of this.rows) r.btn.disarm()
   }
   get visible(): boolean {
     return this.view.visible
+  }
+
+  /** Keyboard: ↑/↓ move the focus, Enter picks. Returns true when the key was used. */
+  key(code: string): boolean {
+    if (code === 'ArrowUp') this.focus.move(0, -1)
+    else if (code === 'ArrowDown') this.focus.move(0, 1)
+    else if (code === 'Enter' || code === 'NumpadEnter') return this.focus.activate()
+    else return false
+    return true
   }
 
   refresh(): void {
@@ -112,8 +146,8 @@ export class SystemMenu {
 export interface SettingsCallbacks {
   /** back to the System menu hub. */
   onBack: () => void
-  /** play a short tick so a volume change is audible. */
-  onPreview: () => void
+  /** make a volume change audible on its own bus, or play one outcome's sound. */
+  onPreview: (target: AudioBus | Outcome) => void
   /** re-arm the tutorial. */
   onReplayTutorial: () => void
   /** mode is switchable on the title or once the tutorial is finished. */
@@ -127,6 +161,12 @@ const TABS = [
   { id: 'gameplay', key: 'set.tab.gameplay', fallback: 'Gameplay' },
 ] as const
 
+/** Default-speed choices: every speed step the HUD offers. */
+const SPEEDS = [1, 2, 3, 6, 12]
+/** Auto-start choices: 0 = off, else the countdown in seconds. */
+const AUTO_START = [0, 5, 10]
+const FX_LEVELS: FxLevel[] = ['full', 'reduced', 'minimal']
+
 export class SettingsPanel {
   readonly view = new Container()
   private dim = new Graphics()
@@ -134,27 +174,26 @@ export class SettingsPanel {
   private title = label('', 24, COLORS.textBright, 'bold')
   private tabBtns: UIButton[] = []
   private pages: Container[] = []
-  private current = 0
-  private PW = 580
-  private PH = 440
+  private current = Math.max(0, Math.min(TABS.length - 1, getPref('settings.tab', 0)))
+  private PW = 620
+  private PH = 610
   private px: number
   private py: number
   private cb: SettingsCallbacks
 
   // controls whose values/labels must sync on refresh
-  private sMaster!: Slider
-  private sMusic!: Slider
-  private sSfx!: Slider
-  private vMaster = label('', 13, COLORS.textDim)
-  private vMusic = label('', 13, COLORS.textDim)
-  private vSfx = label('', 13, COLORS.textDim)
-  private tgMute!: Toggle
+  private sliders: { s: Slider; v: Text; read: () => number }[] = []
+  private toggles: { tg: Toggle; read: () => boolean }[] = []
   private segLang!: SegmentedControl<Lang>
   private segMode!: SegmentedControl<GameMode>
-  private lblModeLock = label('', 11, COLORS.warn)
-  private tgReduced!: Toggle
+  private segDensity!: SegmentedControl<'full' | 'reduced'>
+  private segFx!: SegmentedControl<FxLevel>
   private segSpeed!: SegmentedControl<number>
-  private tgTooltips!: Toggle
+  private segAuto!: SegmentedControl<number>
+  /** Settings ▸ Audio: one button per outcome that plays its sound (redrawn when the palette changes). */
+  private outcomeBtns: { o: Outcome; btn: UIButton; glyph: Graphics }[] = []
+  private outcomePalette = ''
+  private lblModeLock = label('', 11, COLORS.warn)
   private btnReplay!: UIButton
   private btnBack!: UIButton
   private btnReset!: UIButton
@@ -178,24 +217,53 @@ export class SettingsPanel {
     this.buildA11y()
     this.buildGameplay()
     this.buildFooter()
-    this.selectTab(0)
+    this.selectTab(this.current)
     this.view.visible = false
   }
 
   // --- layout helpers ---
   private rowY(i: number): number {
-    return this.py + 104 + i * 56
+    return this.py + 110 + i * 52
   }
-  private addRowLabel(page: Container, key: string, fallback: string, y: number): void {
+  /** the left edge of every non-slider control (toggles, segmented choices, buttons). */
+  private ctrlX(): number {
+    return this.px + 300
+  }
+  /** A bold row label with an optional dim explanation (at most two lines) beneath it. */
+  private addRowLabel(page: Container, key: string, fallback: string, y: number, subKey?: string): void {
     const l = label('', 15, COLORS.text, 'bold')
     l.x = this.px + 28
     l.y = y
     page.addChild(l)
     this.relabels.push(() => (l.text = t(key, undefined, fallback)))
+    if (subKey) {
+      const sub = label('', 11, COLORS.textDim)
+      sub.x = this.px + 28
+      sub.y = y + 20
+      sub.style.wordWrap = true
+      sub.style.breakWords = true
+      sub.style.wordWrapWidth = this.ctrlX() - this.px - 44
+      page.addChild(sub)
+      this.relabels.push(() => {
+        // two lines at most (the next row starts 52 px down): a longer translation steps the size down
+        sub.text = t(subKey)
+        for (const size of [11, 10, 9]) {
+          sub.style.fontSize = size
+          if (sub.height <= 30) break
+        }
+      })
+    }
+  }
+  private addToggle(page: Container, i: number, read: () => boolean, write: (v: boolean) => void, accent?: number): void {
+    const tg = new Toggle({ value: read(), accent, onChange: write })
+    tg.x = this.ctrlX()
+    tg.y = this.rowY(i)
+    page.addChild(tg)
+    this.toggles.push({ tg, read })
   }
 
   private buildTabs(): void {
-    const segW = 124
+    const segW = 132
     const gap = 6
     const total = TABS.length * segW + (TABS.length - 1) * gap
     const x0 = this.px + (this.PW - total) / 2
@@ -218,44 +286,96 @@ export class SettingsPanel {
 
   private buildAudio(): void {
     const page = this.newPage()
-    const a = getSettings().audio
-    const sx = this.px + 200
-    const sw = 250
-    const mk = (i: number, v: number, vlabel: typeof this.vMaster, on: (x: number) => void): Slider => {
+    const sx = this.ctrlX()
+    const sw = 230
+    const mk = (i: number, read: () => number, on: (x: number) => void, bus: AudioBus): void => {
+      const vlabel = label('', 13, COLORS.textDim)
       const s = new Slider({
         w: sw,
-        value: v,
+        value: read(),
         accent: COLORS.sla,
         onChange: (x) => {
           on(x)
           vlabel.text = Math.round(x * 100) + '%'
         },
-        onCommit: () => this.cb.onPreview(),
+        onCommit: () => this.cb.onPreview(bus),
       })
       s.x = sx
       s.y = this.rowY(i) + 4
       vlabel.x = sx + sw + 14
       vlabel.y = this.rowY(i)
-      vlabel.text = Math.round(v * 100) + '%'
+      vlabel.text = Math.round(read() * 100) + '%'
       page.addChild(s, vlabel)
-      return s
+      this.sliders.push({ s, v: vlabel, read })
     }
+    const a = (): Readonly<ReturnType<typeof getSettings>['audio']> => getSettings().audio
     this.addRowLabel(page, 'set.master', 'Master', this.rowY(0))
-    this.sMaster = mk(0, a.master, this.vMaster, setMasterVolume)
+    mk(0, () => a().master, setMasterVolume, 'master')
     this.addRowLabel(page, 'set.music', 'Music', this.rowY(1))
-    this.sMusic = mk(1, a.music, this.vMusic, setMusicVolume)
+    mk(1, () => a().music, setMusicVolume, 'music')
     this.addRowLabel(page, 'set.sfx', 'SFX', this.rowY(2))
-    this.sSfx = mk(2, a.sfx, this.vSfx, setSfxVolume)
-    this.addRowLabel(page, 'set.mute', 'Mute', this.rowY(3))
-    this.tgMute = new Toggle({ value: a.muted, accent: COLORS.danger, onChange: (v) => setMuted(v) })
-    this.tgMute.x = sx
-    this.tgMute.y = this.rowY(3)
-    page.addChild(this.tgMute)
+    mk(2, () => a().sfx, setSfxVolume, 'sfx')
+    this.addRowLabel(page, 'set.uiVolume', 'Interface', this.rowY(3))
+    mk(3, () => a().ui, (v) => updateSettings('audio', { ui: Math.max(0, Math.min(1, v)) }), 'ui')
+
+    this.addRowLabel(page, 'set.mute', 'Mute', this.rowY(4))
+    this.addToggle(page, 4, () => a().muted, (v) => setMuted(v), COLORS.danger)
+    this.addRowLabel(page, 'set.muteInBackground', 'Mute in Background', this.rowY(5), 'set.muteInBackground.sub')
+    this.addToggle(page, 5, () => a().muteInBackground, (v) => updateSettings('audio', { muteInBackground: v }))
+
+    this.addRowLabel(page, 'set.sfxDensity', 'Serve Sounds', this.rowY(6), 'set.sfxDensity.sub')
+    this.segDensity = new SegmentedControl<'full' | 'reduced'>({
+      options: [
+        { value: 'full', label: t('set.sfxDensity.full') },
+        { value: 'reduced', label: t('set.sfxDensity.reduced') },
+      ],
+      value: a().sfxDensity,
+      segW: 120,
+      onChange: (v) => updateSettings('audio', { sfxDensity: v }),
+    })
+    this.segDensity.x = this.ctrlX()
+    this.segDensity.y = this.rowY(6) - 4
+    page.addChild(this.segDensity)
+    this.relabels.push(() => this.segDensity.relabel((v) => t('set.sfxDensity.' + v)))
+
+    // the seven outcome sounds, one tap each (the glyph + colour the board and HUD use)
+    this.addRowLabel(page, 'set.outcomeSounds', 'Outcome Sounds', this.rowY(7), 'set.outcomeSounds.sub')
+    const bw = 38
+    const gap = 4
+    OUTCOMES.forEach((o, i) => {
+      const btn = new UIButton({
+        w: bw,
+        h: 30,
+        accent: outcomeColor(o),
+        silent: true,
+        onTap: () => this.cb.onPreview(o),
+        tooltip: () => ({ title: t(OUTCOME_STYLE[o].labelKey), body: t(OUTCOME_STYLE[o].causeKey) }),
+      })
+      btn.x = this.ctrlX() + i * (bw + gap)
+      btn.y = this.rowY(7) - 4
+      const glyph = new Graphics()
+      glyph.x = bw / 2
+      glyph.y = 15
+      btn.addChild(glyph)
+      page.addChild(btn)
+      this.outcomeBtns.push({ o, btn, glyph })
+    })
+  }
+
+  /** Redraw the outcome glyphs when the colorblind palette flips. */
+  private drawOutcomeButtons(): void {
+    const key = getSettings().a11y.colorblind ? 'cb' : 'std'
+    if (key === this.outcomePalette) return
+    this.outcomePalette = key
+    for (const b of this.outcomeBtns) {
+      drawOutcomeGlyph(b.glyph, OUTCOME_STYLE[b.o].glyph, outcomeColor(b.o), 12)
+      b.btn.setAccent(outcomeColor(b.o))
+    }
   }
 
   private buildDisplay(): void {
     const page = this.newPage()
-    const sx = this.px + 200
+    const sx = this.ctrlX()
     this.addRowLabel(page, 'set.language', 'Language', this.rowY(0))
     this.segLang = new SegmentedControl<Lang>({
       options: LANGS.map((l) => ({ value: l, label: LANG_LABEL[l] })),
@@ -292,46 +412,71 @@ export class SettingsPanel {
 
   private buildA11y(): void {
     const page = this.newPage()
-    const sx = this.px + 280
-    this.addRowLabel(page, 'set.reducedMotion', 'Reduced Motion', this.rowY(0))
-    const sub = label('', 11, COLORS.textDim)
-    sub.x = this.px + 28
-    sub.y = this.rowY(0) + 20
-    page.addChild(sub)
-    this.relabels.push(
-      () => (sub.text = t('set.reducedMotion.sub', undefined, 'Hold pulsing animations steady')),
-    )
-    this.tgReduced = new Toggle({ value: getSettings().a11y.reducedMotion, onChange: (v) => setReducedMotion(v) })
-    this.tgReduced.x = sx
-    this.tgReduced.y = this.rowY(0)
-    page.addChild(this.tgReduced)
+    const a = (): Readonly<ReturnType<typeof getSettings>['a11y']> => getSettings().a11y
+    this.addRowLabel(page, 'set.reducedMotion', 'Reduced Motion', this.rowY(0), 'set.reducedMotion.sub')
+    this.addToggle(page, 0, () => a().reducedMotion, (v) => setReducedMotion(v))
+    this.addRowLabel(page, 'set.screenShake', 'Screen Shake', this.rowY(1), 'set.screenShake.sub')
+    this.addToggle(page, 1, () => a().screenShake, (v) => updateSettings('a11y', { screenShake: v }))
+    this.addRowLabel(page, 'set.reduceFlashing', 'Reduce Flashing', this.rowY(2), 'set.reduceFlashing.sub')
+    this.addToggle(page, 2, () => a().reduceFlashing, (v) => updateSettings('a11y', { reduceFlashing: v }))
+    this.addRowLabel(page, 'set.colorblind', 'Colorblind-Safe Colors', this.rowY(3), 'set.colorblind.sub')
+    this.addToggle(page, 3, () => a().colorblind, (v) => updateSettings('a11y', { colorblind: v }))
+    this.addRowLabel(page, 'set.fxLevel', 'Effects', this.rowY(4), 'set.fxLevel.sub')
+    this.segFx = new SegmentedControl<FxLevel>({
+      options: FX_LEVELS.map((v) => ({ value: v, label: t('set.fxLevel.' + v) })),
+      value: a().fxLevel,
+      segW: 88,
+      onChange: (v) => updateSettings('a11y', { fxLevel: v }),
+    })
+    this.segFx.x = this.ctrlX()
+    this.segFx.y = this.rowY(4) - 4
+    page.addChild(this.segFx)
+    this.relabels.push(() => this.segFx.relabel((v) => t('set.fxLevel.' + v)))
   }
 
   private buildGameplay(): void {
     const page = this.newPage()
-    const g = getSettings().gameplay
-    const sx = this.px + 240
+    const g = (): Readonly<ReturnType<typeof getSettings>['gameplay']> => getSettings().gameplay
     this.addRowLabel(page, 'set.defaultSpeed', 'Default Speed', this.rowY(0))
     this.segSpeed = new SegmentedControl<number>({
-      options: [1, 2, 3].map((n) => ({ value: n, label: n + '×' })),
-      value: g.defaultSpeed,
-      segW: 60,
+      options: SPEEDS.map((n) => ({ value: n, label: n + '×' })),
+      value: g().defaultSpeed,
+      segW: 50,
+      gap: 4,
       onChange: (n) => setDefaultSpeed(n),
     })
-    this.segSpeed.x = sx
+    this.segSpeed.x = this.ctrlX()
     this.segSpeed.y = this.rowY(0) - 4
     page.addChild(this.segSpeed)
 
-    this.addRowLabel(page, 'set.tooltips', 'Tooltips', this.rowY(1))
-    this.tgTooltips = new Toggle({ value: g.tooltips, onChange: (v) => setTooltips(v) })
-    this.tgTooltips.x = sx
-    this.tgTooltips.y = this.rowY(1)
-    page.addChild(this.tgTooltips)
+    this.addRowLabel(page, 'set.autoStart', 'Auto-Start Next Wave', this.rowY(1), 'set.autoStart.sub')
+    this.segAuto = new SegmentedControl<number>({
+      options: AUTO_START.map((n) => ({ value: n, label: n ? t('set.autoStart.sec', { n }) : t('set.autoStart.off') })),
+      value: g().autoStartWave ? g().autoStartDelay : 0,
+      segW: 70,
+      gap: 4,
+      onChange: (n) => updateSettings('gameplay', n ? { autoStartWave: true, autoStartDelay: n } : { autoStartWave: false }),
+    })
+    this.segAuto.x = this.ctrlX()
+    this.segAuto.y = this.rowY(1) - 4
+    page.addChild(this.segAuto)
+    this.relabels.push(() =>
+      this.segAuto.relabel((n) => (n ? t('set.autoStart.sec', { n }) : t('set.autoStart.off'))),
+    )
 
-    this.addRowLabel(page, 'set.replayTut', 'Tutorial', this.rowY(2))
+    this.addRowLabel(page, 'set.confirmSell', 'Confirm Before Selling', this.rowY(2), 'set.confirmSell.sub')
+    this.addToggle(page, 2, () => g().confirmSell, (v) => updateSettings('gameplay', { confirmSell: v }))
+    this.addRowLabel(page, 'set.pauseOnBlur', 'Pause When Unfocused', this.rowY(3), 'set.pauseOnBlur.sub')
+    this.addToggle(page, 3, () => g().pauseOnBlur, (v) => updateSettings('gameplay', { pauseOnBlur: v }))
+    this.addRowLabel(page, 'set.tooltips', 'Tooltips', this.rowY(4))
+    this.addToggle(page, 4, () => g().tooltips, (v) => setTooltips(v))
+    this.addRowLabel(page, 'set.showHotkeys', 'Hotkey Badges', this.rowY(5), 'set.showHotkeys.sub')
+    this.addToggle(page, 5, () => g().showHotkeys, (v) => updateSettings('gameplay', { showHotkeys: v }))
+
+    this.addRowLabel(page, 'set.replayTut', 'Tutorial', this.rowY(6))
     this.btnReplay = new UIButton({ w: 180, h: 34, accent: COLORS.data, onTap: () => this.cb.onReplayTutorial() })
-    this.btnReplay.x = sx
-    this.btnReplay.y = this.rowY(2) - 6
+    this.btnReplay.x = this.ctrlX()
+    this.btnReplay.y = this.rowY(6) - 6
     page.addChild(this.btnReplay)
     this.relabels.push(() =>
       this.btnReplay.setTitle(t('set.replayTutBtn', undefined, 'Replay Tutorial')).layout(0, 0, true),
@@ -354,8 +499,18 @@ export class SettingsPanel {
 
   private selectTab(i: number): void {
     this.current = i
+    setPref('settings.tab', i)
     this.pages.forEach((p, idx) => (p.visible = idx === i))
+    this.drawOutcomeButtons()
     this.tabBtns.forEach((b, idx) => b.setActive(idx === i))
+  }
+
+  /** Keyboard: [ / ] (and ←/→) cycle the tabs. Returns true when the key was used. */
+  key(code: string): boolean {
+    const step = code === 'BracketLeft' || code === 'ArrowLeft' ? -1 : code === 'BracketRight' || code === 'ArrowRight' ? 1 : 0
+    if (!step) return false
+    this.selectTab((this.current + step + TABS.length) % TABS.length)
+    return true
   }
 
   private doReset(): void {
@@ -366,18 +521,18 @@ export class SettingsPanel {
   /** Pull live store values into the controls (after external changes / reset). */
   private syncControls(): void {
     const s = getSettings()
-    this.sMaster.setValue(s.audio.master)
-    this.sMusic.setValue(s.audio.music)
-    this.sSfx.setValue(s.audio.sfx)
-    this.vMaster.text = Math.round(s.audio.master * 100) + '%'
-    this.vMusic.text = Math.round(s.audio.music * 100) + '%'
-    this.vSfx.text = Math.round(s.audio.sfx * 100) + '%'
-    this.tgMute.setValue(s.audio.muted)
-    this.tgReduced.setValue(s.a11y.reducedMotion)
-    this.tgTooltips.setValue(s.gameplay.tooltips)
+    for (const sl of this.sliders) {
+      sl.s.setValue(sl.read())
+      sl.v.text = Math.round(sl.read() * 100) + '%'
+    }
+    for (const tg of this.toggles) tg.tg.setValue(tg.read())
+    this.segDensity.setValue(s.audio.sfxDensity)
+    this.segFx.setValue(s.a11y.fxLevel)
     this.segSpeed.setValue(s.gameplay.defaultSpeed)
+    this.segAuto.setValue(s.gameplay.autoStartWave ? s.gameplay.autoStartDelay : 0)
     this.segLang.setValue(getLang())
     this.segMode.setValue(getMode())
+    this.drawOutcomeButtons()
     const unlocked = this.cb.isModeUnlocked()
     this.segMode.setEnabled(unlocked)
     this.lblModeLock.text = unlocked ? '' : t('set.mode.locked', undefined, 'Unlocks after the tutorial')

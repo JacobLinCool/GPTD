@@ -7,6 +7,7 @@
 import { Container, Graphics, type FederatedPointerEvent } from 'pixi.js'
 import { COLORS } from '../config'
 import { UIButton } from './theme'
+import { uiSound } from './uiSound'
 
 const clamp01 = (v: number): number => (v < 0 ? 0 : v > 1 ? 1 : v)
 
@@ -67,7 +68,10 @@ export class Slider extends Container {
   private setFromEvent(e: FederatedPointerEvent): void {
     const p = this.toLocal(e.global)
     const x = Math.max(0, Math.min(this._w, p.x))
+    const prev = this._v
     this._v = this._w > 0 ? x / this._w : 0
+    // a soft tick each time the value crosses a 5% step (pitch follows the value)
+    if (Math.floor(prev * 20) !== Math.floor(this._v * 20)) uiSound('tick', { value: this._v })
     this.redraw()
     this.onChange(this._v)
   }
@@ -169,12 +173,16 @@ export class Toggle extends Container {
     this.addChild(this.g)
     this.eventMode = 'static'
     this.cursor = 'pointer'
-    this.on('pointertap', () => {
-      this._on = !this._on
-      this.redraw()
-      this.onChange(this._on)
-    })
+    this.on('pointertap', () => this.flip())
     this.redraw()
+  }
+
+  /** Flip the switch (tap / keyboard), with its toggle cue. */
+  flip(): void {
+    this._on = !this._on
+    uiSound('toggle', { on: this._on })
+    this.redraw()
+    this.onChange(this._on)
   }
 
   get value(): boolean {

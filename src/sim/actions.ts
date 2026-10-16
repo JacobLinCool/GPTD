@@ -1,17 +1,23 @@
-import type { GameState, ServerHardwareDef, Tower, TowerDef } from '../core/types'
+import type { GameState, ServerHardwareDef, Tower, TowerDef, WaveDef, WeightFormat } from '../core/types'
+import { CAMPAIGN_THEMES } from './campaign'
 import { HARDWARE_DEFS, HARDWARE_TIERS, TOWER_DEFS, UPGRADE_MAP, WAVES } from './content'
 import {
+  formatAvailable,
   hasLab,
   hasLiquidLoop,
   hwNeedsLiquid,
   loadout,
   loadoutOf,
+  loraSiblings,
   methodsUnlocked,
   resolveModel,
   serverFitsMemory,
 } from './effects'
 import { generateEndlessWave } from './endless'
 import { isBuildable, tileCenter } from './pathing'
+import { powerBuildOpen, refreshPower } from './power'
+import { rollIncident } from './sim'
+import { surgeLaneOf } from './spawn'
 import { newWaveStats } from './telemetry'
 
 export function buildCost(s: GameState, def: TowerDef): number {
@@ -27,21 +33,28 @@ export function canPlaceAt(s: GameState, col: number, row: number): boolean {
   return !s.towers.some((t) => t.col === col && t.row === row)
 }
 
+/**
+ * Place a building. Allowed in the build phase AND mid-wave (an emergency build with
+ * cash); the power / cooling budget is recomputed at once so the HUD stays live.
+ */
 export function tryBuild(s: GameState, defId: string, col: number, row: number): boolean {
   if (s.phase !== 'build' && s.phase !== 'wave') return false
   const def = TOWER_DEFS[defId]
   if (!def) return false
   if (!canPlaceAt(s, col, row)) return false
-  // §6.5 hard gate (OQ-G8): a liquid-cooled rack (≥1000 W/GPU) cannot be PLACED
+  // §6.5 hard gate (OQ-G8): a liquid-cooled rack (the 1200 W/GPU NVL72) cannot be PLACED
   // without a Liquid Cooling Loop — an air-cooled rack never needs one.
   if (def.kind === 'server' && def.hardwareId && hwNeedsLiquid(HARDWARE_DEFS[def.hardwareId]) && !hasLiquidLoop(s))
     return false
+  // an interconnection freeze: the utility will not energize a new generation block
+  if (def.kind === 'power' && !powerBuildOpen(s)) return false
   const cost = buildCost(s, def)
   if (s.meters.cash < cost) return false
   s.meters.cash -= cost
   const c = tileCenter(col, row)
+  const id = s.nextId++
   s.towers.push({
-    id: s.nextId++,
+    id,
     def,
     col,
     row,
@@ -50,14 +63,24 @@ export function tryBuild(s: GameState, defId: string, col: number, row: number):
     level: 1,
     online: true,
     throttle: 1,
-    cooldown: 0,
-    muzzle: 0,
-    targetId: null,
     load: 0,
     hwId: def.hardwareId,
     modelId: def.defaultModelId,
+    role: undefined,
+    training: false,
+    precision: undefined,
+    loraHot: false,
+    prefillDebtSec: 0,
+    // display state, refreshed every combat tick (declared up front: one object shape for every tower)
+    decodeIds: [],
+    prefillId: null,
+    kvFrac: 0,
+    batch: 0,
+    streams: 0,
+    tokS: 0,
   })
-  s.events.push({ type: 'place', x: c.x, y: c.y })
+  s.events.push({ type: 'build', towerId: id, defId: def.id, x: c.x, y: c.y })
+  refreshPower(s)
   return true
 }
 
@@ -72,17 +95,23 @@ export function sellTower(s: GameState, id: number): boolean {
   const i = s.towers.findIndex((t) => t.id === id)
   if (i < 0) return false
   const t = s.towers[i]
-  s.meters.cash += Math.round(towerValue(s, t) * 0.6)
-  s.events.push({ type: 'sell', x: t.x, y: t.y })
+  const refund = Math.round(towerValue(s, t) * 0.6)
+  s.meters.cash += refund
+  s.events.push({ type: 'sell', x: t.x, y: t.y, towerId: t.id, defId: t.def.id, refund })
   s.towers.splice(i, 1)
+  refreshPower(s)
   return true
 }
 
 /**
- * Deploy a checkpoint onto a placed rack. Open weights are free — deployment
- * costs nothing — but the rack must fit the model's VRAM and you must have
- * unlocked its architecture METHOD (MoE checkpoints need the MoE research,
- * reasoning checkpoints need the Reasoning research).
+ * Deploy a checkpoint onto a placed rack — between waves only. Open weights are free,
+ * so deployment costs nothing, but the rack must fit the model's VRAM (in its weight
+ * format), and loading new weights means draining the rack and restarting its inference
+ * engine: it cannot happen while traffic is live (a real engine cold start takes tens of
+ * seconds to minutes). The one exception is §4.10 Multi-LoRA serving: a checkpoint that
+ * shares the rack's base weights (a LoRA-family adapter of it, or its base) is already
+ * co-resident, so the swap is an adapter switch that works mid-wave — served unmerged
+ * (the S-LoRA kernel overhead) until the next build phase merges it.
  */
 export function deployModel(s: GameState, towerId: number, modelId: string): boolean {
   if (s.phase !== 'build' && s.phase !== 'wave') return false
@@ -91,10 +120,34 @@ export function deployModel(s: GameState, towerId: number, modelId: string): boo
   const model = resolveModel(s, modelId) // base OR a derived checkpoint (P3b)
   if (!model || t.modelId === modelId) return false
   if (!s.models[modelId]) return false // not owned (open models are owned from the start)
+  const hotSwap = s.phase === 'wave' && loraSiblings(s, t.modelId ? resolveModel(s, t.modelId) : null, model)
+  if (s.phase !== 'build' && !hotSwap) return false
   if (!methodsUnlocked(s, model)) return false // architecture method not researched yet
-  if (!serverFitsMemory(s, loadout(s, t.hwId, modelId))) return false
+  if (!serverFitsMemory(s, loadout(s, t.hwId, modelId, t.precision))) return false
   t.modelId = modelId
-  s.events.push({ type: 'train' })
+  t.loraHot = hotSwap
+  s.events.push({ type: 'deploy', towerId: t.id, modelId, x: t.x, y: t.y })
+  refreshPower(s)
+  return true
+}
+
+/**
+ * §4.5 set the weight format a rack serves its model in — between waves only (re-quantizing
+ * means reloading the weights). `undefined` = auto: the fastest researched format that costs
+ * no quality. An explicit format must be researched (FP4 also needs Blackwell hardware) or be
+ * the checkpoint's own release format, and the model must fit the rack in it: a lossy 4-bit
+ * format is how a checkpoint too big for a rack at full precision gets onto it, at its tax.
+ */
+export function setRackPrecision(s: GameState, towerId: number, fmt: WeightFormat | undefined): boolean {
+  if (s.phase !== 'build') return false
+  const t = s.towers.find((x) => x.id === towerId)
+  if (!t || t.def.kind !== 'server' || !t.hwId) return false
+  if (t.precision === fmt) return false
+  const lo = loadout(s, t.hwId, t.modelId, fmt)
+  if (fmt !== undefined && !formatAvailable(s, lo.hw, fmt, lo.model)) return false
+  if (lo.model && !serverFitsMemory(s, lo)) return false
+  t.precision = fmt
+  refreshPower(s)
   return true
 }
 
@@ -114,21 +167,25 @@ export function hardwareUpgradeCost(s: GameState, t: Tower): number {
   return Math.round((next.cost - cur.cost) * s.modifiers.buildCost)
 }
 
-/** Upgrade a placed rack to the next hardware tier, keeping its model. */
+/**
+ * Upgrade a placed rack to the next hardware tier, keeping its model — between waves
+ * only: new GPUs mean reloading the model onto them, which drains the rack.
+ */
 export function upgradeHardware(s: GameState, towerId: number): boolean {
-  if (s.phase !== 'build' && s.phase !== 'wave') return false
+  if (s.phase !== 'build') return false
   const t = s.towers.find((x) => x.id === towerId)
   if (!t) return false
   const next = nextHardware(t)
   if (!next) return false
-  // §6.5 hard gate (OQ-G8): cannot upgrade INTO a liquid-cooled tier (pod/superpod/
-  // giga) until a Liquid Cooling Loop exists — those racks cannot be cooled otherwise.
+  // §6.5 hard gate (OQ-G8): cannot upgrade INTO a liquid-cooled tier (the GB200 NVL72)
+  // until a Liquid Cooling Loop exists — that rack cannot be cooled otherwise.
   if (hwNeedsLiquid(next) && !hasLiquidLoop(s)) return false
   const cost = hardwareUpgradeCost(s, t)
   if (s.meters.cash < cost) return false
   s.meters.cash -= cost
   t.hwId = next.id
-  s.events.push({ type: 'place', x: t.x, y: t.y })
+  s.events.push({ type: 'upgrade', towerId: t.id, hwId: next.id, x: t.x, y: t.y })
+  refreshPower(s)
   return true
 }
 
@@ -142,12 +199,21 @@ export function buyUpgrade(s: GameState, id: string): boolean {
   s.meters.cash -= u.cashCost
   s.data -= u.dataCost
   s.upgrades[id] = cur + 1
-  s.events.push({ type: 'train' })
   return true
 }
 
 export function startGame(s: GameState): void {
   if (s.phase === 'menu') s.phase = 'build'
+}
+
+/** Whether a campaign wave index is an authored boss wave (endless surges carry no boss flag). */
+function isBossWave(index: number): boolean {
+  return CAMPAIGN_THEMES[index]?.boss ?? false
+}
+
+/** The single ingress lane a wave's traffic funnels into (authored surge or a concentration incident), if any. */
+export function waveSurgeLane(s: GameState, w: WaveDef): number | undefined {
+  return surgeLaneOf(w.groups, s.laneWindow)
 }
 
 export function startWave(s: GameState): boolean {
@@ -166,7 +232,12 @@ export function startWave(s: GameState): boolean {
   s.waveActive = true
   s.waveTime = 0
   s.waveStats = newWaveStats(s.waveIndex)
-  for (const t of s.towers) t.load = 0
+  for (const t of s.towers) {
+    t.load = 0
+    // the build phase merged any hot-swapped adapter and drained every prefill pool's queue
+    t.loraHot = false
+    t.prefillDebtSec = 0
+  }
   // fold the active incident modifiers into the runtime spawns: `volume` scales the
   // burst count (viral spike / DDoS) and `reward` scales the realised token price
   // and reward (enterprise demo / price war). The lane window + per-group lane pin
@@ -181,7 +252,12 @@ export function startWave(s: GameState): boolean {
     started: false,
   }))
   s.nextLaneId = 0
-  s.events.push({ type: 'wave-start', index: s.waveIndex })
+  s.events.push({
+    type: 'wave-start',
+    index: s.waveIndex,
+    boss: isBossWave(s.waveIndex),
+    surgeLane: waveSurgeLane(s, w),
+  })
   return true
 }
 
@@ -199,11 +275,15 @@ export function cycleRackRole(s: GameState, towerId: number): boolean {
   return true
 }
 
-/** Beat the boss, keep serving: flips the run into procedural endless waves. */
+/**
+ * Beat the boss, keep serving: flips the run into procedural endless waves, which resume
+ * at the wave-100 load (endless.ts), and telegraphs the first surge's incident.
+ */
 export function continueEndless(s: GameState): boolean {
   if (s.phase !== 'won' || s.endless) return false
   s.endless = true
   s.phase = 'build'
+  rollIncident(s)
   return true
 }
 

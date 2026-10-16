@@ -1,20 +1,16 @@
-import { CLEAR_BONUS_SCALE, SIM_DT } from '../config'
-import type { GameState, IncidentDef, ModifierTarget } from '../core/types'
+import { SIM_DT } from '../config'
+import type { GameState, IncidentDef, LoseMeter, ModifierTarget } from '../core/types'
+import { CAMPAIGN_THEMES, contractPayout } from './campaign'
 import { updateCombat } from './combat'
 import { INCIDENTS, WAVES, themedIncidentForWave } from './content'
 import { LANE_COUNT } from './pathing'
-import {
-  loadoutOf,
-  rackOperatingCostPerSec,
-  serverAggDecodeTokS,
-  serverTargets,
-} from './effects'
+import { loadoutOf, serverAggDecodeTokS, serverTargets, towerOpexPerSec } from './effects'
 import { updateMovement } from './movement'
-import { updatePower } from './power'
+import { refreshPower } from './power'
 import { updateResearch } from './research'
 import { allSpawned, updateSpawns } from './spawn'
 import { defaultModifiers } from './state'
-import { finalizeReport, pruneRecent, recordPowerCost } from './telemetry'
+import { finalizeReport, goodputPctOf, pruneRecent, recordOpex } from './telemetry'
 
 /** Advance the simulation by one fixed step. Only does work during a wave. */
 export function step(s: GameState, dt: number = SIM_DT): void {
@@ -22,7 +18,7 @@ export function step(s: GameState, dt: number = SIM_DT): void {
   s.time += dt
   s.waveTime += dt
 
-  updatePower(s)
+  refreshPower(s)
   updateResearch(s, dt)
   updateSpawns(s, dt)
   updateCombat(s, dt)
@@ -43,31 +39,37 @@ export function step(s: GameState, dt: number = SIM_DT): void {
 }
 
 /**
- * Real economy tick (§6.6 / §6.7 step 7). Operating cost is a REAL $/GPU-hr bill
- * by wall-clock — every ONLINE rack burns its rate whether it served anything or
- * not. Income is token-priced (charged in resolveServe). Because cost is fixed by
- * time and income is by tokens served, an idle / over-provisioned rack bleeds
- * credits → the utilization penalty EMERGES (no artificial ×10, §6.6).
+ * Real economy tick (§6.6 / §6.7 step 7). The operating bill runs by wall-clock in two
+ * lines, for every ONLINE rack whether it served anything or not:
+ *   · GPU-hours — the rack's real per-GPU-hour rate minus the electricity it embeds
+ *     (amortization, maintenance, colo, network);
+ *   · energy — the kW it actually draws (idle racks draw less; a requisitioned training
+ *     rack runs flat out) × PUE × $/kWh, the only line power-price incidents scale.
+ * The generative guardrail's own GPU rack pays both lines too. Income is token-priced
+ * (charged in resolveOutcome), so an idle / over-provisioned rack bleeds credits and the
+ * utilization penalty EMERGES (§6.6).
  *
- * Also updates the rolling `utilization` (served decode tok/s vs theoretical max)
- * and `fleetCapexUsd` telemetry. The power-price incident still scales the bill.
+ * Also updates the rolling `utilization` (served decode tok/s vs theoretical max) and
+ * `fleetCapexUsd` telemetry.
  */
 function updateEconomy(s: GameState, dt: number): void {
-  // dual clock: an online rack lives `dt` board seconds; its real $/GPU-hr bill is
-  // already mapped to board time and credits inside rackOperatingCostPerSec.
-  let opCost = 0
+  // dual clock: an online rack lives `dt` board seconds; its real $/hour bill is mapped to
+  // board time and credits (for all RACKS_PER_TILE real racks) inside the effects getters.
+  let gpuCost = 0
+  let energyCost = 0
   let fleetCapexUsd = 0
   let servedTokS = 0
   let theoreticalTokS = 0
   for (const t of s.towers) {
-    if (t.def.kind !== 'server') continue
-    const lo = loadoutOf(s, t)
-    if (lo.hw) fleetCapexUsd += lo.hw.capexUsd
     // a browned-out / frozen rack draws no operating bill (it is dark), but a
     // requisitioned (training) rack still burns — it is powered and computing.
-    if (!t.online || t.throttle <= 0) continue
-    if (lo.hw) opCost += rackOperatingCostPerSec(lo.hw) * dt
-    if (t.training || !lo.model) continue
+    const op = towerOpexPerSec(s, t)
+    gpuCost += op.gpu * dt
+    energyCost += op.energy * dt
+    fleetCapexUsd += op.capexUsd
+    if (t.def.kind !== 'server' || !t.online || t.throttle <= 0 || t.training) continue
+    const lo = loadoutOf(s, t)
+    if (!lo.hw || !lo.model) continue
     // utilization: a rack's theoretical max aggregate decode throughput vs how
     // much of its batch was actually busy last combat tick (§6.6).
     const maxBatch = serverTargets(s, lo)
@@ -75,9 +77,8 @@ function updateEconomy(s: GameState, dt: number): void {
     theoreticalTokS += roof
     servedTokS += roof * t.load
   }
-  opCost *= s.modifiers.powerPrice
-  s.meters.cash -= opCost
-  recordPowerCost(s, opCost)
+  s.meters.cash -= gpuCost + energyCost
+  recordOpex(s, gpuCost, energyCost)
   s.fleetCapexUsd = fleetCapexUsd
   const inst = theoreticalTokS > 0 ? servedTokS / theoreticalTokS : 0
   // rolling utilization (EMA) for telemetry — smooths the per-tick spikiness.
@@ -86,22 +87,26 @@ function updateEconomy(s: GameState, dt: number): void {
 
 function lose(s: GameState): void {
   s.phase = 'lost'
-  if (s.meters.cash < 0) s.message = 'lose.bankrupt'
-  else if (s.meters.trust <= 0) s.message = 'lose.trust'
-  else s.message = 'lose.sla'
-  s.events.push({ type: 'lose' })
+  const meter: LoseMeter = s.meters.cash < 0 ? 'cash' : s.meters.trust <= 0 ? 'trust' : 'sla'
+  s.message = meter === 'cash' ? 'lose.bankrupt' : meter === 'trust' ? 'lose.trust' : 'lose.sla'
+  s.events.push({ type: 'lose', meter })
 }
 
-/** Clear bonus in the real credit economy: the authored value × CLEAR_BONUS_SCALE. */
-function clearBonusOf(w: { clearBonus: number } | null | undefined): number {
-  return w ? Math.round(w.clearBonus * CLEAR_BONUS_SCALE) : 0
+/**
+ * The wave's SLA-contract payment (§6.6): the authored contract value × CLEAR_BONUS_SCALE ×
+ * the wave's Goodput — a customer pays for the share of its traffic that was served cleanly
+ * (on time, correct, safe, not wrongly refused, not dropped).
+ */
+function clearBonusOf(s: GameState, w: { clearBonus: number } | null | undefined): number {
+  if (!w) return 0
+  return contractPayout(w.clearBonus, s.waveStats ? goodputPctOf(s.waveStats) : 100)
 }
 
 function clearWave(s: GameState): void {
   s.waveActive = false
   s.phase = 'build'
   const w = s.currentWave ?? WAVES[s.waveIndex]
-  const bonus = clearBonusOf(w)
+  const bonus = clearBonusOf(s, w)
   if (w) {
     s.meters.cash += bonus
     s.stats.cashEarned += bonus
@@ -112,12 +117,15 @@ function clearWave(s: GameState): void {
   // clear the spent wave's incident state; rollIncident re-applies the next one.
   s.modifiers = defaultModifiers()
   s.laneWindow = []
-  s.events.push({ type: 'wave-clear', index: s.waveIndex })
+  s.events.push({ type: 'wave-clear', index: s.waveIndex, goodputPct: s.lastReport?.goodputPct })
+  refreshPower(s)
 
   // The authored campaign ends at the boss; endless mode just keeps going.
   if (!s.endless && s.waveIndex >= WAVES.length - 1) {
     s.phase = 'won'
     s.message = 'win.msg'
+    // nothing is coming: no incident is telegraphed until endless mode rolls its own
+    s.pendingIncident = null
     s.events.push({ type: 'win' })
     return
   }
@@ -125,41 +133,49 @@ function clearWave(s: GameState): void {
 }
 
 /**
- * Pick AND apply a telegraphed incident for the upcoming wave. The effect is live
- * immediately (during the build phase and the wave): `buildCost` raises the price
- * of racks the player is about to place, while `powerPrice`/`coolingCap`/
- * `safetyDamage`/`volume`/`reward` bite once the wave runs. It is cleared back to
- * defaults at the next wave-clear. (Previously the incident was only displayed and
- * never applied — a long-standing dead-effect bug, now fixed.)
+ * Pick AND apply a telegraphed incident for the upcoming wave (s.waveIndex + 1), then
+ * refresh the kW budget so a telegraphed power / cooling shock is visible in the build
+ * phase. The effect is live immediately (during the build phase and the wave):
+ * `buildCost` / `powerBuild` bite on what the player is about to place, while the rest
+ * (`powerPrice`, `powerCap`, `coolingCap`, `liquidCoolingCap`, `safetyDamage`, `slaDamage`,
+ * `volume`, `reward`) bite once the wave runs (the cooling and power caps also show in the
+ * build-phase kW budget). It is cleared back to defaults at the next
+ * wave-clear. Also called when a won run continues into endless mode.
  */
-function rollIncident(s: GameState): void {
+export function rollIncident(s: GameState): void {
   const next = s.waveIndex + 1
   s.pendingIncident = null
   if (next < 2) return // ease the player in
   let inc: IncidentDef | undefined
   // (1) a real-event wave forces its SIGNATURE incident (deterministic): the
-  //     DeepSeek price war, the EU AI Act audit, a grid power crunch, a viral melt.
+  //     DeepSeek price war, the EU AI Act audit, a grid emergency, a viral melt.
   const themedId = themedIncidentForWave(next)
   if (themedId) inc = INCIDENTS.find((i) => i.id === themedId)
   if (!inc) {
-    // (2) the final boss and every 10th wave otherwise carry a guaranteed HARD
-    //     incident; endless surges keep the every-10th cadence past the campaign.
+    // (2) a boss wave and every 10th wave otherwise carry a guaranteed HARD incident;
+    //     endless surges keep the every-10th cadence past the campaign.
     const oneBased = next + 1
+    const boss = CAMPAIGN_THEMES[next]?.boss ?? false
     const hardNight =
-      next === WAVES.length - 1 ||
-      oneBased % 10 === 0 ||
-      (s.endless && next >= WAVES.length && (next - WAVES.length) % 10 === 9)
+      boss || oneBased % 10 === 0 || (s.endless && next >= WAVES.length && (next - WAVES.length) % 10 === 9)
     if (hardNight) {
-      const hard = INCIDENTS.filter((i) => !i.good)
+      // a boss already brings its own volume spike, so its hard shock is an operating one
+      // (power, cooling, supply, price, safety, data) — never a second single-entry funnel
+      // or a volume surge on top of the boss's budget step
+      const hard = INCIDENTS.filter((i) => !i.good && !(boss && (i.concentrate || (i.mods.volume ?? 1) > 1)))
       inc = hard[s.rng.int(hard.length)]
     } else if (s.rng.chance(0.6)) {
       // (3) otherwise a 60% chance of a random incident — the per-run variability.
       inc = INCIDENTS[s.rng.int(INCIDENTS.length)]
     }
   }
-  if (!inc) return
-  s.pendingIncident = inc
-  applyIncident(s, inc)
+  if (inc) {
+    s.pendingIncident = inc
+    applyIncident(s, inc)
+    s.events.push({ type: 'incident', id: inc.id })
+  }
+  // a telegraphed cooling / power incident is live in the build phase: show its real kW now
+  refreshPower(s)
 }
 
 /** Apply a telegraphed incident's multipliers, lane concentration, and one-shot effect. */

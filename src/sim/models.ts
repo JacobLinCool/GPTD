@@ -9,9 +9,11 @@ import type {
   PostTrainMeta,
   PostTrainMethod,
   PostTrainTarget,
+  ThinkingSupport,
 } from '../core/types'
 import { POSTTRAIN_COMPUTE_SCALE } from '../config'
-import { DEFAULT_MODEL_ID, METHOD_RECIPES, MODEL_DEFS } from './content'
+import { THINK_TOKENS_FALLBACK } from './calibrate'
+import { DEFAULT_MODEL_ID, METHOD_RECIPES, MODEL_DEFS, MODEL_LIST } from './content'
 
 /**
  * The SINGLE model-resolution point (R7 / C4). Derived (player-created)
@@ -58,14 +60,53 @@ export function targetAxis(target: PostTrainTarget): CapabilityAxis {
   return gainAxis(target) ?? 'general'
 }
 
+/** A body may be trained up to this far past the best base model at most twice its size. */
+export const CAPACITY_MARGIN = 6
+/** Peers that bound a body's capacity: roster base models up to this multiple of its total params. */
+export const CAPACITY_PEER_SIZE = 2
+/** The roster is fixed after load, so each (body size, axis) ceiling is computed once. */
+const CEILING_MEMO = new Map<string, number>()
+
+/**
+ * §1.4 the CAPACITY CEILING of a deploy body on one axis: post-training cannot push a
+ * checkpoint past what models of its size class reach. It is the best qualityBy[axis]
+ * among the roster's BASE models (never derived ones) with at most CAPACITY_PEER_SIZE ×
+ * its total params, plus CAPACITY_MARGIN. It depends only on the body, so stacking runs
+ * cannot ratchet it (RL/distill gains on small models are bounded by base capacity —
+ * the DeepSeek-R1 distill results; agentic/SWE is the axis where scale still separates).
+ */
+export function capacityCeiling(paramsTotalB: number, axis: CapabilityAxis): number {
+  const key = `${paramsTotalB}|${axis}`
+  const hit = CEILING_MEMO.get(key)
+  if (hit !== undefined) return hit
+  let best = 0
+  for (const m of MODEL_LIST) {
+    if (m.paramsTotalB > CAPACITY_PEER_SIZE * paramsTotalB) continue
+    if (m.qualityBy[axis] > best) best = m.qualityBy[axis]
+  }
+  const ceil = Math.min(Q_HI, best + CAPACITY_MARGIN)
+  CEILING_MEMO.set(key, ceil)
+  return ceil
+}
+
+/** The recipe's gain on its axis BEFORE the body's capacity ceiling (depth damp + headroom cap only). */
+function uncappedGain(base: ModelDef, recipe: MethodRecipe, axis: CapabilityAxis, effort: number, depth: number): number {
+  const depthDamp = 1 / (1 + 0.15 * depth)
+  const rawGain = recipe.gainScale * Math.sqrt(effort) * depthDamp
+  const headroom = Math.max(0, (Q_HI - base.qualityBy[axis]) / Q_HI)
+  return Math.min(rawGain, recipe.gainCap * headroom)
+}
+
 /**
  * §1.4 — the quality delta a recipe produces on its target axis.
- *   depthDamp = 1 / (1 + 0.15 × depth)          // deep chains: diminishing returns
- *   rawGain   = gainScale × √effort × depthDamp  // curated-data returns + depth decay
- *   headroom  = (130 − base[axis]) / 130         // harder to push near the ceiling
- *   gain      = min(rawGain, gainCap × headroom) // PEFT capacity cap (cpt's high cap can exceed it)
+ *   depthDamp = 1 / (1 + 0.15 × depth)            // deep chains: diminishing returns
+ *   rawGain   = gainScale × √effort × depthDamp    // curated-data returns + depth decay
+ *   headroom  = (130 − base[axis]) / 130           // harder to push near the ceiling
+ *   gain      = min(rawGain, gainCap × headroom)   // PEFT capacity cap (cpt's high cap can exceed it)
+ *   gain      = min(gain, ceil(body) − base[axis]) // the body's capacity ceiling (never below 0)
  * Returns the positive gain to add to the target axis (≥0). A `safety` target has
  * no quality axis (gainAxis null) → 0 here (the gain is the alignment.safety boost).
+ * Distillation is bounded by its own student-capacity cap instead (computeDerivedFields).
  */
 export function deriveQuality(
   base: ModelDef,
@@ -76,12 +117,36 @@ export function deriveQuality(
 ): number {
   const axis = gainAxis(target)
   if (axis === null) return 0
-  const depthDamp = 1 / (1 + 0.15 * depth)
-  const rawGain = recipe.gainScale * Math.sqrt(effort) * depthDamp
-  const headroom = Math.max(0, (Q_HI - base.qualityBy[axis]) / Q_HI)
-  const gain = Math.min(rawGain, recipe.gainCap * headroom)
+  let gain = uncappedGain(base, recipe, axis, effort, depth)
+  if (recipe.id !== 'distill') gain = Math.min(gain, capacityCeiling(base.paramsTotalB, axis) - base.qualityBy[axis])
   return Math.max(0, gain)
 }
+
+/**
+ * §2.1/§2.8 catastrophic forgetting compounds with lineage depth: every run on an
+ * already-derived checkpoint forgets more of what the base knew (×1 for the first run,
+ * ×1.5 for the second, ×2 for the third…), so a deep chain erodes its non-target axes.
+ */
+export function forgetDepthMul(depth: number): number {
+  return 1 + 0.5 * Math.max(0, depth - 1)
+}
+
+/**
+ * The lineage depth a run starts from: the base's, or for a merge the DEEPER of the two
+ * parents — the averaged weights carry the longer chain's history whichever parent is
+ * listed first, so a merge's depth, cost and later forgetting never depend on the order.
+ */
+export function runBaseDepth(base: ModelDef, other: ModelDef | null): number {
+  return Math.max(base.lineage?.depth ?? 0, other?.lineage?.depth ?? 0)
+}
+
+/**
+ * The lowest wrongful-refusal rate safety post-training can reach (§2.4). Even the
+ * safe-completion leaders still refuse a few borderline prompts (XSTest / OR-Bench never
+ * measure zero; the roster's best is the gpt-oss tier at ~0.03), so Constitutional AI can
+ * cut over-refusal toward this floor but never below it.
+ */
+export const OVERREF_FLOOR = 0.02
 
 /** §1.4 alignment-tax weight by method (rlhf is the crudest → highest tax). */
 function alignmentTaxFactor(method: PostTrainMethod): number {
@@ -108,8 +173,9 @@ export function postTrainSizeFactor(activeB: number): number {
  * already-derived checkpoint costs progressively MORE (×(1 + 0.6·baseDepth)). `deriveQuality`
  * already DAMPS the gain with depth (1/(1+0.15·depth)); pairing a rising cost with the
  * falling gain makes a 2nd/3rd stacked GRPO a real diminishing-returns INVESTMENT (data +
- * compute), not a free way to climb past a capability wall. baseDepth = the base's lineage
- * depth (0 for an original base, 1 for a once-derived checkpoint, …).
+ * compute), not a free way to climb past a capability wall. baseDepth = runBaseDepth: the
+ * base's lineage depth (0 for an original base, 1 for a once-derived checkpoint, …), or the
+ * deeper parent's for a merge.
  */
 function depthSurcharge(baseDepth: number): number {
   return 1 + 0.6 * Math.max(0, baseDepth)
@@ -163,6 +229,16 @@ export function postTrainDataCost(recipe: MethodRecipe, effort: number, baseDept
 /** The 5 discrete effort notches (§1.4 [fix M9]); 1.0 is the default. */
 export const EFFORT_NOTCHES = [0.25, 0.5, 1.0, 1.5, 2.0] as const
 
+/**
+ * The Data a run on these bases costs up front (a merge partner's depth counts too) — the
+ * one rule startPostTrain charges and the UI / bridge rejection reasons quote.
+ */
+export function postTrainRunDataCost(s: GameState, baseIds: string[], recipe: MethodRecipe, effort: number): number {
+  const base = resolveModel(s, baseIds[0] ?? '')
+  const other = recipe.id === 'merge' ? resolveModel(s, baseIds[1] ?? '') : null
+  return postTrainDataCost(recipe, effort, base ? runBaseDepth(base, other) : 0, base?.paramsTotalB ?? 8)
+}
+
 /** A short base label for the derived display name (drops the developer prefix where obvious). */
 function baseShort(m: ModelDef): string {
   return m.name
@@ -203,20 +279,46 @@ export interface DerivedFields {
   paramsTotalB: number
   paramsActiveB: number
   isMoE: boolean
+  /** §1.4 thinking support: inherited, or 'always' when a reasoning run teaches an instruct model to think. */
+  thinking: ThinkingSupport
   isReasoning: boolean
+  thinkTokens: number
   quality: number
   qualityBy: Record<CapabilityAxis, number>
+  /** a hybrid's instant-mode vector after the run (the run's per-axis change applied to the base's). */
+  qualityByInstant?: Record<CapabilityAxis, number>
   layers: number
+  kvLayers: number
   kvHeads: number
   headDim: number
   attn: ModelDef['attn']
-  weightBytes: 2 | 1 | 0.5
+  kvBytesPerToken: number
+  kvStateMbPerReq: number
+  nativeWeightBytes: number
   contextWindowK: number
+  /** §1.2 long-context skill: a body keeps its own; a distilled student or a merge keeps the weaker one. */
+  longCtx: number
   alignment: AlignmentProfile
   instructFollow: number
   desc: string
-  /** the resulting lineage depth (base depth + 1). */
+  /** the resulting lineage depth (runBaseDepth + 1: the base's, or a merge's deeper parent's, + 1). */
   depth: number
+}
+
+/**
+ * The vector a checkpoint answers instantly with: a hybrid's instant-mode vector, a 'never'
+ * model's only one; an 'always' model has none (it cannot answer without thinking).
+ */
+function instantVector(m: ModelDef): Record<CapabilityAxis, number> | undefined {
+  return m.qualityByInstant ?? (m.thinking === 'never' ? m.qualityBy : undefined)
+}
+
+/**
+ * §2.6 the thinking support of a weight average: parents that agree keep it; averaging a
+ * thinker with an instruct sibling (or with a hybrid) gives a checkpoint that can do both.
+ */
+function mergedSupport(a: ThinkingSupport, b: ThinkingSupport): ThinkingSupport {
+  return a === b ? a : 'hybrid'
 }
 
 /**
@@ -236,13 +338,14 @@ export function computeDerivedFields(
   const method = recipe.id
   // the quality axis the gain lands on (null for safety — its gain is alignment.safety).
   const axis = gainAxis(target)
-  const depth = (base.lineage?.depth ?? 0) + 1
+  const baseDepth = runBaseDepth(base, method === 'merge' ? other : null)
+  const depth = baseDepth + 1
 
   // --- qualityBy (snapshot) ---
   const qualityBy: Record<CapabilityAxis, number> = { ...base.qualityBy }
 
   if (method === 'merge' && other) {
-    // merge: average the two upstreams' axes — no gain, no forgetting.
+    // merge: average the two same-base upstreams' axes — no gain, no forgetting.
     for (const a of CAP_AXES) qualityBy[a] = clampQ((base.qualityBy[a] + other.qualityBy[a]) / 2)
   } else {
     if (axis !== null) {
@@ -255,8 +358,9 @@ export function computeDerivedFields(
       const tax = recipe.taxScale * alignmentTaxFactor(method) * Math.sqrt(effort)
       if (axis !== 'general') qualityBy.general = clampQ(qualityBy.general - tax)
     }
-    // catastrophic forgetting (§2.1/§2.8): every NON-target capability axis drifts down.
-    const forget = recipe.forgetScale * FORGET_SPREAD * Math.sqrt(effort)
+    // catastrophic forgetting (§2.1/§2.8): every NON-target capability axis drifts down,
+    // more the deeper the chain.
+    const forget = recipe.forgetScale * FORGET_SPREAD * Math.sqrt(effort) * forgetDepthMul(depth)
     if (forget > 0) {
       for (const a of CAP_AXES) {
         if (a === axis) continue
@@ -265,17 +369,56 @@ export function computeDerivedFields(
     }
   }
 
-  // --- internal state (§3): alignment / instructFollow / isReasoning ---
+  // --- §1.4 the instant-mode vector of a hybrid: the run moves it by the same per-axis amount ---
+  const baseInstant = instantVector(base)
+  let qualityByInstant: Record<CapabilityAxis, number> | undefined
+  if (method === 'merge' && other) {
+    // a weight average answers instantly with the parents' instant paths. When only one parent has
+    // one, that path keeps whatever the averaging cost its owner (a merge never answers instantly
+    // better than the parent that supplies the instant path, nor above the merged thinking vector
+    // where that parent's path was its thinking vector).
+    const own = (
+      [
+        [base, baseInstant],
+        [other, instantVector(other)],
+      ] as const
+    ).filter((p): p is readonly [ModelDef, Record<CapabilityAxis, number>] => !!p[1])
+    if (own.length === 2) qualityByInstant = avgVec(own[0][1], own[1][1])
+    else if (own.length === 1) {
+      const [owner, path] = own[0]
+      qualityByInstant = {} as Record<CapabilityAxis, number>
+      for (const a of CAP_AXES) qualityByInstant[a] = clampQ(path[a] + Math.min(0, qualityBy[a] - owner.qualityBy[a]))
+    }
+  } else if (baseInstant) {
+    qualityByInstant = {} as Record<CapabilityAxis, number>
+    for (const a of CAP_AXES) qualityByInstant[a] = clampQ(baseInstant[a] + (qualityBy[a] - base.qualityBy[a]))
+  }
+
+  // --- internal state (§3): alignment / instructFollow / thinking support ---
   const alignment: AlignmentProfile = { ...base.alignment }
   let instructFollow = base.instructFollow
-  let isReasoning = base.isReasoning
+  let thinking: ThinkingSupport = base.thinking
 
-  if (target === 'safety' || method === 'rlhf' || method === 'cai') {
-    const safetyGain = (method === 'rlhf' ? 28 : method === 'cai' ? 26 : 18) * Math.sqrt(effort)
+  if (method === 'merge' && other) {
+    // weight averaging interpolates alignment too (DOSSIER §2.6): the merged checkpoint
+    // lands at the mean safety / over-refusal / instruction-following of its parents —
+    // never one parent's profile verbatim. A refusal style survives only if both share it.
+    alignment.safety = (base.alignment.safety + other.alignment.safety) / 2
+    alignment.overRefusal = (base.alignment.overRefusal + other.alignment.overRefusal) / 2
+    alignment.refusalStyle =
+      base.alignment.refusalStyle === other.alignment.refusalStyle ? base.alignment.refusalStyle : 'hard-refusal'
+    instructFollow = (base.instructFollow + other.instructFollow) / 2
+  } else if (target === 'safety' || method === 'rlhf' || method === 'cai') {
+    // diminishing returns down a chain, like the quality gain: the first run on a checkpoint
+    // lands the full effect, each further stacked safety run less (1 / (1 + 0.15 × base depth))
+    const alignDamp = 1 / (1 + 0.15 * baseDepth)
+    const safetyGain = (method === 'rlhf' ? 28 : method === 'cai' ? 26 : 18) * Math.sqrt(effort) * alignDamp
     alignment.safety = Math.min(100, alignment.safety + safetyGain)
     if (method === 'cai') {
-      // CAI is a safe-completion Pareto gain: REDUCES over-refusal (§2.4).
-      alignment.overRefusal = Math.max(0, alignment.overRefusal - 0.04 * Math.sqrt(effort))
+      // CAI is a safe-completion Pareto gain: REDUCES over-refusal (§2.4) — toward the
+      // realistic floor, never below it (and never raising a base already under it).
+      const cut = 0.04 * Math.sqrt(effort) * alignDamp
+      alignment.overRefusal = Math.max(Math.min(OVERREF_FLOOR, alignment.overRefusal), alignment.overRefusal - cut)
       alignment.refusalStyle = 'safe-completion'
     } else {
       // crude RLHF / safety-SFT raises over-refusal (§2.4 tension).
@@ -284,55 +427,56 @@ export function computeDerivedFields(
     }
   }
   if (method === 'sft') instructFollow = Math.min(100, instructFollow + 8 * Math.sqrt(effort))
-  if (method === 'grpo' || (target === 'reasoning' && method !== 'merge')) isReasoning = true
+  // a reasoning run teaches an instruct model to think (DeepSeek-R1 from V3): the result is a
+  // dedicated thinker; a hybrid keeps its off switch, a thinker stays one
+  if ((method === 'grpo' || (target === 'reasoning' && method !== 'merge')) && thinking === 'never') thinking = 'always'
 
   // --- deployment fields (§4.8/§5.6/§5.7): only distill / qat / merge reshape ---
-  let paramsTotalB = base.paramsTotalB
-  let paramsActiveB = base.paramsActiveB
-  let isMoE = base.isMoE
-  let layers = base.layers
-  let kvHeads = base.kvHeads
-  let headDim = base.headDim
-  let attn = base.attn
-  let weightBytes = base.weightBytes
+  let body: DeployBody = bodyOf(base)
   let contextWindowK = base.contextWindowK
+  let longCtx = base.longCtx
 
   if (method === 'distill') {
     // swap to a smaller STUDENT base's deploy fields + cap qualityBy at min(teacher, student capacity).
     const student = pickDistillStudent(base)
-    paramsTotalB = student.paramsTotalB
-    paramsActiveB = student.paramsActiveB
-    isMoE = student.isMoE
-    layers = student.layers
-    kvHeads = student.kvHeads
-    headDim = student.headDim
-    attn = student.attn
-    weightBytes = student.weightBytes
+    body = bodyOf(student)
     contextWindowK = Math.min(contextWindowK, student.contextWindowK)
-    // student-capacity cap: the small body can't hold the full teacher signal.
+    longCtx = Math.min(longCtx, student.longCtx)
+    // student-capacity cap: the small body can't hold the full teacher signal (in either mode).
+    // The student imitates the teacher's answers, so it inherits the teacher's thinking support.
+    const studentInstant = instantVector(student) ?? student.qualityBy
     for (const a of CAP_AXES) {
       const cap = Math.min(base.qualityBy[a], student.qualityBy[a] + 18)
       qualityBy[a] = clampQ(Math.min(qualityBy[a], cap))
+      if (qualityByInstant && baseInstant) {
+        const capI = Math.min(baseInstant[a], studentInstant[a] + 18)
+        qualityByInstant[a] = clampQ(Math.min(qualityByInstant[a], capI))
+      }
     }
   } else if (method === 'qat') {
-    weightBytes = 0.5
-    for (const a of CAP_AXES) qualityBy[a] = clampQ(qualityBy[a] - 2)
-  } else if (method === 'merge' && other) {
-    // a merge inherits the larger of the two bodies (the union must fit).
-    if (other.paramsTotalB > paramsTotalB) {
-      paramsTotalB = other.paramsTotalB
-      paramsActiveB = other.paramsActiveB
-      isMoE = other.isMoE
-      layers = other.layers
-      kvHeads = other.kvHeads
-      headDim = other.headDim
-      attn = other.attn
+    // trained AT 4-bit: the checkpoint's release precision is now INT4 (no PTQ tax there).
+    body = { ...body, nativeWeightBytes: 0.5 }
+    for (const a of CAP_AXES) {
+      qualityBy[a] = clampQ(qualityBy[a] - 2)
+      if (qualityByInstant) qualityByInstant[a] = clampQ(qualityByInstant[a] - 2)
     }
-    isMoE = isMoE || other.isMoE
-    isReasoning = isReasoning || other.isReasoning
+  } else if (method === 'merge' && other) {
+    // both parents share one body (mergeCompatible); the merge is materialized at the
+    // higher of the two release precisions (averaging dequantizes a low-bit parent).
+    body = { ...body, nativeWeightBytes: Math.max(base.nativeWeightBytes, other.nativeWeightBytes) }
+    thinking = mergedSupport(base.thinking, other.thinking)
     contextWindowK = Math.min(contextWindowK, other.contextWindowK)
+    longCtx = Math.min(longCtx, other.longCtx)
   }
+  // only a hybrid keeps a separate instant-mode vector (a 'never' model's IS its qualityBy)
+  if (thinking !== 'hybrid') qualityByInstant = undefined
+  const isReasoning = thinking !== 'never'
+  // a run that teaches thinking gives the checkpoint a thinking budget; a merge keeps the larger.
+  let thinkTokens = method === 'merge' && other ? Math.max(base.thinkTokens, other.thinkTokens) : base.thinkTokens
+  if (isReasoning && thinkTokens === 0) thinkTokens = THINK_TOKENS_FALLBACK
+  if (!isReasoning) thinkTokens = 0
 
+  const { paramsTotalB } = body
   const tier = pickTier(qualityBy, paramsTotalB)
   const quality = Math.max(...CAP_AXES.map((a) => qualityBy[a]))
   const spec = bestSpec(qualityBy)
@@ -350,23 +494,93 @@ export function computeDerivedFields(
     tier,
     variant: base.variant,
     spec,
-    paramsTotalB,
-    paramsActiveB,
-    isMoE,
+    ...body,
+    thinking,
     isReasoning,
+    thinkTokens,
     quality,
     qualityBy,
-    layers,
-    kvHeads,
-    headDim,
-    attn,
-    weightBytes,
+    ...(qualityByInstant ? { qualityByInstant } : {}),
     contextWindowK,
+    longCtx,
     alignment,
     instructFollow,
     desc,
     depth,
   }
+}
+
+/** The per-axis mean of two capability vectors (a weight average, §2.6). */
+function avgVec(a: Record<CapabilityAxis, number>, b: Record<CapabilityAxis, number>): Record<CapabilityAxis, number> {
+  const out = {} as Record<CapabilityAxis, number>
+  for (const k of CAP_AXES) out[k] = clampQ((a[k] + b[k]) / 2)
+  return out
+}
+
+/** The deploy body a derived checkpoint inherits as a unit: size, KV layout, release precision. */
+type DeployBody = Pick<
+  ModelDef,
+  'paramsTotalB' | 'paramsActiveB' | 'isMoE' | 'layers' | 'kvLayers' | 'kvHeads' | 'headDim' | 'attn' | 'kvBytesPerToken' | 'kvStateMbPerReq' | 'nativeWeightBytes'
+>
+function bodyOf(m: ModelDef): DeployBody {
+  return {
+    paramsTotalB: m.paramsTotalB,
+    paramsActiveB: m.paramsActiveB,
+    isMoE: m.isMoE,
+    layers: m.layers,
+    kvLayers: m.kvLayers,
+    kvHeads: m.kvHeads,
+    headDim: m.headDim,
+    attn: m.attn,
+    kvBytesPerToken: m.kvBytesPerToken,
+    kvStateMbPerReq: m.kvStateMbPerReq,
+    nativeWeightBytes: m.nativeWeightBytes,
+  }
+}
+
+/**
+ * The roster base a checkpoint descends from: follow each derived model's first parent
+ * back to a base (sim fields only — `lineage`, never `m.real`).
+ */
+export function lineageRoot(s: GameState, m: ModelDef): ModelDef {
+  let cur = m
+  for (let guard = 0; guard < 64 && cur.lineage; guard++) {
+    const parent = resolveModel(s, cur.lineage.baseModelIds[0])
+    if (!parent || parent === cur) break
+    cur = parent
+  }
+  return cur
+}
+
+/** Why two checkpoints cannot be weight-averaged (null = they can). */
+export type MergeBlock = 'missing' | 'self' | 'root' | 'body'
+
+/**
+ * §2.6 weight averaging only works across fine-tunes of ONE base (model soups / TIES /
+ * DARE): the two checkpoints must be distinct, descend from the same roster base, and
+ * share an identical body (params, layers, KV heads, head dim, attention) — a distilled
+ * student or a different architecture has no weights to average with.
+ */
+export function mergeBlock(s: GameState, aId: string, bId: string | undefined): MergeBlock | null {
+  if (!bId) return 'missing'
+  if (aId === bId) return 'self'
+  const a = resolveModel(s, aId)
+  const b = resolveModel(s, bId)
+  if (!a || !b) return 'missing'
+  if (lineageRoot(s, a).id !== lineageRoot(s, b).id) return 'root'
+  const same =
+    a.paramsTotalB === b.paramsTotalB &&
+    a.paramsActiveB === b.paramsActiveB &&
+    a.layers === b.layers &&
+    a.kvHeads === b.kvHeads &&
+    a.headDim === b.headDim &&
+    a.attn === b.attn
+  return same ? null : 'body'
+}
+
+/** Can these two checkpoints be merged (same base, same body, distinct)? */
+export function mergeCompatible(s: GameState, aId: string, bId: string | undefined): boolean {
+  return mergeBlock(s, aId, bId) === null
 }
 
 /**
@@ -381,11 +595,12 @@ export function deriveModel(s: GameState, meta: PostTrainMeta): ModelDef | null 
   if (!recipe) return null
   const base = resolveModel(s, meta.baseIds[0])
   if (!base) return null
-  // merge needs a second upstream model; everyone else has exactly one base.
-  const other = meta.method === 'merge' ? resolveModel(s, meta.baseIds[1] ?? meta.baseIds[0]) : null
-  if (meta.method === 'merge' && !other) return null
+  // merge needs a second, same-base upstream model; everyone else has exactly one base.
+  const other = meta.method === 'merge' ? resolveModel(s, meta.baseIds[1] ?? '') : null
+  if (meta.method === 'merge' && (!other || !mergeCompatible(s, meta.baseIds[0], meta.baseIds[1]))) return null
 
   const { method, target, effort } = meta
+  if (!Number.isFinite(effort) || effort <= 0) return null // startPostTrain admits only the effort notches
   const f = computeDerivedFields(base, recipe, target, effort, other)
 
   const lineage: Lineage = {
@@ -397,7 +612,7 @@ export function deriveModel(s: GameState, meta: PostTrainMeta): ModelDef | null 
     spent: {
       data: meta.dataSpent,
       compute: Math.round(
-        postTrainComputeCost(recipe, base.paramsActiveB, effort, base.lineage?.depth ?? 0, base.paramsTotalB),
+        postTrainComputeCost(recipe, base.paramsActiveB, effort, runBaseDepth(base, other), base.paramsTotalB),
       ),
       waves: 0,
     },
@@ -416,15 +631,22 @@ export function deriveModel(s: GameState, meta: PostTrainMeta): ModelDef | null 
     paramsTotalB: f.paramsTotalB,
     paramsActiveB: f.paramsActiveB,
     isMoE: f.isMoE,
+    thinking: f.thinking,
     isReasoning: f.isReasoning,
+    thinkTokens: f.thinkTokens,
     quality: f.quality,
     qualityBy: f.qualityBy,
+    ...(f.qualityByInstant ? { qualityByInstant: f.qualityByInstant } : {}),
     layers: f.layers,
+    kvLayers: f.kvLayers,
     kvHeads: f.kvHeads,
     headDim: f.headDim,
     attn: f.attn,
-    weightBytes: f.weightBytes,
+    kvBytesPerToken: f.kvBytesPerToken,
+    kvStateMbPerReq: f.kvStateMbPerReq,
+    nativeWeightBytes: f.nativeWeightBytes,
     contextWindowK: f.contextWindowK,
+    longCtx: f.longCtx,
     alignment: f.alignment,
     instructFollow: f.instructFollow,
     desc: f.desc,
@@ -460,6 +682,13 @@ export interface StudioPreview {
   computeCost: number
   /** estimated waves to finish, given the fleet's requisition throughput (0 if no fleet). */
   estWaves: number
+  /** why a merge cannot run with this partner (null when not a merge, or compatible). */
+  mergeBlock: MergeBlock | null
+  /**
+   * The body's capacity ceiling on the target axis WHEN it limits this run (the recipe
+   * would add more than the body can hold), else null — so the UI can say why the gain is small.
+   */
+  ceiling: { axis: CapabilityAxis; value: number } | null
   /** alignment.safety / over-refusal movement (for the safety chips). */
   safetyDelta: number
   overRefusalDelta: number
@@ -484,22 +713,33 @@ export function studioPreview(
   const recipe = METHOD_RECIPES[method]
   const base = resolveModel(s, baseId)
   if (!recipe || !base) return null
-  const other = method === 'merge' ? resolveModel(s, otherId ?? baseId) : null
-  if (method === 'merge' && !other) return null
+  // a merge previews only with a compatible same-base partner; otherwise it shows the base
+  // unchanged with ok:false and the reason, so the UI can say which partner to pick.
+  const block = method === 'merge' ? mergeBlock(s, baseId, otherId) : null
+  const other = method === 'merge' && !block && otherId ? resolveModel(s, otherId) : null
 
   const fields = computeDerivedFields(base, recipe, target, effort, other)
   const before = { ...base.qualityBy }
   const delta = {} as Record<CapabilityAxis, number>
   for (const a of CAP_AXES) delta[a] = fields.qualityBy[a] - before[a]
 
-  const previewDepth = base.lineage?.depth ?? 0
+  const previewDepth = runBaseDepth(base, other)
   const dataCost = postTrainDataCost(recipe, effort, previewDepth, base.paramsTotalB)
   const computeCost = Math.max(1, postTrainComputeCost(recipe, base.paramsActiveB, effort, previewDepth, base.paramsTotalB))
   const estWaves = requisitionPerWave > 0 ? Math.max(1, Math.ceil(computeCost / requisitionPerWave)) : 0
 
+  // does the body's capacity ceiling clip this run's gain? (distill / merge have their own rules)
+  const axis = gainAxis(target)
+  let ceiling: StudioPreview['ceiling'] = null
+  if (axis && method !== 'merge' && method !== 'distill') {
+    const value = capacityCeiling(base.paramsTotalB, axis)
+    const uncapped = uncappedGain(base, recipe, axis, effort, previewDepth + 1)
+    if (base.qualityBy[axis] + uncapped > value + 1e-9) ceiling = { axis, value }
+  }
+
   const okTarget = recipe.allowedTargets.includes(target)
   return {
-    ok: okTarget,
+    ok: okTarget && !block,
     base,
     other,
     fields,
@@ -508,6 +748,8 @@ export function studioPreview(
     dataCost,
     computeCost,
     estWaves,
+    mergeBlock: block,
+    ceiling,
     safetyDelta: fields.alignment.safety - base.alignment.safety,
     overRefusalDelta: fields.alignment.overRefusal - base.alignment.overRefusal,
   }
