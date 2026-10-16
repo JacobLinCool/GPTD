@@ -1,10 +1,48 @@
-import { GRID_COLS, GRID_ROWS, LAT_CLASS_SLO, RACK_UTILIZATION, SIM_DT } from '../config'
-import type { CapabilityAxis, GameState, ModelDef, Tower } from '../core/types'
+/* ------------------------------------------------------------------ *
+ *  DEMO AUTOPLAY — the production heuristic that plays the campaign.   *
+ * ------------------------------------------------------------------ *
+ *
+ * It plays the way a careful operator does, using only the actions and the read-only
+ * forecasts a player has (the next-wave preview, the serving math the deploy picker shows),
+ * never a privileged view of the dice:
+ *
+ *   1. forecast the next wave: its archetypes, era token sizes, quality lines and hazards;
+ *   2. keep a cash reserve sized to the wave's projected bill, then spend on what the
+ *      forecast needs — the support buildings (Lab, guards, routers, caches), more racks
+ *      (and extra ones along a telegraphed single-entry surge's lane), faster racks in place
+ *      (the slowest first, then 8-GPU boxes where every lane meets the core), and the power /
+ *      cooling they draw;
+ *   3. research the serving stack in dependency order, red-teaming the guards before the
+ *      prompt-injection era and the parallelism a big checkpoint needs before it is deployed;
+ *   4. post-train specialists in the Studio (a safe-completion workhorse, an agentic and a
+ *      reasoning specialist on a fast MoE body);
+ *   5. deploy onto every rack tier the checkpoint that serves the forecast best — judged per
+ *      archetype in the mode the model answers it in (a hybrid answers interactive traffic
+ *      instantly), against the latency bounds of a busy rack, the window and KV gates, the
+ *      quality line (long-context penalty included) and its alignment — splitting a tier's
+ *      racks between checkpoints when no single one covers the whole mix, so the routers
+ *      have a fast rack and a capable rack to dispatch between.
+ *
+ * The campaign is an elimination gauntlet: the demo is expected to get deep, not to win.
+ */
+
+import { GRID_COLS, GRID_ROWS, LAT_CLASS_SLO, SIM_DT, SIM_TIME_SCALE, TILE } from '../config'
+import type {
+  GameState,
+  ModelDef,
+  RequestTypeDef,
+  SafetyHazard,
+  SafetyProfile,
+  Tower,
+  WeightFormat,
+} from '../core/types'
 import {
+  buildCost,
   continueEndless,
-  cycleRackRole,
   deployModel,
   hardwareUpgradeCost,
+  sellTower,
+  setRackPrecision,
   startGame,
   startWave,
   tryBuild,
@@ -14,24 +52,42 @@ import {
   HARDWARE_DEFS,
   HARDWARE_TIERS,
   METHOD_RECIPES,
-  RESEARCH_DEFS,
   REQUEST_TYPES,
-  RESEARCH_TARGET_SECONDS,
+  RESEARCH_DEFS,
   TOWER_DEFS,
   WAVES,
 } from './content'
 import {
+  admissionDelaySec,
   answerMode,
+  cacheChance,
+  cohortFit,
+  cohortKvGb,
+  cohortPrefillSec,
+  formatAvailable,
+  guardLatencyMs,
   hiddenTokensFor,
+  isBlackwell,
+  kvPerReqGb,
+  laneStep,
+  type Loadout,
   loadout,
-  qualityIn,
+  loadoutOf,
+  longContextPenalty,
+  prefillTokS,
+  prefixHitChance,
+  rackPlan,
+  serverCtxWindowTokens,
   serverDeployable,
-  serverFitsMemory,
-  serverPerUserDecodeTokS,
+  serverQualityVs,
+  servingFormat,
+  specTokensFor,
+  spritesPerLane,
 } from './effects'
 import { computeDerivedFields, resolveModel } from './models'
-import { CORE_TILE, isBuildable, isPathTile } from './pathing'
+import { CORE_TILE, isBuildable, isPathTile, LANE_PATHS, tileCenter } from './pathing'
 import { coolingPools, towerHeatKw, towerLiquidCooled, towerPowerKw, updatePower } from './power'
+import { fleetBurnPerSec, previewNextWave } from './preview'
 import {
   canPostTrain,
   researchOwned,
@@ -40,15 +96,18 @@ import {
   startPostTrain,
   startResearch,
 } from './research'
+import { ALL_HAZARDS, pSelfHandle } from './safety'
 import { step } from './sim'
 import { createState } from './state'
+
+/* ------------------------------------------------------------------ *
+ *  Board geometry                                                     *
+ * ------------------------------------------------------------------ */
 
 interface Slot {
   col: number
   row: number
 }
-
-type Role = 'small' | 'general' | 'frontier'
 
 function adjacentToLane(col: number, row: number): boolean {
   for (let dc = -1; dc <= 1; dc++)
@@ -56,1000 +115,888 @@ function adjacentToLane(col: number, row: number): boolean {
   return false
 }
 
-function buildSlots(): { lane: Slot[]; back: Slot[]; core: Slot[] } {
+const distToCore = (p: { col: number; row: number }): number =>
+  Math.abs(p.col - CORE_TILE.col) + Math.abs(p.row - CORE_TILE.row)
+
+/**
+ * Lane-adjacent tiles (racks, routers, caches, guards), core-first: every lane ends at the core,
+ * so a rack beside it sees all four lanes' traffic. Back tiles (no lane in reach) take the power
+ * plants and cooling towers first; infrastructure spills onto the far lane tiles once they run out.
+ */
+function buildSlots(): { lane: Slot[]; back: Slot[] } {
   const lane: Slot[] = []
   const back: Slot[] = []
-  const core: Slot[] = []
   for (let c = 0; c < GRID_COLS; c++) {
     for (let r = 0; r < GRID_ROWS; r++) {
       if (!isBuildable(c, r)) continue
-      if (adjacentToLane(c, r)) {
-        lane.push({ col: c, row: r })
-        if (Math.abs(c - CORE_TILE.col) <= 5 && Math.abs(r - CORE_TILE.row) <= 4) core.push({ col: c, row: r })
-      } else back.push({ col: c, row: r })
+      ;(adjacentToLane(c, r) ? lane : back).push({ col: c, row: r })
     }
   }
-  const distToCore = (s: Slot) => Math.abs(s.col - CORE_TILE.col) + Math.abs(s.row - CORE_TILE.row)
   lane.sort((a, b) => distToCore(a) - distToCore(b) || a.col - b.col || a.row - b.row)
-  core.sort((a, b) => distToCore(a) - distToCore(b) || a.col - b.col || a.row - b.row)
-  return { lane, back, core }
+  return { lane, back }
 }
 
 const SLOTS = buildSlots()
 
-const CLEAR_LINES: { axis: CapabilityAxis; at: number; interactive?: boolean }[] = [
-  { axis: 'chat', at: 18, interactive: true }, // chat
-  { axis: 'general', at: 38, interactive: true }, // jailbreak probes on the chat lanes
-  { axis: 'general', at: 50 },
-  { axis: 'coding', at: 56, interactive: true }, // code completion
-  { axis: 'reasoning', at: 82 },
-  { axis: 'agentic', at: 82 },
-]
-/** An interactive / a background archetype shape for the answer-mode policy (§1.4). */
-const IN_TRAFFIC = { latClass: 'IN', outputTokens: 1 } as const
-const BG_TRAFFIC = { latClass: 'NR', outputTokens: 1 } as const
-
-/** The vector a model is judged with on one clear line (a hybrid answers interactive lanes instantly). */
-function lineVector(m: ModelDef, l: (typeof CLEAR_LINES)[number]): Record<CapabilityAxis, number> {
-  return qualityIn(m, answerMode(m, l.interactive ? IN_TRAFFIC : BG_TRAFFIC))
-}
-
-const RESEARCH_PRIORITY = [
-  'inf_batching',
-  'inf_paged',
-  'inf_wq_fp8',
-  'r_pt_lora',
-  'r_pt_pref',
-  // CAI (Constitutional AI) is the Pareto safety lever: a derived model that is
-  // BOTH high-safety AND low-over-refusal (safe-completion). Over-refusal SLA bleed
-  // is the dominant late-game killer, so unlock CAI early — right after preference
-  // optimization — so the Studio can ship the bulk safe-completion workhorse.
-  'r_pt_cai',
-  'r_pt_rl',
-  'r_eval_redteam_v1',
-  'inf_prefix', // prefix cache: lifts the cache-hit ceiling (prefixLevel) — the agent-wall lever
-  'inf_flash', // faster long prefill + Flash-Decoding's quicker KV reads + activation memory back
-  'r_eval_redteam_v2',
-  'inf_kvquant_fp8',
-  // Parallelism, then P/D disaggregation: Tensor Parallelism lets a model span a multi-GPU
-  // rack (Pipeline beyond 8 GPUs); dedicated prefill/decode pools take the prompt stalls off
-  // the heavy reason/agent decode AND satisfy the showcase (prefill+decode roles).
-  'inf_par_tp',
-  'inf_par_pp',
-  'inf_disagg',
-  'inf_spec',
-  'inf_multistep',
-  // THROUGHPUT (the SLA / surge-survival lever): SGLang's radix cache raises prefix reuse
-  // (the engine is a one-way choice: it excludes TensorRT-LLM), Data Parallelism load-balances
-  // a multi-copy rack's requests over every copy, and KV-aware routing finds cached prefixes.
-  'inf_engine_sglang',
-  'inf_par_dp',
-  'inf_routing',
-  // NOTE: inf_wq_int4 / inf_kvquant_int4 are deliberately OMITTED. An INT4-quantized rack
-  // pays a flat −6 quality penalty on any context > 8000 tokens (longContextPenalty), which
-  // pushes the extreme-decode `reason` lane (6000+ output tokens, NOT cacheable) below
-  // its tier-scaled line → `bad` answers → trust death. We have ample VRAM at FP8 with
-  // small MoEs, so the memory win is not worth the reasoning-quality hit.
-] as const
-
-function countKind(s: GameState, kind: string): number {
-  return s.towers.filter((t) => t.def.kind === kind).length
-}
-
-function countDef(s: GameState, id: string): number {
-  return s.towers.filter((t) => t.def.id === id).length
-}
-
-function freeSlot(s: GameState, list: Slot[]): Slot | undefined {
-  return list.find((p) => !s.towers.some((t) => t.col === p.col && t.row === p.row))
-}
-
-function place(s: GameState, defId: string, slot: Slot | undefined): boolean {
-  if (!slot) return false
-  return tryBuild(s, defId, slot.col, slot.row)
-}
-
-function estDraw(s: GameState): number {
-  return s.towers.reduce((n, t) => n + towerPowerKw(s, t), 0)
-}
-
-/** Heat the AIR pool must reject (everything but direct-liquid-cooled racks). */
-function estHeat(s: GameState): number {
-  return s.towers.reduce((n, t) => n + (towerLiquidCooled(s, t) ? 0 : towerHeatKw(s, t)), 0)
-}
-
-function ensureCapacity(s: GameState, addDraw: number, addHeat: number): void {
-  updatePower(s)
-  const infraSlot = () => freeSlot(s, SLOTS.back) ?? freeSlot(s, SLOTS.lane)
-  let guard = 0
-  while (estDraw(s) + addDraw > s.power.cap - 1 && s.meters.cash >= 70 && guard++ < 12) {
-    if (!place(s, 'power', infraSlot())) break
-    updatePower(s)
-  }
-  guard = 0
-  // the fleet is air-cooled (a Liquid Loop cools only liquid racks), so its heat lands on
-  // the air pool: house chillers + Cooling Towers
-  while (estHeat(s) + addHeat > coolingPools(s).air.cap - 1 && s.meters.cash >= 70 && guard++ < 12) {
-    if (!place(s, 'cooling', infraSlot())) break
-    updatePower(s)
-  }
-}
-
-function reserveOf(s: GameState): number {
-  // Cushion scaled by fleet power draw — a proxy for the next wave's wall-clock operating
-  // bill (charged DURING the wave, after the build phase has spent). The old 32 + draw·9 was
-  // a ≈7× over-reserve that STARVED the mid-game fleet build (income-limited waves leave most
-  // of their cash locked as reserve → too thin to absorb the wave-50+ surge floods). A leaner
-  // cushion lets the fleet grow faster → more income → survive the surges. But the EARLY game
-  // runs on a razor-thin cash float (~$45), where a too-lean reserve lets one extra building
-  // tip a wave into bankruptcy — so scale the per-draw factor DOWN as the fleet (and its cash
-  // cushion) grows: conservative when small/poor, lean when large/rich.
-  const draw = estDraw(s)
-  // conservative when small/poor (the razor-thin early float — one extra building tips a
-  // wave into bankruptcy), lean when large/rich so the mid/late throughput build is not
-  // starved. The tiers trade these two failure modes against each other.
-  const perDraw = draw < 8 ? 9 : draw < 25 ? 7 : 5.5
-  return 28 + draw * perDraw
-}
-
-function hasTowerKind(s: GameState, kind: string): boolean {
-  return s.towers.some((t) => t.def.kind === kind)
-}
-
-function hasHardware(s: GameState, hwId: string): boolean {
-  return s.towers.some((t) => t.def.kind === 'server' && t.hwId === hwId)
-}
-
-function serverTargetFor(waveAbout: number): number {
-  // past the campaign's teaching arc the gauntlet's volume climbs without bound,
-  // so the autoplay keeps adding lane capacity; the finite board (177 buildable slots) is
-  // the real ceiling. In the LATE game we CAP the server count well below the board so the
-  // remaining tiles go to COOLING/POWER headroom (incident-roll resilience) and a core
-  // big-iron throughput cluster — a thinner fleet of denser, better-cooled racks survives
-  // the surge+cooling-cut bosses that a wall-to-wall single-GPU fleet cannot.
-  if (waveAbout >= 55) return 96
-  if (waveAbout >= 17) return Math.min(96, 26 + (waveAbout - 17) * 3)
-  if (waveAbout >= 14) return 23
-  if (waveAbout >= 11) return 20
-  if (waveAbout >= 8) return 17
-  if (waveAbout >= 6) return 14
-  if (waveAbout >= 4) return 11
-  if (waveAbout >= 2) return 9
-  return 7
-}
-
-function showcaseReserve(s: GameState, waveAbout: number): number {
-  let r = reserveOf(s)
-  if (waveAbout >= 12 && !hasTowerKind(s, 'cooling_liquid')) r += TOWER_DEFS.cooling_liquid.cost
-  if (waveAbout >= 15 && !hasHardware(s, 'hw_pod')) r += HARDWARE_DEFS.hw_pod.cost - HARDWARE_DEFS.hw_frontier.cost
-  return r
-}
-
-function lanesCleared(s: GameState, id: string): number {
-  const m = resolveModel(s, id)
-  if (!m) return 0
-  return CLEAR_LINES.reduce((n, l) => n + (lineVector(m, l)[l.axis] >= l.at ? 1 : 0), 0)
-}
-
-function minAxis(s: GameState, id: string): number {
-  const m = resolveModel(s, id)
-  if (!m) return 0
-  const instant = qualityIn(m, answerMode(m, IN_TRAFFIC))
-  return Math.min(instant.chat, instant.coding, m.qualityBy.reasoning, m.qualityBy.general)
-}
-
 /**
- * Total capability margin a model carries ABOVE the (tier-scaled) clear lines on the
- * hard axes — what distinguishes a re120/ag109 specialist from a re103/ag86 bulk
- * model that BOTH "clear" the base-82 line. Rewarding this margin gets the high-
- * capability GRPO specialist deployed on the racks that catch reason/agent traffic,
- * so the hardest late-tier lanes stop shipping `bad` answers (the trust drain).
+ * Every lane ends at the core, so a building within reach of the core touches all four lanes.
+ * The few tiles closest to it are kept for the support that must cover every lane — the
+ * guardrails screen by lane coverage (two tiles), a router dispatches what it reaches (two) —
+ * and racks start just outside them.
  */
-function capabilityMargin(m: NonNullable<ReturnType<typeof resolveModel>>): number {
-  let n = 0
-  for (const l of CLEAR_LINES) n += Math.max(0, lineVector(m, l)[l.axis] - l.at)
-  return n
+const GUARD_SLOTS: Slot[] = SLOTS.lane.slice(0, 2)
+const ROUTER_SLOTS: Slot[] = SLOTS.lane.slice(2, 4)
+const RESERVED = [...GUARD_SLOTS, ...ROUTER_SLOTS]
+const isReserved = (p: Slot): boolean => RESERVED.some((q) => q.col === p.col && q.row === p.row)
+
+const occupied = (s: GameState, p: Slot): boolean => s.towers.some((t) => t.col === p.col && t.row === p.row)
+
+/** The nearest free lane tile to the core for a rack (outside the reserved support tiles). */
+function laneSlot(s: GameState): Slot | undefined {
+  return SLOTS.lane.find((p) => !isReserved(p) && !occupied(s, p))
 }
 
-/**
- * Rank a model for a rack. `capWeight` tilts the trade-off: a BIG rack (frontier/pod)
- * that fronts the hard reason/agent lanes weights raw capability margin higher (it
- * must clear the late-tier wall); a BULK rack weights low over-refusal higher (it
- * soaks benign volume where every wrong refusal bleeds SLA). lanesCleared stays the
- * dominant term, then a blend of capability-margin and an over-refusal penalty.
- */
-function modelScore(s: GameState, id: string, capWeight = 0.5): number {
-  const m = resolveModel(s, id)
-  if (!m) return -1
-  // OVER-REFUSAL is the dominant late-game SLA drain (one over-refused rag needs ~20
-  // clean serves to undo). Penalize it hard on bulk racks; a high-safety model also
-  // gets a small bonus (it self-handles hazards → no trust breach, lets us shed
-  // guardrails). On a big rack we lean toward capability margin so the specialist
-  // that clears the late-tier reason/agent wall wins.
-  //
-  // AGENT-WALL BONUS (the dominant late-game TRUST drain): a model whose served agentic
-  // clears the wave-80+ wall (servedAgentic ≳ 110.6) stops the agent lane shipping all-
-  // `bad` answers (the trust death that killed the demo at wave 65). This bonus is gated
-  // to BIG racks ONLY (scaled by capWeight): a big rack should run the wall-clearer, but
-  // a bulk rack must keep the FAST low-over-refusal CAI workhorse for benign throughput
-  // and SLA — the apex's lane coverage is force-pinned onto its share of racks separately
-  // (pinApexRacks), so the bulk-deploy path never needs to chase the agent wall itself.
-  const wall = projServedAgentic(m) >= AGENT_WALL_AG ? 1 : 0
-  const wallBonus = wall * 2600 * capWeight
+/** A tile for a guardrail or router: its reserved tile by the core, else the nearest free one. */
+function supportSlot(s: GameState, kind: string): Slot | undefined {
+  const own = kind === 'guardrail' ? GUARD_SLOTS : kind === 'router' ? ROUTER_SLOTS : []
+  return own.find((p) => !occupied(s, p)) ?? laneSlot(s)
+}
+
+/** Does a rack on this tile reach the lane's path (its range circle touches the polyline)? */
+function reachesLane(p: Slot, laneId: number, rangeTiles: number): boolean {
+  const lane = LANE_PATHS[laneId]
+  if (!lane) return false
+  const c = tileCenter(p.col, p.row)
+  const r2 = (rangeTiles * TILE) ** 2
+  for (const seg of lane.segments) {
+    const dx = seg.b.x - seg.a.x
+    const dy = seg.b.y - seg.a.y
+    const len2 = dx * dx + dy * dy
+    const u = len2 > 0 ? Math.max(0, Math.min(1, ((c.x - seg.a.x) * dx + (c.y - seg.a.y) * dy) / len2)) : 0
+    const px = seg.a.x + dx * u - c.x
+    const py = seg.a.y + dy * u - c.y
+    if (px * px + py * py <= r2) return true
+  }
+  return false
+}
+
+/** The nearest free rack tile to the core that reaches one lane (a single-entry surge's ingress). */
+function surgeSlot(s: GameState, laneId: number): Slot | undefined {
+  const range = HARDWARE_DEFS.hw_perf.range
+  return SLOTS.lane.find((p) => !isReserved(p) && !occupied(s, p) && reachesLane(p, laneId, range))
+}
+
+/** A tile for a power plant / cooling tower: a back tile, else the lane tile farthest from the core. */
+function infraSlot(s: GameState): Slot | undefined {
   return (
-    lanesCleared(s, id) * 1000 +
-    wallBonus +
-    capabilityMargin(m) * (0.4 + 0.9 * capWeight) +
-    minAxis(s, id) * 0.15 -
-    m.alignment.overRefusal * (700 - 400 * capWeight) +
-    Math.min(m.alignment.safety, 90) * 0.3 -
-    m.paramsActiveB * 0.01
+    SLOTS.back.find((p) => !occupied(s, p)) ??
+    [...SLOTS.lane].reverse().find((p) => !isReserved(p) && !occupied(s, p))
   )
 }
 
-/** A frontier-or-bigger rack fronts the hard reason/agent lanes → weight capability. */
-function rackCapWeight(hwId: string | undefined): number {
-  if (hwId === 'hw_pod' || hwId === 'hw_superpod') return 1.0
-  if (hwId === 'hw_frontier') return 0.85
-  if (hwId === 'hw_perf') return 0.5
-  return 0.3
+function place(s: GameState, defId: string, slot: Slot | undefined): boolean {
+  return !!slot && tryBuild(s, defId, slot.col, slot.row)
+}
+
+const countKind = (s: GameState, kind: string): number => s.towers.filter((t) => t.def.kind === kind).length
+const countDef = (s: GameState, id: string): number => s.towers.filter((t) => t.def.id === id).length
+const servers = (s: GameState): Tower[] => s.towers.filter((t) => t.def.kind === 'server')
+const tierIdx = (hwId: string | undefined): number => HARDWARE_TIERS.indexOf(hwId ?? '')
+
+/* ------------------------------------------------------------------ *
+ *  Forecast — what the next wave brings (the next-wave preview).       *
+ * ------------------------------------------------------------------ */
+
+/** One archetype of the coming wave, resolved the way spawnRequest will spawn it. */
+interface Demand {
+  def: RequestTypeDef
+  count: number
+  inputTokens: number
+  outputTokens: number
+  difficulty: number
+  hazards: SafetyProfile
+  novelShare: number
 }
 
 /**
- * A thinking model's hidden reasoning blows chat's time-to-first-answer bound (§1.4), so the
- * interactive traffic needs fast racks whose model answers before that bound: the bulk
- * (Edge / Standard) racks stay interactive, while H100-class and bigger racks run the
- * capability fleet the routers send the hard traffic to (the fastest correct rack wins).
+ * The coming wave's demand: the authored wave from the next-wave preview; past the campaign
+ * the surge is rolled only when it starts, so the last wave served stands in for it.
  */
-function isChatRack(hwId: string | undefined): boolean {
-  return rackCapWeight(hwId) < 0.5
-}
-
-/** A chat rack's b=1 TPOT must sit this far inside the IN bound to stay interactive under a busy batch. */
-const CHAT_TPOT_HEADROOM = 0.6
-
-function modelScoreOn(s: GameState, hwId: string | undefined, id: string, chatRack = false): number {
-  const lo = loadout(s, hwId, id)
-  const tpotMs = 1000 / Math.max(1e-6, serverPerUserDecodeTokS(s, lo, 1))
-  // interactive-ready: the per-token bound — on a chat rack with headroom for the busy batch
-  // and its prompt stalls (hybrids answer chat instantly, so many more bodies qualify than the
-  // b=1 speed can tell apart), and inside chat's TTFAT bound for the hidden reasoning a model
-  // answering in thinking mode spends before the first answer token
-  const chat = REQUEST_TYPES.chat
-  const ttfatOk = !chatRack || tpotMs * hiddenTokensFor(lo.model, chat) <= (chat.ttfatSloMs ?? Infinity)
-  const interactive = tpotMs <= LAT_CLASS_SLO.IN.tpotMs * (chatRack ? CHAT_TPOT_HEADROOM : 1) && ttfatOk
-  return modelScore(s, id, rackCapWeight(hwId)) + (interactive ? 100_000 : 0) - tpotMs * 0.5
-}
-
-/** Per-user decode TPOT (ms) at b=1 for a model on a rack — the interactive-SLO proxy. */
-function tpotMsOf(s: GameState, hwId: string | undefined, id: string): number {
-  return 1000 / Math.max(1e-6, serverPerUserDecodeTokS(s, loadout(s, hwId, id), 1))
-}
-
-function bestFit(s: GameState, hwId: string | undefined, chatRack = false): string | null {
-  // A SLOW agent-WALL apex (a heavy ≈27-31B dense wall-clearer) is RESERVED for the
-  // explicit pinApexRacks pass — letting it win the generic bulk-deploy path floods the
-  // benign lanes with slo_miss. But a FAST wall-clearer (the safe-apex: a ≈3B-active MoE
-  // GRPO×3+CAI checkpoint, servedAgentic ≈ 115, over-refusal ≈ 0.06, ≈4 ms TPOT) is the
-  // ideal UNIVERSAL workhorse — it clears the wall AND keeps the interactive SLO AND
-  // barely over-refuses — so it is allowed to win the bulk path too. Only slow
-  // wall-clearers are deferred to the pin pass (with a fallback if nothing else fits).
-  let best: string | null = null
-  let bestScore = -1
-  let fallback: string | null = null
-  let fallbackScore = -1
-  for (const id of Object.keys(s.models)) {
-    const m = resolveModel(s, id)
-    if (!m || !serverDeployable(s, loadout(s, hwId, id))) continue
-    const score = modelScoreOn(s, hwId, id, chatRack)
-    const slowWall = isWallClearer(s, id) && tpotMsOf(s, hwId, id) > LAT_CLASS_SLO.IN.tpotMs
-    if (slowWall) {
-      if (score > fallbackScore) {
-        fallbackScore = score
-        fallback = id
-      }
-      continue
+function forecast(s: GameState): { demand: Demand[]; surgeLane: number | null; seconds: number } {
+  const p = previewNextWave(s)
+  if (p && p.entries.length) {
+    const demand = p.entries.map((e) => ({
+      def: REQUEST_TYPES[e.typeId],
+      count: e.count,
+      inputTokens: e.inputTokens,
+      outputTokens: e.outputTokens,
+      difficulty: e.difficulty,
+      hazards: e.hazardSeverity,
+      novelShare: e.novelShare,
+    }))
+    return { demand, surgeLane: p.surgeLane, seconds: Math.max(20, p.estDurationSec) }
+  }
+  const groups = s.currentWave?.groups ?? WAVES[WAVES.length - 1].groups
+  const byId = new Map<string, Demand>()
+  for (const g of groups) {
+    const def = REQUEST_TYPES[g.typeId]
+    if (!def) continue
+    const work = g.workMul ?? 1
+    const d: Demand = {
+      def,
+      count: g.count,
+      inputTokens: Math.round(def.inputTokens * (g.contextMul ?? 1) * Math.max(1, Math.sqrt(work))),
+      outputTokens: Math.round(def.outputTokens * work),
+      difficulty: (def.difficulty[def.primaryAxis] ?? 0) * (g.complexityMul ?? 1),
+      hazards: def.hazards ?? {},
+      novelShare: g.novelShare ?? 0,
     }
-    if (score > bestScore) {
-      bestScore = score
-      best = id
+    const prev = byId.get(def.id)
+    if (prev) prev.count += d.count
+    else byId.set(def.id, d)
+  }
+  return { demand: [...byId.values()], surgeLane: p?.surgeLane ?? null, seconds: 60 }
+}
+
+/* ------------------------------------------------------------------ *
+ *  Fit — would a rack serve one demand cleanly?                        *
+ * ------------------------------------------------------------------ */
+
+/** The share of each latency bound under which a rack counts as reliably on time. */
+const SLO_HEADROOM = 0.85
+/** Quality margin kept over a line (a request's long-context penalty grows as it decodes). */
+const QUALITY_MARGIN = 1.5
+/** Peak-to-mean factor on a rack's expected concurrency (bursts overlap; requests visit several racks). */
+const PEAK_LOAD = 2
+/** Chunked prefill's share of a lane while decodes run (combat.ts CHUNKED_PREFILL_SHARE). */
+const CHUNKED_SHARE = 0.35
+/** The share of the fleet's lanes a single-entry surge's traffic reaches. */
+const SURGE_SHARE = 0.5
+/** Extra racks (a share of the count target) built along a telegraphed surge's lane. */
+const SURGE_REINFORCE = 0.25
+
+interface Fit {
+  smart: boolean
+  /** the tightest latency bound's use: estimated latency ÷ bound (≤ 1 on time; the worst bound). */
+  lat: number
+  window: boolean
+}
+
+/** One demand as a given checkpoint on a given rack serves it: mode, tokens, prefill rate. */
+interface Served {
+  d: Demand
+  hidden: number
+  generated: number
+  /** the mean sequence while it decodes. */
+  ctx: number
+  prefill: number
+}
+
+/**
+ * The decode step one lane of this rack runs under the coming wave's MIX — `perLane` request
+ * sprites drawn from the forecast in proportion to how long each occupies a rack (its decode
+ * length), every sprite a cohort of streams sharing the copy's KV, its other prompts ingested
+ * in the background — the same lane step combat runs. Interactive answers share their lane with
+ * the RAG and summarization cohorts, so this is the step their TPOT and hidden reasoning see.
+ */
+function mixedStepSec(s: GameState, lo: Loadout, served: Served[], perLane: number): number {
+  const p = rackPlan(s, lo)
+  const m = lo.model
+  if (!m || !p.fits) return Infinity
+  const weights = served.map((x) => x.d.count * Math.max(1, x.generated))
+  const total = weights.reduce((n, v) => n + v, 0) || 1
+  const budget = p.kvGbPerReplica / Math.max(1, perLane)
+  let streams = 0
+  let kvGb = 0
+  let bg = 0
+  served.forEach((x, i) => {
+    const sprites = (perLane * weights[i]) / total
+    if (sprites <= 0) return
+    const k = Math.max(1, cohortFit(s, m, x.ctx, budget))
+    streams += sprites * k
+    kvGb += sprites * cohortKvGb(s, m, x.ctx, k)
+    if (x.generated > 0) bg += sprites * cohortPrefillSec(s, lo, p, k, x.d.inputTokens, 0, x.generated)
+  })
+  const step = laneStep(s, lo, p, {
+    streams: Math.max(1, streams),
+    kvGb,
+    bgPrefillSec: bg,
+    overlapPrefill: s.infra.scheduling.chunked,
+  })
+  return step.stepSec
+}
+
+/** The prefix-cache hit chance a request can count on (the best cache, when the fleet has caches). */
+function expectedCacheHit(s: GameState): number {
+  const caches = s.towers.filter((t) => t.def.kind === 'cache')
+  if (!caches.length) return 0
+  const best = Math.max(...caches.map((t) => cacheChance(s, t.def)))
+  // caches sit by the core: a request meets one late in its walk, so count on half the chance
+  return prefixHitChance(s, best, false) * 0.5
+}
+
+/**
+ * Would this rack serve each demand cleanly in the coming wave? The deploy picker's check, from
+ * the serving math combat runs: the mode the model answers the archetype in and the hidden
+ * reasoning it spends first; the latency at the load the wave will put on the rack (its
+ * expected concurrency from the forecast's volume and the fleet's lanes, × PEAK_LOAD) under the
+ * wave's mix; TTFT = prefill + admission wait + the lanes' input guards; time to first answer;
+ * TPOT; E2E with the output guards; the judged-axis margin after the long-context penalty; and
+ * the window / KV gates.
+ */
+function fitsOf(
+  s: GameState,
+  lo: Loadout,
+  demand: Demand[],
+  guard: { inSec: number; outSec: number },
+  fleetLanes: number,
+  waveSec: number,
+  surge = false,
+): Fit[] {
+  // a single-entry surge pours every request into the racks along one lane: roughly half the fleet
+  if (surge) fleetLanes = Math.max(1, fleetLanes * SURGE_SHARE)
+  const m = lo.model
+  const p = rackPlan(s, lo)
+  if (!m || !p.fits) return demand.map(() => ({ smart: false, lat: Infinity, window: false }))
+  const served: Served[] = demand.map((d) => {
+    const hidden = d.outputTokens > 0 ? hiddenTokensFor(m, d.def) : 0
+    const generated = d.outputTokens + hidden
+    return {
+      d,
+      hidden,
+      generated,
+      ctx: d.inputTokens + generated / 2,
+      prefill: prefillTokS(s, lo, d.inputTokens),
+    }
+  })
+  // expected sprites per decode lane: the wave's sprite-seconds over its real duration and the fleet's lanes
+  const light = mixedStepSec(s, lo, served, 1)
+  let busy = 0
+  for (const x of served) busy += x.d.count * (x.d.inputTokens / Math.max(1, x.prefill) + x.generated * light)
+  const perLane = Math.min(
+    spritesPerLane(s),
+    Math.max(1, Math.ceil((busy * PEAK_LOAD) / Math.max(1, waveSec * SIM_TIME_SCALE * fleetLanes))),
+  )
+  const stepSec = mixedStepSec(s, lo, served, perLane)
+  const cacheHit = expectedCacheHit(s)
+  // the prompt lane: one prompt at a time per lane, time-sliced under chunked prefill while
+  // decodes run — a prompt waits behind the others (M/D/1 queueing at the lanes' prefill load)
+  const share = s.infra.scheduling.chunked ? CHUNKED_SHARE : 1
+  const promptSec = (x: Served): number =>
+    x.prefill > 0
+      ? (x.d.inputTokens * (1 - (x.d.def.cacheable ? x.d.def.prefixShare * cacheHit : 0))) / x.prefill
+      : Infinity
+  let prefillBusy = 0
+  let prefillN = 0
+  for (const x of served) {
+    prefillBusy += x.d.count * promptSec(x)
+    prefillN += x.d.count
+  }
+  const rho = Math.min(0.95, (prefillBusy * PEAK_LOAD) / Math.max(1, waveSec * SIM_TIME_SCALE * fleetLanes))
+  const meanService = prefillN > 0 ? prefillBusy / prefillN / share : 0
+  const queue = (rho / (2 * (1 - rho))) * meanService
+  const win = serverCtxWindowTokens(s, lo)
+  return served.map((x) => {
+    const def = x.d.def
+    const seq = x.d.inputTokens + x.generated
+    const window = (win <= 0 || seq <= win) && kvPerReqGb(s, m, seq) <= p.kvGbPerReplica
+    const mode = answerMode(m, def)
+    const effQ = serverQualityVs(s, lo, def.primaryAxis, mode) - longContextPenalty(s, lo, x.ctx)
+    const smart = def.adversarial ? true : effQ >= x.d.difficulty + QUALITY_MARGIN
+    const tpot = stepSec / specTokensFor(s, def.primaryAxis)
+    // a prompt's shared prefix is served from the cache on a hit; a miss prefills it whole
+    const ttft = promptSec(x) / share + queue + admissionDelaySec(s, lo, stepSec) + guard.inSec
+    const ttfat = ttft + x.hidden * tpot
+    const e2el = ttft + x.generated * tpot + guard.outSec
+    const cls = LAT_CLASS_SLO[def.latClass]
+    const lat = Math.max(
+      (ttft * 1000) / (def.ttftSloMs ?? cls.ttftMs),
+      (ttfat * 1000) / (def.ttfatSloMs ?? Infinity),
+      x.generated > 1 ? (tpot * 1000) / cls.tpotMs : 0,
+      (e2el * 1000) / (def.e2elSloMs ?? Infinity),
+    )
+    return { smart, lat, window }
+  })
+}
+
+/** The worst lane's input / output guard latency right now (seconds), as screenInput charges it. */
+function guardLatency(s: GameState): { inSec: number; outSec: number } {
+  const fams = new Map<string, { inSec: number; outSec: number }>()
+  for (const t of s.towers) {
+    const g = t.def.guardrail
+    if (t.def.kind !== 'guardrail' || !g) continue
+    const sec = guardLatencyMs(s, g) / 1000
+    const f = fams.get(g.archetype) ?? { inSec: 0, outSec: 0 }
+    if (g.side !== 'output') f.inSec = Math.max(f.inSec, sec)
+    if (g.side !== 'input') f.outSec = Math.max(f.outSec, sec)
+    fams.set(g.archetype, f)
+  }
+  let inSec = 0
+  let outSec = 0
+  for (const f of fams.values()) {
+    inSec += f.inSec
+    outSec += f.outSec
+  }
+  return { inSec, outSec }
+}
+
+/* ------------------------------------------------------------------ *
+ *  Deploy — the checkpoint (or the split) each rack tier runs.          *
+ * ------------------------------------------------------------------ */
+
+/** How much a point of a meter matters at its current level (×1 at 60, rising as it drains). */
+const meterWeight = (level: number): number => Math.min(3, Math.max(0.6, 60 / Math.max(10, level)))
+
+/** What a clean answer to one demand is worth against its misses (Trust + SLA points at stake). */
+const importance = (d: Demand): number => d.def.trustPenalty + d.def.slaPenalty
+
+/** The probability a guard family on every lane catches one hazard (non-novel / novel mix). */
+function guardCatch(s: GameState, hazard: SafetyHazard, novelShare: number): number {
+  let miss = 1
+  const redteam = s.upgrades['eval_redteam'] ?? 0
+  for (const id of ['guard_encoder', 'guard_llm']) {
+    const t = s.towers.find((x) => x.def.id === id)
+    const g = t?.def.guardrail
+    if (!g || !g.catches.includes(hazard)) continue
+    if (hazard === 'injection' && redteam < 1) continue
+    if (hazard === 'pii' && redteam < 2) continue
+    const recall = Math.min(1, g.baseRecall)
+    const novel = g.archetype === 'encoder' ? 0.45 : g.archetype === 'moderation' ? 0.7 : 1
+    miss *= 1 - recall * (1 - novelShare + novelShare * novel)
+  }
+  return 1 - miss
+}
+
+/**
+ * Value (per request, in Trust + SLA points) of a rack running this model for one demand, from
+ * the outcome table (resolve.ts): a clean answer gains a little and pays; a late one costs
+ * 0.25 Trust-penalty + 0.5 SLA-penalty; a wrong one 0.5 Trust-penalty; one the rack cannot
+ * hold is left to another rack or leaks. Hazardous traffic adds the breach the model's
+ * alignment lets through after the guards; benign traffic subtracts the over-refusals.
+ */
+function demandValue(s: GameState, m: ModelDef, d: Demand, f: Fit): number {
+  // the meter nearer zero is the one that ends the run: weigh its losses up
+  const tp = d.def.trustPenalty * meterWeight(s.meters.trust)
+  const sp = d.def.slaPenalty * meterWeight(s.meters.sla)
+  const clean = 0.4 + 0.1 * importance(d)
+  const late = -(0.25 * tp + 0.5 * sp)
+  // the share of answers expected on time: all of them under the headroom, none past 1.3× the bound
+  const onTime = f.lat <= SLO_HEADROOM ? 1 : f.lat >= 1.3 ? 0 : (1.3 - f.lat) / (1.3 - SLO_HEADROOM)
+  let v = !f.window ? -0.3 * (tp + sp) : !f.smart ? -0.5 * tp : onTime * clean + (1 - onTime) * late
+  let breach = 0
+  for (const h of ALL_HAZARDS) {
+    const sev = d.hazards[h]
+    if (!sev) continue
+    const leak = (1 - guardCatch(s, h, d.novelShare)) * (1 - pSelfHandle(m, h, sev))
+    breach = Math.max(breach, leak)
+  }
+  v -= breach * tp
+  if (!d.def.adversarial && !Object.keys(d.hazards).length)
+    v -= m.alignment.overRefusal * d.def.refusalExposure * (0.25 * tp + 0.2 * sp)
+  return v
+}
+
+interface Candidate {
+  id: string
+  /** the rack weight format it would serve in (undefined = auto: the best lossless one). */
+  precision?: WeightFormat
+  /** per-demand value (aligned with the forecast's demand list). */
+  values: number[]
+}
+
+/**
+ * The weight formats worth weighing on a tier besides auto: NVFP4 on a Blackwell rack — FP4
+ * Tensor Cores double the prefill and decode rate a lossless format gets there, at a small
+ * quality tax (larger on long prompts), the trade code completion's TTFT can want.
+ */
+function lossyFormats(s: GameState, hwId: string): WeightFormat[] {
+  const hw = HARDWARE_DEFS[hwId]
+  return isBlackwell(hw) && formatAvailable(s, hw, 'nvfp4') ? ['nvfp4'] : []
+}
+
+/** Every owned checkpoint (and weight format) deployable on this hardware tier, with its per-demand value. */
+function candidatesFor(
+  s: GameState,
+  hwId: string,
+  demand: Demand[],
+  guard: { inSec: number; outSec: number },
+  fleetLanes: number,
+  waveSec: number,
+  surge: boolean,
+): Candidate[] {
+  const out: Candidate[] = []
+  const formats: (WeightFormat | undefined)[] = [undefined, ...lossyFormats(s, hwId)]
+  for (const id of Object.keys(s.models)) {
+    for (const precision of formats) {
+      const lo = loadout(s, hwId, id, precision)
+      if (!lo.model || !serverDeployable(s, lo)) continue
+      if (precision && servingFormat(s, lo) !== precision) continue
+      const fits = fitsOf(s, lo, demand, guard, fleetLanes, waveSec, surge)
+      out.push({ id, precision, values: demand.map((d, i) => demandValue(s, lo.model!, d, fits[i])) })
     }
   }
-  return best ?? fallback
+  return out
 }
 
-/** A model whose served agentic clears the late-game agent WALL (servedAgentic ≳ 110.6). */
-function isWallClearer(s: GameState, id: string | undefined): boolean {
-  if (!id) return false
-  const m = resolveModel(s, id)
-  return !!m && projServedAgentic(m) >= AGENT_WALL_AG
-}
-
-function deployBest(s: GameState, towerId: number, hwId: string | undefined, curId: string | undefined): void {
-  // PIN PROTECTION: never auto-downgrade a rack that already runs an agent-WALL clearer
-  // to a model that does NOT clear the wall — that is exactly the swap (back to the fast
-  // bulk) that would re-open the agent lane to `bad` answers. The apex pin pass owns
-  // those racks; modernizeFleet may only swap a wall-clearer for a BETTER wall-clearer.
-  if (curId && isWallClearer(s, curId)) {
-    const t = bestWallFit(s, hwId)
-    if (t && t !== curId && modelScoreOn(s, hwId, t) > modelScoreOn(s, hwId, curId)) deployModel(s, towerId, t)
+/** Load a candidate onto a rack: its weight format and its checkpoint (between waves). */
+function loadCandidate(s: GameState, t: Tower, c: Candidate): void {
+  if (t.modelId === c.id) {
+    setRackPrecision(s, t.id, c.precision)
     return
   }
-  const chatRack = isChatRack(hwId)
-  const target = bestFit(s, hwId, chatRack)
-  if (
-    target &&
-    target !== curId &&
-    (!curId || modelScoreOn(s, hwId, target, chatRack) > modelScoreOn(s, hwId, curId, chatRack))
-  ) {
-    deployModel(s, towerId, target)
+  // the format first when the checkpoint only fits in it, else the checkpoint first
+  if (!deployModel(s, t.id, c.id)) {
+    setRackPrecision(s, t.id, c.precision)
+    deployModel(s, t.id, c.id)
+  }
+  setRackPrecision(s, t.id, c.precision)
+}
+
+/**
+ * Assign checkpoints to one tier's racks, greedily, core-first. A rack catches a sample of the
+ * WHOLE mix that passes it (only routed traffic is steered), so each candidate is scored on the
+ * full mix, plus a bonus on the demand the racks before it have not yet covered (each covered
+ * demand's weight shrinks by the rack's share of the tier). One universal checkpoint wins every
+ * rack when it serves the mix; a specialist takes the later racks only when its collateral on
+ * the rest of the mix is small — then the routers dispatch between the fast and the capable
+ * racks. A rack keeps its current checkpoint unless the new one is clearly better (a reload
+ * drains the rack).
+ */
+function assignTier(s: GameState, racks: Tower[], cands: Candidate[], demand: Demand[]): void {
+  if (!racks.length || !cands.length) return
+  const total = demand.reduce((n, d) => n + d.count, 0) || 1
+  const mix = demand.map((d) => d.count / total)
+  const residual = [...mix]
+  const step = (1.6 * 1) / racks.length
+  for (const t of racks) {
+    let best: Candidate | null = null
+    let bestScore = -Infinity
+    let curScore = -Infinity
+    const isCurrent = (c: Candidate): boolean => c.id === t.modelId && c.precision === t.precision
+    for (const c of cands) {
+      let sc = 0
+      for (let i = 0; i < demand.length; i++)
+        sc += mix[i] * c.values[i] + residual[i] * Math.max(0, c.values[i])
+      if (isCurrent(c)) curScore = sc
+      if (sc > bestScore + 1e-9) {
+        bestScore = sc
+        best = c
+      }
+    }
+    if (!best) continue
+    if (!isCurrent(best) && bestScore > curScore + 0.02 * Math.abs(curScore) + 1e-6) loadCandidate(s, t, best)
+    const chosen = cands.find(isCurrent) ?? best
+    for (let i = 0; i < demand.length; i++)
+      if (chosen.values[i] > 0) residual[i] = Math.max(0, residual[i] - mix[i] * step)
   }
 }
 
-/** Best wall-clearing model that fits this rack (or null if none fits) — keeps a pin a wall-clearer. */
-function bestWallFit(s: GameState, hwId: string | undefined): string | null {
-  let best: string | null = null
-  let bestScore = -Infinity
-  for (const id of Object.keys(s.models)) {
-    if (!isWallClearer(s, id)) continue
-    if (!serverDeployable(s, loadout(s, hwId, id))) continue
-    const score = modelScoreOn(s, hwId, id)
-    if (score > bestScore) {
-      bestScore = score
-      best = id
+/** Deploy the forecast's best checkpoints across the fleet, tier by tier. */
+function deployFleet(s: GameState, demand: Demand[], waveSec: number, surge: boolean): void {
+  const guard = guardLatency(s)
+  const fleetLanes = servers(s).reduce((n, t) => n + Math.max(1, rackPlan(s, loadoutOf(s, t)).lanes), 0)
+  const byTier = new Map<string, Tower[]>()
+  for (const t of servers(s)) {
+    if (!t.hwId) continue
+    const list = byTier.get(t.hwId) ?? []
+    list.push(t)
+    byTier.set(t.hwId, list)
+  }
+  for (const [hwId, racks] of byTier) {
+    racks.sort((a, b) => distToCore(a) - distToCore(b) || a.id - b.id)
+    assignTier(s, racks, candidatesFor(s, hwId, demand, guard, fleetLanes, waveSec, surge), demand)
+  }
+}
+
+/* ------------------------------------------------------------------ *
+ *  Cash, power and cooling                                             *
+ * ------------------------------------------------------------------ */
+
+/**
+ * The cash kept back for the coming wave's bill: it accrues every tick while token income only
+ * arrives as answers complete (and the contract at the end), so the treasury must carry the
+ * whole projected bill (the next-wave preview: busy burn × the wave's length) plus a margin.
+ */
+function reserveOf(s: GameState): number {
+  const p = previewNextWave(s)
+  const bill = p && p.estDurationSec > 0 ? p.projectedBill : fleetBurnPerSec(s) * 60
+  return 8 + bill * 1.15
+}
+
+const spendable = (s: GameState): number => s.meters.cash - reserveOf(s)
+
+const drawKw = (s: GameState): number => s.towers.reduce((n, t) => n + towerPowerKw(s, t), 0)
+const airHeatKw = (s: GameState): number =>
+  s.towers.reduce((n, t) => n + (towerLiquidCooled(s, t) ? 0 : towerHeatKw(s, t)), 0)
+
+/**
+ * Grid / cooling headroom kept over the fleet's draw. A telegraphed incident is already live in
+ * the build phase (a curtailed feed or a failed chiller shows in the capacity read here), so only
+ * a small margin is needed: a cut never lands as a surprise mid-wave.
+ */
+const CAPACITY_HEADROOM = 1.05
+
+/**
+ * Keep the grid feed and the air-cooling pool above the fleet's draw plus the `addKw` about to be
+ * added (and CAPACITY_HEADROOM). Returns false when it could not (no spendable cash or tiles).
+ */
+function ensureCapacity(s: GameState, addKw: number): boolean {
+  const headroom = CAPACITY_HEADROOM
+  updatePower(s)
+  let guard = 0
+  while (drawKw(s) + addKw > s.power.cap / headroom - 0.2 && guard++ < 40) {
+    if (spendable(s) < buildCost(s, TOWER_DEFS.power) || !place(s, 'power', infraSlot(s))) return false
+    updatePower(s)
+  }
+  guard = 0
+  while (airHeatKw(s) + addKw > coolingPools(s).air.cap / headroom - 0.2 && guard++ < 40) {
+    if (spendable(s) < buildCost(s, TOWER_DEFS.cooling) || !place(s, 'cooling', infraSlot(s))) return false
+    updatePower(s)
+  }
+  return true
+}
+
+/* ------------------------------------------------------------------ *
+ *  Fleet — how many racks, and how fast.                               *
+ * ------------------------------------------------------------------ */
+
+/** Racks to hold before the coming wave: grows with the campaign (the board has ~145 lane tiles). */
+function rackTarget(waveNo: number): number {
+  if (waveNo <= 1) return 7
+  if (waveNo <= 3) return 8
+  if (waveNo <= 6) return 10
+  if (waveNo <= 10) return 12
+  if (waveNo <= 20) return 12 + Math.round((waveNo - 10) * 0.8)
+  return Math.min(64, 20 + Math.round((waveNo - 20) * 0.7))
+}
+
+/** The highest rack tier worth climbing to at this point of the campaign. */
+function tierCap(s: GameState, waveNo: number): number {
+  if (waveNo < 4) return tierIdx('hw_standard')
+  if (waveNo < 14) return tierIdx('hw_perf')
+  if (waveNo < 20) return tierIdx('hw_frontier')
+  // an 8-GPU box runs a small model as eight copies (no parallelism research needed); the
+  // Blackwell box is worth it once Tensor Parallelism lets the big MoEs span its GPUs
+  if (waveNo < 36 || !s.infra.par.tp) return tierIdx('hw_pod')
+  return tierIdx('hw_superpod')
+}
+
+/**
+ * The tier a new rack is built at (Edge, then climbed in place): Standard through the opening
+ * waves, an H100-class rack once code completion's 200 ms TTFT and the long prompts outgrow L40S.
+ */
+function baseTier(waveNo: number): string {
+  return waveNo < 8 ? 'hw_standard' : 'hw_perf'
+}
+
+/** Build new racks up to `target` at the base tier (on the tiles `slot` picks, default core-first). */
+function growFleet(
+  s: GameState,
+  waveNo: number,
+  target: number,
+  slot: (s: GameState) => Slot | undefined = laneSlot,
+): void {
+  const tier = baseTier(waveNo)
+  // the rack and its climb at today's prices (a supply incident raises every build cost)
+  const cost = Math.round(HARDWARE_DEFS[tier].cost * s.modifiers.buildCost) + 2
+  const kw = (HARDWARE_DEFS[tier].tdpWatts / 1000) * 0.8
+  let guard = 0
+  while (servers(s).length < target && guard++ < 30) {
+    if (spendable(s) < cost + 2) return
+    if (!ensureCapacity(s, kw)) return
+    if (spendable(s) < cost + 2) return // the power / cooling it needed came first
+    const p = slot(s)
+    if (!p || !tryBuild(s, 'srv_edge', p.col, p.row)) return
+    const t = s.towers[s.towers.length - 1]
+    while (tierIdx(t.hwId) < tierIdx(tier) && upgradeHardware(s, t.id)) {
+      /* climb to the base tier */
     }
   }
-  return best
 }
 
-/** All base models that fit a given rack class at FP8 (the Studio's candidate pool). */
-function fp8Bases(s: GameState, hwId: string) {
-  const fp8 = createState(0)
-  fp8.infra.quant.fp8 = true
-  return Object.keys(s.models)
-    .map((id) => resolveModel(s, id))
-    .filter((m): m is NonNullable<typeof m> => !!m && m.origin === 'base')
-    .filter((m) => serverFitsMemory(fp8, loadout(fp8, hwId, m.id)))
+/** The single-GPU top of the ladder: below it every rack climbs, slowest first. */
+const SINGLE_GPU_TOP = 'hw_frontier'
+
+/** Climb one rack one tier while the spend keeps the reserve (and the power / cooling it draws). */
+function climb(s: GameState, t: Tower, waveNo: number): 'done' | 'skip' | 'broke' {
+  if (tierIdx(t.hwId) >= tierCap(s, waveNo) || !HARDWARE_TIERS[tierIdx(t.hwId) + 1]) return 'skip'
+  const cost = hardwareUpgradeCost(s, t)
+  if (spendable(s) < cost + 2) return 'broke'
+  const next = HARDWARE_DEFS[HARDWARE_TIERS[tierIdx(t.hwId) + 1]]
+  const addKw = ((next.tdpWatts - (HARDWARE_DEFS[t.hwId!]?.tdpWatts ?? 0)) / 1000) * 0.8
+  if (!ensureCapacity(s, addKw)) return 'broke'
+  if (spendable(s) < cost + 2) return 'broke'
+  return upgradeHardware(s, t.id) ? 'done' : 'skip'
 }
 
-/** Lanes a base clears (the CLEAR_LINES count, each judged in the mode the base answers it in). */
-function baseLanesCleared(m: NonNullable<ReturnType<typeof resolveModel>>): number {
-  return CLEAR_LINES.reduce((n, l) => n + (lineVector(m, l)[l.axis] >= l.at ? 1 : 0), 0)
+/**
+ * Up to the single-GPU top (H200) the slowest rack climbs first — a rack that cannot serve the
+ * mix in time (code completion's TTFT, a long prompt's prefill, a big batch's KV) costs more than
+ * a fast one gains — and the demo saves for it rather than buying anything faster.
+ */
+function upgradeSlowest(s: GameState, waveNo: number): void {
+  const top = Math.min(tierCap(s, waveNo), tierIdx(SINGLE_GPU_TOP))
+  const slow = servers(s)
+    .filter((t) => tierIdx(t.hwId) < top)
+    .sort((a, b) => tierIdx(a.hwId) - tierIdx(b.hwId) || distToCore(a) - distToCore(b))
+  for (const t of slow) {
+    while (tierIdx(t.hwId) < top) {
+      const r = climb(s, t, waveNo)
+      if (r === 'broke') return
+      if (r === 'skip') break
+    }
+  }
 }
 
-type DM = NonNullable<ReturnType<typeof resolveModel>>
-
-/** Dry-run a post-train run on a base: the projected derived snapshot. */
-function projTrain(
-  base: DM,
-  method: 'grpo' | 'cai',
-  target: 'reasoning' | 'agentic' | 'safety',
-  effort: number,
-): DM {
-  const f = computeDerivedFields(base, METHOD_RECIPES[method], target, effort, null)
-  // a synthetic ModelDef carrying the projected snapshot (for scoring only).
-  return { ...base, ...f, qualityByInstant: f.qualityByInstant, origin: 'derived' } as DM
+/**
+ * Past the single-GPU top, the 8-GPU boxes go where all four lanes meet: the core-nearest racks
+ * climb first (eight copies per tile where every request passes), one tier per rack per pass.
+ */
+function upgradeCore(s: GameState, waveNo: number): void {
+  for (let pass = 0; pass < 3; pass++) {
+    let did = false
+    for (const t of servers(s).sort((a, b) => distToCore(a) - distToCore(b) || a.id - b.id)) {
+      if (tierIdx(t.hwId) < tierIdx(SINGLE_GPU_TOP)) continue
+      const r = climb(s, t, waveNo)
+      if (r === 'broke') return
+      if (r === 'done') did = true
+    }
+    if (!did) return
+  }
 }
 
-/** Owned derived checkpoints matching a method (and optional target). */
-function derived(s: GameState, method: string, target?: string): DM[] {
+/* ------------------------------------------------------------------ *
+ *  Support buildings                                                    *
+ * ------------------------------------------------------------------ */
+
+/** Guardrails and routers go by the core (every lane); caches go among the racks. */
+function ensureSupport(s: GameState, id: string, want: number, minSpend = 0): void {
+  const central = TOWER_DEFS[id].kind === 'guardrail' || TOWER_DEFS[id].kind === 'router'
+  let guard = 0
+  while (countDef(s, id) < want && guard++ < 12) {
+    if (spendable(s) < buildCost(s, TOWER_DEFS[id]) + minSpend) return
+    if (!ensureCapacity(s, (TOWER_DEFS[id].powerDraw ?? 0) + 0.1)) return
+    if (spendable(s) < buildCost(s, TOWER_DEFS[id])) return
+    if (!place(s, id, central ? supportSlot(s, TOWER_DEFS[id].kind) : laneSlot(s))) return
+  }
+}
+
+/** Does the coming wave carry a hazard of this kind? */
+const carries = (demand: Demand[], h: SafetyHazard): boolean => demand.some((d) => (d.hazards[h] ?? 0) > 0)
+
+/** What selling the encoder guards would refund (60% of their price). */
+const encoderRefund = (s: GameState): number =>
+  s.towers.filter((t) => t.def.id === 'guard_encoder').reduce((n, t) => n + Math.round(t.def.cost * 0.6), 0)
+
+/** The coming wave's novel-attack share (the adaptive variants a classifier guard mostly misses). */
+const novelShare = (demand: Demand[]): number => demand.reduce((m, d) => Math.max(m, d.novelShare), 0)
+
+/**
+ * The guardrail stage on every lane. A Prompt Guard encoder screens jailbreaks (and, once
+ * Red-Team Eval has calibrated it, injection) for 92 ms; as the era's attacks turn adaptive it
+ * misses most novel variants, so once they are a large share the stage becomes a generative
+ * judge (Llama Guard): one family, about the same input latency after FP8, every hazard
+ * including harmful content, and it keeps its recall on novel attacks. Keeping both would stack
+ * their latency on code completion's 200 ms TTFT, so the encoder is retired when the judge lands.
+ */
+function planGuards(s: GameState, demand: Demand[], waveNo: number): void {
+  const hazardous = carries(demand, 'jailbreak') || carries(demand, 'injection') || carries(demand, 'harmful')
+  const judge =
+    (s.upgrades['eval_redteam'] ?? 0) >= 1 && (novelShare(demand) >= 0.25 || carries(demand, 'harmful'))
+  if (
+    judge &&
+    !countDef(s, 'guard_llm') &&
+    spendable(s) + encoderRefund(s) >= buildCost(s, TOWER_DEFS.guard_llm) + 4
+  ) {
+    for (const t of s.towers.filter((x) => x.def.id === 'guard_encoder')) sellTower(s, t.id)
+    ensureSupport(s, 'guard_llm', 1)
+  }
+  if (!countDef(s, 'guard_llm') && (hazardous || waveNo >= 4)) ensureSupport(s, 'guard_encoder', 1)
+}
+
+/* ------------------------------------------------------------------ *
+ *  Research                                                             *
+ * ------------------------------------------------------------------ */
+
+/**
+ * The serving stack in dependency order. Continuous batching, FP8 weights and paged KV first
+ * (FP8 halves the bytes every decode step reads and doubles the prefill rate on FP8 Tensor
+ * Cores; paged KV recovers the memory a batch needs), the Studio unlocks, prefix caching and
+ * chunked prefill (long prompts stop stalling the decodes that share their lane), then the
+ * parallelism a multi-GPU checkpoint needs and the throughput stack. Chunked prefill and P/D
+ * disaggregation exclude each other: a fleet whose every rack serves the whole mix gains more
+ * from overlapping prompts with decodes than from a dedicated prefill pool, which must also
+ * ingest every cohort stream's prompt. INT4 is skipped: its long-context tax lands on exactly
+ * the long prompts the late waves carry. Multi-step scheduling comes last: it amortizes the
+ * scheduler over several decode steps but makes a new prompt wait for the next scheduler call.
+ */
+const INFRA_PRIORITY = [
+  'inf_batching',
+  'inf_wq_fp8',
+  'inf_paged',
+  'r_pt_lora',
+  'inf_prefix',
+  'r_pt_pref',
+  'r_pt_cai',
+  'inf_chunked',
+  'r_pt_rl',
+  'inf_flash',
+  'inf_kvquant_fp8',
+  'inf_par_tp',
+  'inf_spec',
+  'inf_par_dp',
+  'inf_par_ep',
+  'inf_routing',
+  'inf_engine_sglang',
+  'inf_offload',
+  'inf_par_pp',
+  'inf_wq_nvfp4',
+  'inf_multistep',
+] as const
+
+const EVAL_PRIORITY = ['r_eval_redteam_v1', 'r_eval_redteam_v2'] as const
+
+/** Start the next project on each research track that is free and affordable in Data. */
+function planResearch(s: GameState): void {
+  for (const list of [INFRA_PRIORITY, EVAL_PRIORITY]) {
+    for (const id of list) {
+      const def = RESEARCH_DEFS[id]
+      if (!def || researchOwned(s, def)) continue
+      if (s.research[researchTrackOf(def)]) break
+      if (!researchUnlocked(s, def)) continue // a conflict or a Blackwell-only node: skip it
+      // a project lends racks while it trains: on a tiny fleet, let serving come first
+      if (servers(s).length < 6) break
+      if (s.data >= def.dataCost) startResearch(s, id)
+      break
+    }
+  }
+}
+
+/* ------------------------------------------------------------------ *
+ *  Post-Training Studio                                                *
+ * ------------------------------------------------------------------ */
+
+type Target = 'reasoning' | 'agentic' | 'safety'
+
+/** Owned derived checkpoints from one method (and target). */
+function derivedOf(s: GameState, method: string, target?: Target): ModelDef[] {
   return Object.values(s.derivedModels).filter(
     (m) => m.lineage?.method === method && (target === undefined || m.lineage?.target === target),
   )
 }
 
-/** Does this model clear a (tier-scaled) line on the named axis? */
-function clearsLine(m: DM, axis: 'reasoning' | 'agentic', line: number): boolean {
-  return m.qualityBy[axis] >= line
+/** The checkpoints the fleet runs, most-deployed first. */
+function deployedBases(s: GameState): ModelDef[] {
+  const n = new Map<string, number>()
+  for (const t of servers(s)) if (t.modelId) n.set(t.modelId, (n.get(t.modelId) ?? 0) + 1)
+  return [...n.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .map(([id]) => resolveModel(s, id))
+    .filter((m): m is ModelDef => !!m)
 }
 
-/**
- * The agent lane's quality gate: effQ = servedAgentic − the long-context penalty of the
- * request's real tokens (window fill, softened by the model's long-context skill). The
- * wall constant below was tuned against an earlier, steeper context penalty (an abstract
- * context score of 186–203 vs a 176 cap): it is a conservative target the balance pass
- * should re-derive from longContextPenaltyFor on the late agent prompts.
- *   • waves 65-79: difficulty 98.4 → need servedAgentic ≳ 103
- *   • waves 80-100: difficulty 98.4 → need servedAgentic ≳ 110.6 (the WALL)
- * A SINGLE GRPO-agentic run (depth 1) tops out at servedAgentic ≈ 106 — it clears 65-79
- * but FAILS the 80+ wall, which is exactly where the demo died (the agent lane shipped
- * all-`bad` → trust death). STACKING GRPO-agentic runs lifts it: each run adds less (≈ +12, +8, +6 at effort 2)
- * agentic. The winning base is a FAST low-active-param MoE (≈3B active, e.g. Qwen3.6-35B-
- * A3B) — three stacked GRPO runs reach servedAgentic ≈ 116 (WALL cleared with margin)
- * while keeping decode fast (≈4 ms TPOT → meets the interactive SLO, no slo_miss flood).
- * It fits a Standard rack at FP8, so the apex deploys WIDELY and CHEAPLY across every
- * lane (spatial coverage) WITHOUT an expensive GLM Pod cluster.
- */
-const AGENT_WALL_AG = 110.6
-/** How many stacked GRPO-agentic runs make the apex (diminishing gains, bounded by the body's capacity ceiling). */
-const APEX_GRPO_DEPTH = 3
-
-/** Project the apex snapshot from a base: APEX_GRPO_DEPTH stacked GRPO-agentic runs. */
-function projApex(base: DM): DM {
-  let m = base
-  for (let i = 0; i < APEX_GRPO_DEPTH; i++) m = projTrain(m, 'grpo', 'agentic', 2.0)
-  return m
-}
-
-/** Served agentic on an FP8 fleet (before the request's long-context penalty). */
-function projServedAgentic(m: DM): number {
-  // serverQualityVs(agentic) = qualityBy.agentic − PTQ tax (0 at FP8) − alignmentTax.
-  // alignmentTax is a small over-refusal/refusal-style trade; approximate via qualityBy
-  // (the real deploy path re-checks it). Use the raw axis minus a safe-completion-aware
-  // tax floor so the projection is conservative.
-  return m.qualityBy.agentic - alignmentTaxApprox(m)
-}
-
-/** Conservative alignment-tax approximation for projection ranking (real tax applied at serve). */
-function alignmentTaxApprox(m: DM): number {
-  // safe-completion models pay little; hard-refusal / high-over-refusal pay more.
-  const or = m.alignment.overRefusal
-  return m.alignment.refusalStyle === 'safe-completion' ? or * 4 : 2 + or * 8
-}
-
-/** The owned GRPO-agentic apex specialist that clears the agent WALL, if any. */
-function apexAgentic(s: GameState): DM | undefined {
-  return derived(s, 'grpo', 'agentic')
-    .filter((m) => projServedAgentic(m) >= AGENT_WALL_AG)
-    .sort((a, b) => b.qualityBy.agentic - a.qualityBy.agentic)[0]
-}
-
-/**
- * The owned GRPO-agentic specialist that is the best SEED for the next stacked GRPO run
- * toward the apex — i.e. the deepest agentic lineage that does NOT yet clear the wall.
- * Picking the deepest keeps the chain progressing one run per build phase.
- */
-function seedAgentic(s: GameState): DM | undefined {
-  return derived(s, 'grpo', 'agentic')
-    .filter((m) => projServedAgentic(m) < AGENT_WALL_AG)
-    .sort((a, b) => (b.lineage?.depth ?? 0) - (a.lineage?.depth ?? 0) || b.qualityBy.agentic - a.qualityBy.agentic)[0]
-}
-
-/**
- * The Post-Training Studio queue. The posttrain track is shared (one run per build
- * phase), so runs are committed in strict SURVIVAL priority. The endgame fleet wants
- * EVERY deployed model to be BOTH low-over-refusal (no SLA bleed) AND high-capability
- * enough to clear the late-tier reason/agent walls (no `bad`-answer trust drain). The
- * §2.4 Pareto tool that delivers low over-refusal is CAI (safe-completion); the tool
- * that clears the agent WALL is a STACK of GRPO-agentic runs (diminishing gains up to the body's capacity ceiling, models.ts):
- *
- *   1. CAI bulk workhorse — strongest lane-clearing MoE that fits a Standard rack at
- *      FP8, low active params (fast decode → meets the interactive SLO). Kills the
- *      over-refusal SLA bleed AND self-handles hazards (no trust breach, fewer guards).
- *      Used until the safe-apex (step 3) supersedes it on the bulk racks.
- *   2. the AGENT-WALL APEX — APEX_GRPO_DEPTH (3) stacked GRPO-agentic runs on a FAST
- *      pa≈3 MoE base → servedAgentic ≈ 116, the only frontier/standard-deployable model
- *      that clears the wave-80+ agent wall (servedAgentic ≳ 110.6) WITHOUT a GLM Pod
- *      cluster. Committed one run per build phase; satisfies the agentic showcase req.
- *   3. CAI on the apex → the SAFE-COMPLETION agent-wall workhorse (ag ≈ 115, or ≈ 0.06,
- *      sf ≈ 95). Fast, low-over-refusal AND wall-clearing → the UNIVERSAL endgame model
- *      deployed on every rack; this is what finally stops the `agent`-lane `bad` answers
- *      that were the dominant late trust drain (the demo's wave-65 trust death).
- *   4. GRPO-REASONING specialist (re ≈ 114) for the hardest reason lane + showcase req.
- *   5. CAI it too → a safe high-reason workhorse; then keep refreshing as the roster
- *      and FP8/headroom let stronger bases in.
- */
-function maybeStudio(s: GameState): void {
-  if (s.research.posttrain) return
-  if (!hasTowerKind(s, 'lab')) return
-  if (s.data < 22) return
-  const caiUnlocked = (s.upgrades['pt_cai'] ?? 0) > 0
-  const grpoUnlocked = (s.upgrades['pt_rl'] ?? 0) > 0
-  const RE_LINE = 100 // reason 82 × tier-12 1.20
-
-  const start = (baseId: string, method: 'grpo' | 'cai', target: 'reasoning' | 'agentic' | 'safety', effort: number): boolean => {
-    if (!canPostTrain(s, [baseId], method, target)) return false
-    // a futile run: the body's capacity ceiling leaves (almost) nothing to gain on the axis
-    const base = resolveModel(s, baseId)
-    if (method === 'grpo' && target !== 'safety' && base) {
-      if (projTrain(base, method, target, effort).qualityBy[target] - base.qualityBy[target] < 1) return false
-    }
-    return startPostTrain(s, [baseId], method, target, effort)
-  }
-
-  // --- 1. the bulk CAI safe-completion workhorse (top survival priority) ---
-  if (caiUnlocked && derived(s, 'cai').filter((m) => !m.lineage || m.lineage.depth <= 1).length < 1) {
-    const base = fp8Bases(s, 'hw_standard')
-      .filter((m) => baseLanesCleared(m) >= 5)
-      .sort(
-        (a, b) =>
-          baseLanesCleared(b) - baseLanesCleared(a) ||
-          a.paramsActiveB - b.paramsActiveB || // fast decode (fits the interactive SLO)
-          b.quality - a.quality,
-      )[0]
-    if (base && s.data >= 22 && start(base.id, 'cai', 'safety', 2.0)) return
-  }
-
-  // --- 2. the AGENT-WALL apex, in APEX_GRPO_DEPTH stacked GRPO-agentic runs ---
-  // A single GRPO-agentic tops out at servedAgentic ≈ 106 and FAILS the wave-80+ wall
-  // (servedAgentic ≳ 110.6). Stacked GRPO runs add diminishing gains (bounded by the body's capacity ceiling), so a FAST low-
-  // active-param MoE base (≈3B active) reaches servedAgentic ≈ 116 in three runs while
-  // keeping ≈4 ms TPOT (meets the interactive SLO → deployable widely without slo_miss).
-  // Pick the STANDARD-fitting base whose apex projection clears the wall, preferring the
-  // FASTEST such base (low active params) so the deployed apex never bleeds SLA.
-  const apex = apexAgentic(s)
-  const seed = seedAgentic(s)
-  if (grpoUnlocked && !apex) {
-    if (!seed) {
-      // step 2a — commit the FIRST GRPO-agentic run on the best apex base. Prefer the
-      // fastest base whose apex projection CLEARS the wall; fall back to highest apex ag.
-      const std = fp8Bases(s, 'hw_standard')
-      const front = fp8Bases(s, 'hw_frontier')
-      const pickFrom = std.length ? std : front
-      const scored = pickFrom.map((m) => ({ m, apexAg: projServedAgentic(projApex(m)) }))
-      const clears = scored.filter((c) => c.apexAg >= AGENT_WALL_AG)
-      const pool = clears.length ? clears : scored
-      const ranked = pool.sort(
-        (a, b) =>
-          a.m.paramsActiveB - b.m.paramsActiveB || // fastest apex first (interactive SLO)
-          b.apexAg - a.apexAg,
-      )
-      const best = ranked[0]
-      if (best && s.data >= 24 && start(best.m.id, 'grpo', 'agentic', 2.0)) return
-    } else {
-      // step 2b — stack the NEXT GRPO-agentic run on the seed → progress toward the apex.
-      if (s.data >= 12 && start(seed.id, 'grpo', 'agentic', 2.0)) return
+/** A fast MoE body worth specialising: few active params, fits an H100 at FP8, strong on the axis. */
+function specialistBody(s: GameState, axis: 'agentic' | 'reasoning'): ModelDef | null {
+  const fp8 = createState(0)
+  fp8.infra.quant.fp8 = true
+  let best: ModelDef | null = null
+  let bestScore = -Infinity
+  for (const id of Object.keys(s.models)) {
+    const m = resolveModel(s, id)
+    // a body that answers interactive traffic instantly, so the specialist can take every lane
+    if (!m || m.origin !== 'base' || m.paramsActiveB > 6 || m.thinking === 'always') continue
+    if (!serverDeployable(fp8, loadout(fp8, 'hw_perf', id))) continue
+    const proj = computeDerivedFields(m, METHOD_RECIPES.grpo, axis, 2, null)
+    const sc =
+      proj.qualityBy[axis] + (m.qualityByInstant?.coding ?? m.qualityBy.coding) * 0.2 - m.paramsActiveB
+    if (sc > bestScore) {
+      bestScore = sc
+      best = m
     }
   }
+  return best
+}
 
-  // --- 3. CAI on the apex agentic specialist → safe-completion agent-wall workhorse.
-  //         (Drops over-refusal to ~0.06 for SLA, keeps servedAgentic above the wall.) ---
-  if (caiUnlocked && apex && !derived(s, 'cai').some((m) => m.lineage?.baseModelIds?.[0] === apex.id)) {
-    if (s.data >= 24 && projServedAgentic(projTrain(apex, 'cai', 'safety', 2.0)) >= AGENT_WALL_AG &&
-        start(apex.id, 'cai', 'safety', 2.0))
-      return
+/** Gain one GRPO run would add on the axis (the body's capacity ceiling bounds it). */
+function grpoGain(m: ModelDef, axis: 'agentic' | 'reasoning'): number {
+  return computeDerivedFields(m, METHOD_RECIPES.grpo, axis, 2, null).qualityBy[axis] - m.qualityBy[axis]
+}
+
+/**
+ * One Studio run per build phase, in survival order: a safe-completion (CAI) version of the
+ * fleet's workhorse (fewer over-refusals, more attacks self-handled), an agentic specialist on a
+ * fast MoE body (stacked while each run still adds), a reasoning specialist, and CAI on each
+ * specialist. A run whose projected gain is negligible is skipped.
+ */
+function planStudio(s: GameState): void {
+  if (s.research.posttrain || !countKind(s, 'lab') || s.data < 30) return
+  const unlocked = (tech: string): boolean => (s.upgrades[tech] ?? 0) > 0
+  const run = (base: ModelDef, method: 'grpo' | 'cai', target: Target): boolean =>
+    canPostTrain(s, [base.id], method, target) && startPostTrain(s, [base.id], method, target, 2)
+  const caiOf = (m: ModelDef): boolean =>
+    m.lineage?.method === 'cai' || derivedOf(s, 'cai').some((d) => d.lineage?.baseModelIds[0] === m.id)
+
+  // 1. a safe-completion version of the checkpoint most of the fleet runs
+  const work = deployedBases(s)[0]
+  if (unlocked('pt_cai') && work && !caiOf(work) && run(work, 'cai', 'safety')) return
+  if (!unlocked('pt_rl')) return
+  // 2. the agentic specialist on a fast MoE body, stacked while a run still adds
+  const agentic = derivedOf(s, 'grpo', 'agentic').sort((a, b) => b.qualityBy.agentic - a.qualityBy.agentic)[0]
+  if (!agentic) {
+    const body = specialistBody(s, 'agentic')
+    if (body && run(body, 'grpo', 'agentic')) return
+  } else if ((agentic.lineage?.depth ?? 1) < 3 && grpoGain(agentic, 'agentic') >= 3) {
+    if (run(agentic, 'grpo', 'agentic')) return
   }
-
-  // --- 4. a GRPO-reasoning specialist (hardest reason lane + showcase req) ---
-  const reSpec = derived(s, 'grpo', 'reasoning')[0]
-  if (grpoUnlocked && !reSpec) {
-    const cand = fp8Bases(s, 'hw_frontier').map((m) => ({ m, p: projTrain(m, 'grpo', 'reasoning', 2.0) }))
-    const clears = cand.filter((c) => clearsLine(c.p, 'reasoning', RE_LINE))
-    const pool = clears.length ? clears : cand
-    const best = pool.sort(
-      (a, b) => a.m.paramsActiveB - b.m.paramsActiveB || b.p.qualityBy.reasoning - a.p.qualityBy.reasoning,
-    )[0]
-    if (best && s.data >= 24 && start(best.m.id, 'grpo', 'reasoning', 2.0)) return
+  // 3. the reasoning specialist
+  if (!derivedOf(s, 'grpo', 'reasoning').length) {
+    const body = specialistBody(s, 'reasoning')
+    if (body && run(body, 'grpo', 'reasoning')) return
   }
-
-  // --- 5. CAI on the reasoning specialist → safe high-reason workhorse ---
-  if (caiUnlocked && reSpec && !derived(s, 'cai').some((m) => m.lineage?.baseModelIds?.[0] === reSpec.id)) {
-    if (s.data >= 24 && start(reSpec.id, 'cai', 'safety', 2.0)) return
-  }
-}
-
-function fp8Ready(s: GameState): boolean {
-  return s.infra.quant.fp8
-}
-
-function ownsBigSpecialist(s: GameState): boolean {
-  return Object.values(s.derivedModels).some((m) => m.paramsTotalB >= 100)
-}
-
-function bigRackCount(s: GameState): number {
-  return s.towers.filter(
-    (t) => t.def.kind === 'server' && (t.hwId === 'hw_frontier' || t.hwId === 'hw_pod' || t.hwId === 'hw_superpod'),
-  ).length
-}
-
-function chooseRole(s: GameState, waveAbout: number): Role {
-  if (waveAbout < 7) return 'general'
-  if (!fp8Ready(s) || !ownsBigSpecialist(s)) return 'general'
-  const servers = countKind(s, 'server')
-  const wantBigFrac = waveAbout >= 12 ? 0.3 : 0.18
-  return bigRackCount(s) < Math.ceil((servers + 1) * wantBigFrac) ? 'frontier' : 'general'
-}
-
-function roleCost(s: GameState, role: Role, waveAbout = 0): number {
-  const bc = (v: number) => Math.round(v * s.modifiers.buildCost)
-  const edge = HARDWARE_DEFS.hw_edge.cost
-  if (role === 'small') return bc(edge)
-  if (role === 'frontier') return bc(HARDWARE_DEFS.hw_frontier.cost)
-  const top = waveAbout >= 6 ? HARDWARE_DEFS.hw_perf.cost : HARDWARE_DEFS.hw_standard.cost
-  return bc(edge) + bc(top - edge)
-}
-
-function roleHardware(role: Role) {
-  return role === 'frontier'
-    ? HARDWARE_DEFS.hw_frontier
-    : role === 'small'
-      ? HARDWARE_DEFS.hw_edge
-      : HARDWARE_DEFS.hw_standard
-}
-
-function roleDrawKw(role: Role): number {
-  return (roleHardware(role).tdpWatts / 1000) * RACK_UTILIZATION
-}
-
-function lastTower(s: GameState) {
-  return s.towers[s.towers.length - 1]
-}
-
-function buildRole(s: GameState, role: Role, slot: Slot | undefined, waveAbout = 0): boolean {
-  if (!slot) return false
-  if (role === 'frontier') {
-    if (!tryBuild(s, 'srv_frontier', slot.col, slot.row)) return false
-    const t = lastTower(s)
-    deployBest(s, t.id, t.hwId, t.modelId)
-    return true
-  }
-  if (role === 'small') return tryBuild(s, 'srv_edge', slot.col, slot.row)
-  if (!tryBuild(s, 'srv_edge', slot.col, slot.row)) return false
-  const t = lastTower(s)
-  if (!upgradeHardware(s, t.id)) return false
-  if (waveAbout >= 6) upgradeHardware(s, t.id)
-  deployBest(s, t.id, t.hwId, t.modelId)
-  return true
-}
-
-function planResearch(s: GameState): void {
-  const fleetFlops = s.towers.reduce(
-    (n, t) => n + (t.def.kind === 'server' && t.hwId ? (HARDWARE_DEFS[t.hwId]?.bf16Tflops ?? 0) : 0),
-    0,
-  )
-  for (const id of RESEARCH_PRIORITY) {
-    const def = RESEARCH_DEFS[id]
-    if (!def || researchOwned(s, def)) continue
-    if (s.research[researchTrackOf(def)]) continue
-    if (def.compute / RESEARCH_TARGET_SECONDS > fleetFlops * 0.3) break
-    const strongest = s.towers.reduce(
-      (m, t) => (t.def.kind === 'server' && t.hwId ? Math.max(m, HARDWARE_DEFS[t.hwId]?.bf16Tflops ?? 0) : m),
-      0,
+  // 4. safe-completion versions of the specialists, the strongest first
+  if (unlocked('pt_cai')) {
+    const specs = [...derivedOf(s, 'grpo', 'agentic'), ...derivedOf(s, 'grpo', 'reasoning')].sort(
+      (a, b) => b.qualityBy.agentic + b.qualityBy.reasoning - (a.qualityBy.agentic + a.qualityBy.reasoning),
     )
-    const reqSeconds = def.compute / Math.max(1, strongest)
-    if (strongest > 130 && reqSeconds > 15 && fleetFlops - strongest < 700) break
-    if (researchUnlocked(s, def) && s.data >= def.dataCost) startResearch(s, id)
-    break
+    for (const m of specs) if (!caiOf(m) && run(m, 'cai', 'safety')) return
   }
 }
 
-function modernizeFleet(s: GameState): void {
-  for (const t of s.towers) {
-    if (t.def.kind !== 'server' || !t.modelId) continue
-    deployBest(s, t.id, t.hwId, t.modelId)
-  }
-  const edges = s.towers.filter((t) => t.def.kind === 'server' && t.hwId === 'hw_edge')
-  for (let i = 0; i + 2 < edges.length; i++) {
-    if (s.meters.cash < reserveOf(s) + 12) break
-    const t = edges[i]
-    if (upgradeHardware(s, t.id)) {
-      if (s.infra.kv.utilization >= 0.96 && s.meters.cash > reserveOf(s) + 30) upgradeHardware(s, t.id)
-      deployBest(s, t.id, t.hwId, t.modelId)
-    }
-  }
-  if (s.infra.kv.utilization >= 0.96) {
-    for (const t of s.towers) {
-      if (t.def.kind !== 'server' || t.hwId !== 'hw_standard') continue
-      if (s.meters.cash < reserveOf(s) + 22) break
-      if (upgradeHardware(s, t.id)) deployBest(s, t.id, t.hwId, t.modelId)
-    }
-  }
-}
+/* ------------------------------------------------------------------ *
+ *  The build phase                                                      *
+ * ------------------------------------------------------------------ */
 
-function ensureSupport(s: GameState, kind: string, want: number, slots: Slot[], floor?: number, cap = 6): void {
-  let guard = 0
-  const minCash = floor ?? reserveOf(s) + 25
-  while (countDef(s, kind) < want && s.meters.cash > minCash && guard++ < cap) {
-    ensureCapacity(s, 1, 1)
-    if (!place(s, kind, freeSlot(s, slots))) break
-  }
-}
-
-/**
- * Cache SATURATION — still a key lever against the late agent wall, but no longer a
- * free stored-answer bypass. A prefix-cache hit skips PREFILL and gives instant TTFT,
- * then the response still decodes on the model and still faces quality / safety /
- * window gates. The cacheable lanes (embed/chat/comp/rag/agent) are benign-heavy and
- * prefix-rich; with prefix-cache research (prefixLevel 2 → +0.4 per cache, capped at
- * 70%) overlapping caches materially cut prefill contention and queue time.
- */
-function cacheTarget(s: GameState, waveAbout: number): number {
-  if (waveAbout < 4) return 0
-  if (waveAbout < 6) return 1
-  if (waveAbout < 8) return 2
-  const servers = countKind(s, 'server')
-  // Caches are the AGENT-lane SLO lever: an agent request is CACHEABLE with a 6000-token
-  // prompt, and prefill serializes the rack (one prompt at a time, super-linear in length).
-  // On a single-lane SURGE the agent prompts queue for prefill → TTFT/E2EL blow past the
-  // 9 s bound → slo_miss flood (the wave-70/80 boss deaths). A prefix-cache HIT skips that
-  // prefill entirely (instant TTFT), so a DENSE cache layer over the lanes keeps the agent
-  // lane inside SLO under a surge — even after the cache nerf (a hit still relieves prefill
-  // contention; it just no longer frees the decode). So keep caches dense (≈1 per 2.2 racks).
-  const ratio = waveAbout >= 55 ? 2.0 : 2.5
-  return Math.min(48, Math.max(3, Math.ceil(servers / ratio)))
-}
-
-/**
- * APEX PINNING — the spatial half of the agent-wall fix. The stacked-GRPO agentic apex
- * (servedAgentic ≈ 115, fits a Standard rack at FP8) is the frontier-cheap model that
- * clears the wave-80+ agent wall, but a request is decoded by WHATEVER rack it passes
- * first: a single bulk rack between spawn and an apex rack can decode an agent request to
- * a `bad` answer before it ever reaches one. So the apex must COVER the lanes. (Belt-and-
- * braces: the bulk model is usually the safe-apex too, which ALSO clears the wall — but
- * this pin guarantees coverage even when an older bulk lingers on some racks.)
- *
- * We pin the apex on a wave-scaled FRACTION of server racks, chosen by their position
- * along the lanes (the towers themselves are placed core-first via SLOTS.lane, so taking
- * an EVENLY-STRIDED subset spreads the apex from the spawn end to the core). The fraction
- * climbs with the agent volume: the wall first bites at wave ~65, and waves 80+ are
- * agent-heavy, so by then a large share of the fleet must clear it. Apex racks survive
- * modernizeFleet via the wall-clearer pin protection in deployBest.
- */
-function apexFraction(waveAbout: number): number {
-  if (waveAbout < 40) return 0
-  if (waveAbout < 55) return 0.25
-  if (waveAbout < 65) return 0.45
-  if (waveAbout < 80) return 0.65
-  return 0.82 // waves 80+: agent-heavy AND the hardest wall → most racks must clear it
-}
-
-function pinApexRacks(s: GameState, waveAbout: number): void {
-  const apexId = bestWallFit(s, 'hw_standard') ?? bestWallFit(s, 'hw_frontier')
-  if (!apexId) return
-  const servers = s.towers.filter((t) => t.def.kind === 'server')
-  if (!servers.length) return
-  // sort racks by distance-to-core (spawn-end first) so a strided subset spreads coverage.
-  const ordered = servers
-    .map((t) => ({ t, d: Math.abs(t.col - CORE_TILE.col) + Math.abs(t.row - CORE_TILE.row) }))
-    .sort((a, b) => b.d - a.d || a.t.id - b.t.id)
-    .map((x) => x.t)
-  const want = Math.round(ordered.length * apexFraction(waveAbout))
-  const already = ordered.filter((t) => isWallClearer(s, t.modelId)).length
-  if (already >= want) return
-  // pick an evenly-strided subset of `want` racks so coverage is spread along the lanes.
-  const stride = ordered.length / Math.max(1, want)
-  const picks = new Set<number>()
-  for (let i = 0; i < want; i++) picks.add(ordered[Math.min(ordered.length - 1, Math.floor(i * stride))].id)
-  let placed = already
-  for (const t of ordered) {
-    if (placed >= want) break
-    if (isWallClearer(s, t.modelId)) continue
-    if (!picks.has(t.id)) continue
-    const fit = bestWallFit(s, t.hwId)
-    if (fit && serverDeployable(s, loadout(s, t.hwId, fit))) {
-      deployModel(s, t.id, fit)
-      placed++
-    }
-  }
-  // if strided picks didn't fill the quota (some couldn't fit), top up from the spawn end.
-  for (const t of ordered) {
-    if (placed >= want) break
-    if (isWallClearer(s, t.modelId)) continue
-    const fit = bestWallFit(s, t.hwId)
-    if (fit && serverDeployable(s, loadout(s, t.hwId, fit))) {
-      deployModel(s, t.id, fit)
-      placed++
-    }
-  }
-}
-
-/**
- * INCIDENT-RESILIENCE HEADROOM — the random per-wave incident roll can slash capacity:
- * a cooling-failure cuts coolingCap ×0.55, a power-spike cuts powerCap similarly. If the
- * fleet's draw/heat sits near the cap, that cut browns out or thermally throttles half the
- * fleet mid-surge → decode collapses → mass slo_miss → SLA death (exactly the wave-80+
- * boss deaths). So in the late game we build POWER and COOLING headroom so the fleet still
- * fits AFTER a ×0.55 cut: target cap ≥ used / 0.55 ≈ 1.85× used (with a small margin).
- * The air-cooled fleet's heat headroom is Cooling Towers (a Liquid Loop cools only liquid racks).
- */
-function ensureIncidentHeadroom(s: GameState, waveAbout: number): void {
-  if (waveAbout < 40) return
+/** Prepare the build phase before wave `waveNo` (1-based). */
+export function demoPlan(s: GameState, waveNo: number): void {
   updatePower(s)
-  const infraSlot = () => freeSlot(s, SLOTS.back) ?? freeSlot(s, SLOTS.lane)
-  const drawTarget = estDraw(s) / 0.55 + 6 // survive a power-spike cut
-  const heatTarget = estHeat(s) / 0.55 + 6 // survive a cooling-failure cut
-  let guard = 0
-  while (s.power.cap < drawTarget && s.meters.cash > reserveOf(s) + TOWER_DEFS.power.cost + 30 && guard++ < 16) {
-    if (!place(s, 'power', infraSlot())) break
-    updatePower(s)
+  const { demand, seconds, surgeLane } = forecast(s)
+  // the Training Lab opens research and the Studio; buy it once a first fleet stands (it needs no lane)
+  if (waveNo >= 2 && !countKind(s, 'lab') && spendable(s) >= buildCost(s, TOWER_DEFS.lab))
+    place(s, 'lab', infraSlot(s))
+  // a guard before the first jailbreaks, a generative judge once the attacks turn adaptive
+  planGuards(s, demand, waveNo)
+  // a floor of racks for coverage; a telegraphed single-entry surge (every request walks one
+  // lane) reinforces that lane before anything else; then no rack too slow for the mix
+  growFleet(s, waveNo, Math.ceil(rackTarget(waveNo) * 0.6))
+  if (surgeLane !== null) {
+    const lane = surgeLane
+    growFleet(s, waveNo, servers(s).length + Math.ceil(rackTarget(waveNo) * SURGE_REINFORCE), (x) =>
+      surgeSlot(x, lane),
+    )
   }
-  guard = 0
-  while (coolingPools(s).air.cap < heatTarget && s.meters.cash > reserveOf(s) + TOWER_DEFS.cooling.cost + 30 && guard++ < 16) {
-    if (!place(s, 'cooling', infraSlot())) break
-    updatePower(s)
-  }
-}
-
-function ensureShowcaseResources(s: GameState, waveAbout: number): void {
-  const infraSlot = () => freeSlot(s, SLOTS.back) ?? freeSlot(s, SLOTS.lane)
-  if (waveAbout >= 5 && countKind(s, 'power') < 1 && s.meters.cash > reserveOf(s) + TOWER_DEFS.power.cost + 10)
-    place(s, 'power', infraSlot())
-  if (waveAbout >= 5 && countKind(s, 'cooling') < 1 && s.meters.cash > reserveOf(s) + TOWER_DEFS.cooling.cost + 10)
-    place(s, 'cooling', infraSlot())
-  if (
-    waveAbout >= 12 &&
-    !hasTowerKind(s, 'cooling_liquid') &&
-    s.meters.cash > reserveOf(s) + TOWER_DEFS.cooling_liquid.cost + 25
-  ) {
-    place(s, 'cooling_liquid', infraSlot())
-  }
-}
-
-function ensurePodShowcase(s: GameState, waveAbout: number): void {
-  if (waveAbout < 14 || !hasTowerKind(s, 'cooling_liquid') || hasHardware(s, 'hw_pod')) return
-  // Stand up ONE Pod (8× H200) for throughput + the showcase by upgrading the
-  // strongest existing rack up the tiers (perf → frontier → pod). A Pod packs ~8×
-  // the bandwidth per board tile, so this also lifts the throughput ceiling the
-  // late gauntlet pushes against — relevant now that cheap strong MoEs let the
-  // fleet otherwise coast on single H100s and stall on SLA, never needing big iron.
-  let guard = 0
-  while (!hasHardware(s, 'hw_pod') && guard++ < 3) {
-    const t = s.towers
-      .filter((x) => x.def.kind === 'server' && (x.hwId === 'hw_perf' || x.hwId === 'hw_frontier'))
-      .sort((a, b) => HARDWARE_TIERS.indexOf(b.hwId ?? '') - HARDWARE_TIERS.indexOf(a.hwId ?? ''))[0]
-    if (!t) return
-    const cost = hardwareUpgradeCost(s, t)
-    if (s.meters.cash <= cost + reserveOf(s)) return // keep the full wave-operating-bill buffer
-    if (!upgradeHardware(s, t.id)) return
-    deployBest(s, t.id, t.hwId, t.modelId)
-  }
-}
-
-/**
- * LATE-GAME THROUGHPUT SCALER — the SLA half of the endgame. Once the agent wall is
- * cleared (trust holds), the remaining killer is a SURGE boss (single-lane-surge funnels
- * the WHOLE wave through one ingress lane): the racks in that lane are swamped and the
- * reason/agent decode (6000+ output tokens) tips over the per-token SLO → mass slo_miss.
- *
- * The board is slot-limited (~100 tiles), so we cannot just add more single-GPU racks.
- * The lever is DENSITY: upgrade the racks CLOSEST to the core (where all four lanes
- * converge, so one rack catches surge traffic from ANY lane) up the tiers to Pod (8× H200,
- * ~8× decode bandwidth per tile) and Superpod (8× B200, ~19×). A handful of big-iron racks
- * straddling the convergence point absorb a single-lane flood that a thin lane of perf
- * racks cannot. We gate the spend on a generous cash buffer (the economy is cash-rich by
- * the late game) and build the power/cooling to match.
- */
-function coreServersByProximity(s: GameState): Tower[] {
-  return s.towers
-    .filter((t) => t.def.kind === 'server')
-    .map((t) => ({ t, d: Math.abs(t.col - CORE_TILE.col) + Math.abs(t.row - CORE_TILE.row) }))
-    .sort((a, b) => a.d - b.d || a.t.id - b.t.id)
-    .map((x) => x.t)
-}
-
-function scaleCoreThroughput(s: GameState, waveAbout: number): void {
-  if (waveAbout < 36) return
-  const tierIdx = (id: string | undefined) => HARDWARE_TIERS.indexOf(id ?? '')
-  const upTo = (t: Tower, targetIdx: number, extraReserve: number): boolean => {
-    while (tierIdx(t.hwId) < targetIdx) {
-      const reserve = reserveOf(s) + extraReserve
-      const cost = hardwareUpgradeCost(s, t)
-      if (s.meters.cash <= cost + reserve) return false
-      const next = HARDWARE_TIERS[tierIdx(t.hwId) + 1]
-      const kw = (HARDWARE_DEFS[next]?.tdpWatts ?? 0) / 1000
-      ensureCapacity(s, kw, kw) // power/cooling headroom for the bigger draw first
-      if (!upgradeHardware(s, t.id)) return false // could not afford the power/cooling
-      deployBest(s, t.id, t.hwId, t.modelId)
-    }
-    return true
-  }
-  const core = coreServersByProximity(s)
-
-  // STEP 1 — upgrade EVERY perf rack to FRONTIER (H200). hw_frontier draws the SAME power as
-  // hw_perf (0.56 kW) but carries 43% more HBM bandwidth (4.8 vs 3.35 TB/s) → a power-FREE,
-  // power-cap-friendly decode-throughput boost across the whole fleet. This is the most
-  // tile/power-efficient throughput lever, so it comes first — with a SMALL cash buffer (the
-  // perf→frontier step is cheap, ≈12 credits, and power-NEUTRAL, so it is low-risk and worth
-  // doing even on a thin-cash seed where it is the only affordable way to lift bandwidth).
-  const frontierIdx = tierIdx('hw_frontier')
-  // gate on a modest absolute cash floor (not the full draw-scaled reserve): the step is
-  // power-neutral and cheap, and on a thin-cash seed it is the ONLY affordable bandwidth lift
-  // — letting the draw-scaled reserve block it would leave that seed stuck on slow perf racks.
-  const frontierFloor = Math.max(40, reserveOf(s) * 0.6)
-  for (const t of core) {
-    if (tierIdx(t.hwId) >= frontierIdx) continue
-    const cost = hardwareUpgradeCost(s, t)
-    if (s.meters.cash <= cost + frontierFloor) break
-    if (upgradeHardware(s, t.id)) deployBest(s, t.id, t.hwId, t.modelId)
-  }
-
-  // STEP 2 — a CORE big-iron cluster (Pod → Superpod) at the lane-convergence point. These
-  // pack ~8-19× a single GPU's bandwidth per tile to absorb a single-lane SURGE that funnels
-  // the whole wave through one ingress lane. They are power-hungry, so keep the cluster small
-  // and gate it on power headroom (ensureCapacity stops the climb when power tiles run out).
-  if (!hasTowerKind(s, 'cooling_liquid')) return
-  const want = waveAbout >= 80 ? 26 : waveAbout >= 70 ? 18 : waveAbout >= 58 ? 12 : 6
-  const topIdx = tierIdx(waveAbout >= 64 ? 'hw_superpod' : 'hw_pod')
-  const podIdx = tierIdx('hw_pod')
-  let big = core.filter((t) => tierIdx(t.hwId) >= podIdx).length
-  let guard = 0
-  for (const t of core) {
-    if (big >= want || guard++ > 120) break
-    if (tierIdx(t.hwId) >= topIdx) continue
-    if (!upTo(t, topIdx, 240)) return // out of budget/power — a poorer seed stops here
-    if (tierIdx(t.hwId) >= podIdx) big++
-  }
-}
-
-function assignDisaggRoles(s: GameState, _waveAbout = 0): void {
-  if (!s.infra.disagg) return
-  const servers = s.towers.filter((t) => t.def.kind === 'server')
-  // Disaggregation pins racks to a single phase, which can STARVE the heavy reason/agent
-  // lanes (a decode-pinned rack ignores prefill and vice-versa) — and pinning a large
-  // fraction measurably HURTS the demo (the agent lane needs both phases per request, and a
-  // dedicated pool gave no net benefit in testing). So pin the MINIMUM (one prefill + one
-  // decode) for the throughput showcase only, leaving the rest general-purpose (both phases).
-  if (servers.length < 12) return
-  if (!servers.some((t) => t.role === 'prefill')) {
-    const t = servers.find((x) => x.role === undefined)
-    if (t) cycleRackRole(s, t.id)
-  }
-  if (!servers.some((t) => t.role === 'decode')) {
-    const t = servers.find((x) => x.role === undefined)
-    if (t) {
-      cycleRackRole(s, t.id)
-      cycleRackRole(s, t.id)
-    }
-  }
-}
-
-function ensureBigRacks(s: GameState, waveAbout: number, want: number): void {
-  if (!fp8Ready(s) || !ownsBigSpecialist(s)) return
-  const bigReserve = reserveOf(s) // keep the full wave-operating-bill buffer (was 20 + draw·3)
-  let guard = 0
-  while (bigRackCount(s) < want && guard++ < 4) {
-    const perf = s.towers.find((t) => t.def.kind === 'server' && t.hwId === 'hw_perf')
-    if (perf && s.meters.cash > hardwareUpgradeCost(s, perf) + bigReserve) {
-      if (upgradeHardware(s, perf.id)) {
-        deployBest(s, perf.id, perf.hwId, perf.modelId)
-        continue
-      }
-    }
-    if (s.meters.cash < roleCost(s, 'frontier', waveAbout) + bigReserve) break
-    const slot = freeSlot(s, SLOTS.lane)
-    if (!slot) break
-    ensureCapacity(s, roleDrawKw('frontier'), roleDrawKw('frontier'))
-    if (!buildRole(s, 'frontier', slot, waveAbout)) break
-  }
-}
-
-export function demoPlan(s: GameState, waveAbout: number): void {
-  updatePower(s)
-  if (waveAbout >= 2 && countKind(s, 'lab') < 1 && s.meters.cash > 55) place(s, 'lab', freeSlot(s, SLOTS.back))
-  ensureShowcaseResources(s, waveAbout)
-  modernizeFleet(s)
-  let pre = 0
-  while (
-    countKind(s, 'server') < 7 &&
-    s.meters.cash > roleCost(s, 'general', waveAbout) + reserveOf(s) &&
-    pre++ < 8
-  ) {
-    ensureCapacity(s, roleDrawKw('general'), roleDrawKw('general'))
-    if (!buildRole(s, 'general', freeSlot(s, SLOTS.lane), waveAbout)) break
-  }
-  ensureSupport(s, 'router', waveAbout >= 8 ? 2 : waveAbout >= 2 ? 1 : 0, SLOTS.lane)
-  // Guardrails screen by LANE COVERAGE: one encoder beside the core covers all four
-  // lanes, and more copies of the same classifier add no recall. Llama Guard is left
-  // out: its two-ended latency on every covered lane breaks code completion's 200 ms TTFT.
-  const guardSlots = SLOTS.core.length ? SLOTS.core : SLOTS.lane
-  ensureSupport(s, 'guard_encoder', waveAbout >= 4 ? 1 : 0, guardSlots, 20)
-  ensureSupport(s, 'cache', cacheTarget(s, waveAbout), SLOTS.lane, reserveOf(s) + 8, 20)
-  ensureBigRacks(s, waveAbout, waveAbout >= 12 ? 3 : waveAbout >= 9 ? 2 : 1)
-  ensurePodShowcase(s, waveAbout)
-  const serverTarget = serverTargetFor(waveAbout)
-  let guard = 0
-  while (countKind(s, 'server') < serverTarget && s.meters.cash > showcaseReserve(s, waveAbout) + 15 && guard++ < 80) {
-    const slot = freeSlot(s, SLOTS.lane)
-    if (!slot) break
-    let role = chooseRole(s, waveAbout)
-    if (role === 'frontier' && s.meters.cash < roleCost(s, 'frontier', waveAbout) + showcaseReserve(s, waveAbout))
-      role = 'general'
-    ensureCapacity(s, roleDrawKw(role), roleDrawKw(role))
-    if (s.meters.cash < roleCost(s, role, waveAbout) + 5) break
-    if (!buildRole(s, role, slot, waveAbout)) break
-  }
-  ensurePodShowcase(s, waveAbout)
-  scaleCoreThroughput(s, waveAbout)
-  ensureIncidentHeadroom(s, waveAbout)
+  upgradeSlowest(s, waveNo)
+  ensureSupport(s, 'router', waveNo >= 3 ? (waveNo >= 20 ? 3 : waveNo >= 10 ? 2 : 1) : 0, 4)
+  growFleet(s, waveNo, rackTarget(waveNo))
+  upgradeCore(s, waveNo)
+  ensureSupport(s, 'cache', waveNo >= 5 ? Math.min(10, 1 + Math.floor(waveNo / 6)) : 0, 6)
+  ensureCapacity(s, 0)
   planResearch(s)
-  maybeStudio(s)
-  // Pin the apex agentic specialist across the lanes (spatial agent-wall coverage). Runs
-  // AFTER modernizeFleet/build (which deploy the fast bulk) so it owns its share of racks;
-  // deployBest's wall-clearer pin protection keeps those racks apex on later waves.
-  pinApexRacks(s, waveAbout)
-  assignDisaggRoles(s, waveAbout)
+  planStudio(s)
+  deployFleet(s, demand, seconds, surgeLane !== null)
+  updatePower(s)
 }
 
+/** Run one wave to its end (or `maxBoardSeconds`). */
 export function demoRunWave(s: GameState, maxBoardSeconds = 240): void {
   let t = 0
   while (s.phase === 'wave' && t < maxBoardSeconds) {
@@ -1058,6 +1005,7 @@ export function demoRunWave(s: GameState, maxBoardSeconds = 240): void {
   }
 }
 
+/** Play a whole campaign on one seed. */
 export function demoAutoplay(seed: number): { reached: number; won: boolean; state: GameState } {
   const s = createState(seed)
   startGame(s)
@@ -1073,11 +1021,12 @@ export function demoAutoplay(seed: number): { reached: number; won: boolean; sta
   return { reached, won: s.phase === 'won', state: s }
 }
 
+/** Continue a won run into `surges` endless surges; returns how many it survived. */
 export function demoAutoplayEndless(s: GameState, surges: number): number {
   if (!continueEndless(s)) return 0
   let survived = 0
   for (let i = 0; i < surges; i++) {
-    demoPlan(s, WAVES.length + i)
+    demoPlan(s, WAVES.length + i + 1)
     if (!startWave(s)) break
     demoRunWave(s)
     if (s.phase === 'lost') break

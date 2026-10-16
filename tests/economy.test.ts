@@ -19,7 +19,7 @@ import { serializeState } from '../src/agent/snapshot'
 import {
   buildWave,
   CAMPAIGN_THEMES,
-  CONTRACT_RAMP_TIERS,
+  CONTRACT_BASE,
   contractPayout,
   groupMuls,
   hazardMulOf,
@@ -38,6 +38,7 @@ import {
   WAVES,
   themedIncidentForWave,
 } from '../src/sim/content'
+import { rackGpuCostPerSec } from '../src/sim/effects'
 import { endlessScaling, generateEndlessWave } from '../src/sim/endless'
 import { laneGuardStages, screenInput } from '../src/sim/guards'
 import {
@@ -118,11 +119,13 @@ describe('SLA contract: the clear bonus is paid × the wave Goodput', () => {
     expect(contractPayout(1000, -5)).toBe(0)
   })
 
-  it('the contract ramps in over the first tiers, grows with tier, tapers late, and a boss pays a premium', () => {
-    // the 2023 opening waves are funded by tokens: the contract is a fraction of its full value
-    expect(tierBonus(1, false)).toBeLessThan(tierBonus(CONTRACT_RAMP_TIERS, false) / 3)
-    for (let t = 1; t < 10; t++) expect(tierBonus(t + 1, false)).toBeGreaterThan(tierBonus(t, false))
-    expect(tierBonus(12, false)).toBeLessThan(tierBonus(10, false))
+  it('the contract pays from the first wave, grows with tier, and a boss pays a premium', () => {
+    // a board rack stands for thousands of real racks serving minutes of traffic, so the opening
+    // waves' tokens cover little of the bill: the contract is what funds a clean starter fleet
+    const starterBill = 6 * rackGpuCostPerSec(HARDWARE_DEFS.hw_standard) * 40
+    expect(contractPayout(tierBonus(1, false), 100)).toBeGreaterThan(starterBill * 2)
+    expect(tierBonus(1, false)).toBeGreaterThanOrEqual(CONTRACT_BASE)
+    for (let t = 1; t < MAX_TIER; t++) expect(tierBonus(t + 1, false)).toBeGreaterThan(tierBonus(t, false))
     for (let t = 1; t <= MAX_TIER; t++) expect(tierBonus(t, true)).toBeGreaterThan(tierBonus(t, false))
     for (let i = 0; i < WAVES.length; i++) {
       const th = CAMPAIGN_THEMES[i]

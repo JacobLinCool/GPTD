@@ -7,7 +7,7 @@ import { describe, expect, it } from 'vitest'
 import type { GameState } from '../src/core/types'
 import { deployModel, startWave, tryBuild, upgradeHardware } from '../src/sim/actions'
 import { DEFAULT_MODEL_ID, HARDWARE_DEFS, MODEL_LIST, REQUEST_TYPES, WAVES } from '../src/sim/content'
-import { loadout, loadoutOf, serverFitsMemory, serverQualityVs } from '../src/sim/effects'
+import { answerMode, loadout, loadoutOf, serverFitsMemory, serverQualityVs } from '../src/sim/effects'
 import { pSelfHandle } from '../src/sim/safety'
 import { spawnRequest } from '../src/sim/spawn'
 import { createState } from '../src/sim/state'
@@ -211,7 +211,9 @@ describe('ui/metrics — live request diagnosis', () => {
     tw.prefillId = r.id
     const d = diagnoseRequest(s, r)
     expect(d.rack?.id).toBe(tw.id)
-    expect(d.rackQ).toBeCloseTo(serverQualityVs(s, loadoutOf(s, tw), 'coding') - d.ctxPenalty, 6)
+    // judged in the mode the rack's model answers code completion in (a hybrid: instantly)
+    const lo = loadoutOf(s, tw)
+    expect(d.rackQ).toBeCloseTo(serverQualityVs(s, lo, 'coding', answerMode(lo.model!, r.def)) - d.ctxPenalty, 6)
     expect(d.difficulty).toBe(r.difficulty)
     expect(d.margin).toBeCloseTo(d.rackQ! - r.difficulty, 6)
   })

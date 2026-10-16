@@ -119,7 +119,8 @@ import { explainRejection } from '../src/agent/diagnose'
  * Active-roster checkpoints used by the tests (the frontier-tolerance gate, §calibrate,
  * trims the candidate pool to ~60). Open weights are owned for free; the gate is VRAM
  * (paramsTotalB × the resident bytes/param).
- *   STARTER  : the smallest dense non-thinking kept model (DEFAULT_MODEL_ID).
+ *   STARTER  : the free starter (DEFAULT_MODEL_ID): the smallest dense checkpoint that serves the
+ *              opening waves — chat and code completion instantly, RAG's general line.
  *   GENERAL  : Qwen3.6-27B       — 27B dense BF16, REASONING model. Fits Standard at FP8.
  *   CODER    : Gemma 4 31B       — 31B dense BF16. The most code-leaning kept model.
  *   BIG      : Qwen3.5-122B-A10B — 122B total / 10B active BF16 MoE. Overflows Frontier at
@@ -258,10 +259,13 @@ describe('request resolution', () => {
   it('a weak model ships a bad answer when it finishes a too-hard request', () => {
     const s = createState(3)
     richBuild(s)
-    // Edge racks ship Llama-3.1-8B (coding ≈ 37): they grind out a Code Completion
-    // request but quality is below its coding difficulty (56) — a bad answer.
-    for (const col of [2, 4, 6, 8, 10, 12]) tryBuild(s, 'srv_edge', col, 2)
-    expect(MODEL_DEFS[STARTER].qualityBy.coding).toBeLessThan(REQUEST_CODE_COMPLEXITY)
+    // Edge racks running the 0.8B instruct model (coding ≈ 9): they grind out a Code
+    // Completion request but quality is below its coding difficulty (56) — a bad answer.
+    for (const col of [2, 4, 6, 8, 10, 12]) {
+      tryBuild(s, 'srv_edge', col, 2)
+      deployModel(s, lastTower(s).id, NEVER)
+    }
+    expect(MODEL_DEFS[NEVER].qualityBy.coding).toBeLessThan(REQUEST_CODE_COMPLEXITY)
     liveWave(s)
     spawnRequest(s, 'comp')
     runFor(s, 30)
@@ -1262,7 +1266,11 @@ describe('hardware/model split (expert mechanics)', () => {
   it('a wrong answer is refunded: it earns nothing and costs Trust', () => {
     const s = createState(24)
     richBuild(s)
-    for (const col of [2, 4, 6, 8, 10, 12]) tryBuild(s, 'srv_edge', col, 2)
+    // the 0.8B instruct model cannot code: its Code Completion answer is wrong
+    for (const col of [2, 4, 6, 8, 10, 12]) {
+      tryBuild(s, 'srv_edge', col, 2)
+      deployModel(s, lastTower(s).id, NEVER)
+    }
     const earned0 = s.stats.cashEarned
     const trust0 = s.meters.trust
     liveWave(s)
@@ -1381,7 +1389,7 @@ describe('benchmark calibration (capability is a per-axis vector)', () => {
   })
 
   it('a small model fails the coding line; a coder clears it', () => {
-    expect(q(STARTER, 'coding')).toBeLessThan(56) // ships bad code
+    expect(q(NEVER, 'coding')).toBeLessThan(56) // the 0.8B instruct model ships bad code
     expect(q(CODER, 'coding')).toBeGreaterThanOrEqual(56)
   })
 
@@ -1389,7 +1397,7 @@ describe('benchmark calibration (capability is a per-axis vector)', () => {
     // small non-reasoning checkpoints fall short on reason=82 (post-compression, only
     // the small end sits below the line — every kept mid/large model is a strong reasoner)
     expect(q(WEAK, 'reasoning')).toBeLessThan(82)
-    expect(q(STARTER, 'reasoning')).toBeLessThan(82)
+    expect(q(NEVER, 'reasoning')).toBeLessThan(82)
     // thinking models clear it
     expect(q(GENERAL, 'reasoning')).toBeGreaterThanOrEqual(82)
     expect(q(FRONTIER, 'reasoning')).toBeGreaterThanOrEqual(82)

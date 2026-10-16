@@ -209,10 +209,11 @@ export const LONGCTX_SKILL_RELIEF = 0.75
 /**
  * §6.6 clear-bonus rescale: converts a wave's authored SLA-contract value
  * (campaign.ts tierBonus) into credits. The paid bonus is that × the wave's Goodput
- * (campaign.ts contractPayout); the contract ramps in over the first tiers so the
- * opening waves are funded by token revenue.
+ * (campaign.ts contractPayout). Tuned against the autoplay economy: the opening contract
+ * (≈24 credits) funds a clean starter fleet's growth while its token revenue is still a few
+ * credits a wave; by the 2024 tiers token income overtakes it.
  */
-export const CLEAR_BONUS_SCALE = 0.08
+export const CLEAR_BONUS_SCALE = 0.12
 
 /**
  * §6.5 REAL power/cooling. The power system runs in real kW now: a rack draws its

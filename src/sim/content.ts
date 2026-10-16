@@ -35,6 +35,7 @@ import {
 } from './roster.bench.generated'
 import { GENERATED_ROSTER } from './roster.generated'
 import { buildCampaign, CAMPAIGN_THEMES, themeIncidentId } from './campaign'
+import { alignmentTax } from './safety'
 
 /* ------------------------------------------------------------------ *
  *  REQUEST TAXONOMY — the enemies, redesigned (P3a) by ROOT PROPERTY.  *
@@ -173,6 +174,9 @@ export const REQUEST_TYPES: Record<string, RequestTypeDef> = {
     inputTokens: 12000,
     outputTokens: 400,
     latClass: 'NR',
+    // a whole document has to be read before the first word: long-context serving relaxes TTFT
+    // to seconds (MLPerf v5.0's long-context Llama-3.1-405B bound is 6 s p99 TTFT, REFERENCE-DOSSIER §1.3)
+    ttftSloMs: 6000,
     thinkMul: 0.5,
     speed: 0.9,
     primaryAxis: 'general',
@@ -295,17 +299,19 @@ export const REQUEST_TYPES: Record<string, RequestTypeDef> = {
     context: 22,
     prefixShare: 0.1,
     refusalExposure: 0, // n/a: an attack is never benign
-    // §3.4 the adversarial hazard carrier: a severe jailbreak attempt. An input guardrail
-    // can block it before any compute (layer 2); a high-safety model can refuse it or
-    // answer it safely (layer 1); otherwise the unsafe answer is delivered and wrecks Trust.
-    // Handled, it resolves `served`; dropped unanswered, it costs only SLA.
+    // §3.4 the adversarial hazard carrier: a jailbreak attempt. An input guardrail can block
+    // it before any compute (layer 2); a high-safety model can refuse it or answer it safely
+    // (layer 1); otherwise the unsafe answer is delivered and wrecks Trust. Handled, it
+    // resolves `served`; dropped unanswered, it costs only SLA. 0.7 is the 2023 base (DAN-style
+    // role-play prompts); the era's hazard pressure (campaign.ts hazardMulOf) raises it to a
+    // fully adaptive 1.0 by late 2026.
     adversarial: true,
-    hazards: { jailbreak: 0.9 },
-    safetyRisk: 0.9,
+    hazards: { jailbreak: 0.7 },
+    safetyRisk: 0.7,
     reward: 7,
     pricePerMtokIn: 0.5,
     pricePerMtokOut: 1.5,
-    trustPenalty: 12,
+    trustPenalty: 9,
     slaPenalty: 3,
     data: 1,
     cacheable: false,
@@ -965,10 +971,36 @@ export const OPEN_MODEL_IDS = Object.keys(MODEL_DEFS)
  * ------------------------------------------------------------------ */
 
 export const MODEL_LIST = Object.values(MODEL_DEFS)
-/** The small dense instruct model every new rack ships with: the smallest active
- *  checkpoint that is dense and non-thinking. */
-export const DEFAULT_MODEL_ID = MODEL_LIST.filter((m) => !m.isMoE && !m.isReasoning).reduce((a, b) =>
-  b.paramsTotalB < a.paramsTotalB ? b : a,
+
+/**
+ * Can a checkpoint serve the opening waves on its own? It answers interactive traffic
+ * instantly (it never thinks, or it is a hybrid with thinking switched off there) and, after
+ * its alignment tax, clears the 2023 quality lines: chat and code completion in instant mode,
+ * and the general-knowledge line RAG is judged on in the mode it answers RAG in.
+ */
+function servesOpeningWaves(m: ModelDef): boolean {
+  if (m.thinking === 'always') return false
+  const tax = alignmentTax(m)
+  const instant = m.qualityByInstant ?? m.qualityBy
+  const line = (def: RequestTypeDef): number => def.difficulty[def.primaryAxis] ?? 0
+  return (
+    instant.chat - tax >= line(REQUEST_TYPES.chat) &&
+    instant.coding - tax >= line(REQUEST_TYPES.comp) &&
+    m.qualityBy.general - tax >= line(REQUEST_TYPES.rag)
+  )
+}
+
+/**
+ * The free starter every new rack ships with: the smallest dense checkpoint that can serve the
+ * opening waves (servesOpeningWaves), so a new player's first racks answer the 2023 traffic
+ * before any deploy decision. Falls back to the smallest dense non-thinking checkpoint.
+ */
+export const DEFAULT_MODEL_ID = (
+  MODEL_LIST.filter((m) => !m.isMoE && servesOpeningWaves(m)).reduce<ModelDef | null>(
+    (a, b) => (!a || b.paramsTotalB < a.paramsTotalB ? b : a),
+    null,
+  ) ??
+  MODEL_LIST.filter((m) => !m.isMoE && !m.isReasoning).reduce((a, b) => (b.paramsTotalB < a.paramsTotalB ? b : a))
 ).id
 /** Bootstrap: every open model is owned (free) from the start; rack VRAM gates deployment. */
 export const STARTER_MODELS = OPEN_MODEL_IDS

@@ -3,8 +3,8 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import type { GameState } from '../src/core/types'
 import { pwl, ROSTER_FRONTIER_TOLERANCE, THINK_TOKENS_FALLBACK, thinkingOf } from '../src/sim/calibrate'
-import { DEFAULT_MODEL_ID, HARDWARE_DEFS, INFRA_NODES, MODEL_CANDIDATES, MODEL_DEFS } from '../src/sim/content'
-import { kvPerReqGb, longContextPenalty, serverFitsMemory, serverQuality } from '../src/sim/effects'
+import { DEFAULT_MODEL_ID, HARDWARE_DEFS, INFRA_NODES, MODEL_CANDIDATES, MODEL_DEFS, REQUEST_TYPES } from '../src/sim/content'
+import { answerMode, kvPerReqGb, longContextPenalty, serverFitsMemory, serverQuality } from '../src/sim/effects'
 import { applyInfraEffects } from '../src/sim/research'
 import { MODEL_ARCH } from '../src/sim/roster.arch.generated'
 import { AA_BENCH, AA_BENCH_INSTANT, AA_BENCH_INSTANT_SOURCE, AA_BENCH_SOURCE, AA_INSTANT_VIA } from '../src/sim/roster.bench.generated'
@@ -201,7 +201,10 @@ describe('thinking support (chat template) and the thinking budget (AA telemetry
     expect(MODEL_DEFS.g_qwen3_5_0_8b_non_reasoning_2.thinking).toBe('never')
     expect(THINKING['Qwen/Qwen3.5-0.8B'].template).toBe('hybrid')
     expect(MODEL_DEFS.g_gemma_3_1b_2.thinking).toBe('never')
-    expect(MODEL_DEFS[DEFAULT_MODEL_ID].isReasoning).toBe(false)
+    // the free starter answers interactive traffic instantly (never-thinking, or a hybrid thinking-off)
+    expect(MODEL_DEFS[DEFAULT_MODEL_ID].thinking).not.toBe('always')
+    expect(answerMode(MODEL_DEFS[DEFAULT_MODEL_ID], REQUEST_TYPES.chat)).toBe('instant')
+    expect(answerMode(MODEL_DEFS[DEFAULT_MODEL_ID], REQUEST_TYPES.comp)).toBe('instant')
   })
 
   it('a hybrid\'s instant vector is calibrated from its Non-reasoning row on the same reference scale', () => {
