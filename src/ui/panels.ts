@@ -2583,7 +2583,8 @@ export class WaveReportPanel {
     out.push({ text: t('report.latency', { a: fmtLatencyMs(rep.avgLatency * 1000), p: fmtLatencyMs(rep.p95Latency * 1000) }), fill: COLORS.sla })
     out.push({ text: t('report.dpmt', { v: fmtDollarsPerMtoken(fleetMeanDollarsPerMtoken(s)) }), fill: COLORS.cash })
     const net = Math.round(rep.cashIn + rep.clearBonus - rep.powerCost)
-    out.push({ text: t('report.income', { cash: Math.round(rep.cashIn), bonus: Math.round(rep.clearBonus) }), fill: COLORS.cash })
+    // token income keeps its cents too: a first wave's few cents of real revenue must not read "$0"
+    out.push({ text: t('report.income', { cash: billCredits(rep.cashIn), bonus: Math.round(rep.clearBonus) }), fill: COLORS.cash })
     // the operating bill and its split: GPU-hour amortization + the energy the fleet drew
     // (small early bills keep their cents, so a $0.40 line never reads "$0")
     out.push({
